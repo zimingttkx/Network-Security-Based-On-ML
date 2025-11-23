@@ -29,7 +29,9 @@
             const trainBtn = document.getElementById('train-btn');
             const terminal = document.getElementById('terminal');
             const progressText = document.getElementById('progress-text');
-            const WS_URL = 'ws://localhost:8000/ws/train';
+            // 动态获取WebSocket URL，支持任何域名和端口
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const WS_URL = `${protocol}//${window.location.host}/ws/train`;
 
             function addLog(message, type = '') {
                 const line = document.createElement('div');

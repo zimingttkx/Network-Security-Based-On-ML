@@ -1,1 +1,118 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environment Variables
 .env
+.env.local
+.env.*.local
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+.hypothesis/
+coverage.xml
+*.cover
+
+# Logs
+logs/
+*.log
+log/
+
+# Model Artifacts
+Artifacts/
+artifacts/
+final_models/
+final_models_temp_for_mlflow/
+saved_models/
+*.pkl
+*.joblib
+*.h5
+*.pth
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Data
+data/
+*.csv
+*.xlsx
+*.json
+*.parquet
+Network_Data/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+
+# Kubernetes
+*.kubeconfig
+
+# Secrets
+secrets/
+*.pem
+*.key
+*.crt
+deployment/kubernetes/secrets.yaml
+
+# Monitoring
+grafana_data/
+prometheus_data/
+
+# Build artifacts
+*.tar.gz
+*.zip

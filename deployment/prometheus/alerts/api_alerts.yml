@@ -1,0 +1,52 @@
+groups:
+  - name: api_alerts
+    interval: 30s
+    rules:
+      # API高错误率告警
+      - alert: HighErrorRate
+        expr: rate(api_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API错误率过高"
+          description: "API错误率在过去5分钟内超过5%"
+
+      # API响应时间过长
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(api_request_latency_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API响应时间过长"
+          description: "95百分位的API响应时间超过1秒"
+
+      # API服务不可用
+      - alert: APIDown
+        expr: up{job="network-security-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API服务不可用"
+          description: "API服务已经下线超过2分钟"
+
+      # 预测失败率过高
+      - alert: HighPredictionFailureRate
+        expr: rate(predictions_total{status="failed"}[5m]) / rate(predictions_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "预测失败率过高"
+          description: "预测失败率超过10%"
+
+      # 训练作业失败
+      - alert: TrainingJobFailed
+        expr: increase(training_jobs_total{status="failed"}[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "训练作业失败"
+          description: "过去1小时内有训练作业失败"

@@ -1,19 +1,63 @@
-python-dotenv
-pandas
-numpy
-pymongo
-certifi
-pymongo[srv]==3.12
-scikit-learn
-dill
-pyyaml
-xgboost
-lightgbm
-catboost
-mlflow
-dagshub
-fastapi
-uvicorn
+# Core Dependencies
+python-dotenv>=1.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+pymongo[srv]>=4.5.0
+certifi>=2023.0.0
 
+# Machine Learning
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+catboost>=1.2.0
+imbalanced-learn>=0.11.0
+optuna>=3.3.0
 
-## -e .
+# Model Management & Tracking
+mlflow>=2.8.0
+dagshub>=0.3.0
+
+# Data Validation & Processing
+pyyaml>=6.0
+dill>=0.3.7
+pydantic>=2.4.0
+marshmallow>=3.20.0
+
+# API & Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# Monitoring & Observability
+prometheus-client>=0.18.0
+psutil>=5.9.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
+httpx>=0.25.0
+
+# Code Quality
+black>=23.10.0
+flake8>=6.1.0
+mypy>=1.6.0
+pre-commit>=3.5.0
+
+# Documentation
+mkdocs>=1.5.0
+mkdocs-material>=9.4.0
+
+# Utilities
+tenacity>=8.2.0
+tqdm>=4.66.0
+click>=8.1.0
+
+# Security
+cryptography>=41.0.0
+
+# Production
+gunicorn>=21.2.0
+supervisor>=4.2.0
+
+-e .

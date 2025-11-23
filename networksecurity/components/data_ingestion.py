@@ -37,13 +37,21 @@ class DataIngestion:
             collection = self.mongo_client[database_name][collection_name]
 
             df = pd.DataFrame(list(collection.find()))
+
+            if df.empty:
+                raise ValueError(
+                    f"在数据库 '{database_name}' 的集合 '{collection_name}' 中没有找到任何数据。"
+                    f"请检查您的数据库连接、库/集合名称以及集合中是否有数据。"
+                )
+
             if "_id" in df.columns.to_list():
                 df = df.drop(columns=["_id"], axis=1)
 
             df.replace({"na": np.nan}, inplace=True)
+            logging.info(f"成功从MongoDB导出 {len(df)} 条记录")
             return df
         except Exception as e:
-            raise NetworkSecurityException
+            raise NetworkSecurityException(e, sys)
 
     def export_data_into_feature_store(self, dataframe: pd.DataFrame):
         try:
@@ -98,35 +106,4 @@ class DataIngestion:
             return dataingestionartifact
 
         except Exception as e:
-            raise NetworkSecurityException(e, sys)
-
-    # data_ingestion.py
-
-    def export_collection_as_dataframe(self):
-        """
-        Read data from mongodb
-        """
-        try:
-            database_name = self.data_ingestion_config.database_name
-            collection_name = self.data_ingestion_config.collection_name
-            self.mongo_client = pymongo.MongoClient(MONGO_DB_URL)
-            collection = self.mongo_client[database_name][collection_name]
-
-            df = pd.DataFrame(list(collection.find()))
-
-            # <<< --- START: 增加的防御性代码 --- >>>
-            if df.empty:
-                raise ValueError(
-                    f"在数据库 '{database_name}' 的集合 '{collection_name}' 中没有找到任何数据。"
-                    f"请检查您的数据库连接、库/集合名称以及集合中是否有数据。"
-                )
-            # 检查是否存在_id列 如果存在的话删除
-
-            if "_id" in df.columns.to_list():
-                df = df.drop(columns=["_id"], axis=1)
-
-            df.replace({"na": np.nan}, inplace=True)
-            return df
-        except Exception as e:
-            # 注意这里的修改，确保所有异常都被正确包装
             raise NetworkSecurityException(e, sys)

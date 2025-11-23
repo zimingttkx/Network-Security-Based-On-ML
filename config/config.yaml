@@ -1,0 +1,221 @@
+# 网络安全项目配置文件
+
+# 应用配置
+app:
+  name: "Network Security Threat Detection"
+  version: "2.0.0"
+  environment: "development"  # development, staging, production
+  debug: true
+  host: "0.0.0.0"
+  port: 8000
+
+# 数据库配置
+database:
+  mongodb:
+    database_name: "data"
+    collection_name: "NetworkData"
+    # URL从环境变量读取: MONGO_DB_URL
+    connection_timeout: 5000
+    max_pool_size: 50
+
+# 数据管道配置
+data_pipeline:
+  artifact_dir: "Artifacts"
+  pipeline_name: "NetworkSecurity"
+
+  # 数据摄取
+  ingestion:
+    train_test_split_ratio: 0.2
+    random_state: 42
+
+  # 数据验证
+  validation:
+    drift_threshold: 0.05
+    missing_threshold: 0.7
+
+  # 数据转换
+  transformation:
+    imputer:
+      strategy: "knn"
+      n_neighbors: 3
+      weights: "uniform"
+    scaler:
+      method: "standard"  # standard, minmax, robust
+    feature_selection:
+      enabled: true
+      method: "mutual_info"
+      n_features: 20
+
+# 模型训练配置
+model_training:
+  expected_accuracy: 0.6
+  overfitting_threshold: 0.05
+
+  # 交叉验证
+  cross_validation:
+    enabled: true
+    cv_folds: 5
+    stratified: true
+
+  # 模型选择
+  models:
+    random_forest:
+      enabled: true
+      params:
+        n_estimators: [100, 200, 300]
+        max_depth: [10, 20, 30]
+        min_samples_split: [2, 5]
+        min_samples_leaf: [1, 2]
+
+    gradient_boosting:
+      enabled: true
+      params:
+        n_estimators: [100, 200]
+        learning_rate: [0.01, 0.05, 0.1]
+        max_depth: [3, 5, 7]
+
+    xgboost:
+      enabled: true
+      params:
+        n_estimators: [100, 200]
+        learning_rate: [0.01, 0.05, 0.1]
+        max_depth: [3, 5, 7]
+        subsample: [0.8, 1.0]
+
+    lightgbm:
+      enabled: true
+      params:
+        n_estimators: [100, 200]
+        learning_rate: [0.01, 0.05]
+        num_leaves: [31, 50]
+
+    catboost:
+      enabled: true
+      params:
+        iterations: [100, 200]
+        learning_rate: [0.01, 0.05]
+        depth: [4, 6, 8]
+
+  # 超参数优化
+  hyperparameter_tuning:
+    method: "optuna"  # grid_search, random_search, optuna
+    n_trials: 100
+    timeout: 3600  # 秒
+    n_jobs: -1
+
+  # 集成学习
+  ensemble:
+    enabled: true
+    methods:
+      - "voting"
+      - "stacking"
+    voting:
+      voting_type: "soft"
+    stacking:
+      final_estimator: "logistic_regression"
+
+# MLflow配置
+mlflow:
+  enabled: true
+  # tracking_uri支持环境变量 MLFLOW_TRACKING_URI 覆盖
+  # 本地开发: http://127.0.0.1:5000
+  # 生产环境: http://mlflow-server:5000 或具体域名
+  tracking_uri: "http://127.0.0.1:5000"
+  experiment_name: "network_security"
+  run_name_prefix: "run"
+
+  # DagsHub集成
+  dagshub:
+    enabled: false
+    repo_owner: "your_username"
+    repo_name: "your_repo"
+
+# API配置
+api:
+  title: "Network Security Threat Detection API"
+  description: "Enterprise-grade API for network threat prediction"
+  version: "2.0.0"
+
+  # CORS
+  cors:
+    enabled: true
+    allow_origins: ["*"]
+    allow_credentials: true
+    allow_methods: ["*"]
+    allow_headers: ["*"]
+
+  # 限流
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 100
+
+  # 认证
+  authentication:
+    enabled: false
+    type: "api_key"  # api_key, oauth2, jwt
+
+# 日志配置
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "detailed"  # simple, detailed, json
+
+  # 日志轮转
+  rotation:
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
+
+  # 日志输出
+  handlers:
+    console: true
+    file: true
+    error_file: true
+
+# 监控配置
+monitoring:
+  prometheus:
+    enabled: true
+    port: 9090
+
+  metrics:
+    - "request_count"
+    - "request_latency"
+    - "model_prediction_time"
+    - "model_accuracy"
+    - "data_drift"
+
+# 缓存配置
+cache:
+  enabled: true
+  backend: "redis"  # redis, memcached
+  ttl: 3600  # 秒
+  max_size: 1000
+
+# 安全配置
+security:
+  # 数据加密
+  encryption:
+    enabled: true
+    algorithm: "AES256"
+
+  # 输入验证
+  input_validation:
+    enabled: true
+    max_file_size: 10485760  # 10MB
+    allowed_file_types: [".csv", ".json"]
+
+# 部署配置
+deployment:
+  docker:
+    image_name: "network-security-api"
+    tag: "latest"
+
+  kubernetes:
+    namespace: "production"
+    replicas: 3
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "2000m"

@@ -328,4 +328,4 @@ async def network_security_exception_handler(request: Request, exc: NetworkSecur
 
 
 if __name__ == "__main__":
-    uvicorn.run("test_app:app", host="localhost", port=8000, reload=True)
+    uvicorn.run("test_app:app", host="0.0.0.0", port=8000, reload=True)
