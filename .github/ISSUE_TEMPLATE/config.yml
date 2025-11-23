@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 文档
+    url: https://github.com/username/PythonProject4/wiki
+    about: 查看项目文档和使用指南
+  - name: 💬 讨论区
+    url: https://github.com/username/PythonProject4/discussions
+    about: 在这里提出问题和讨论想法
+  - name: 🔒 安全问题
+    url: https://github.com/username/PythonProject4/security/advisories/new
+    about: 报告安全漏洞（请勿公开）

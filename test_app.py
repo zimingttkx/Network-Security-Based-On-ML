@@ -12,9 +12,9 @@ import threading
 import uvicorn
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
@@ -24,6 +24,7 @@ from networksecurity.exception.exception import NetworkSecurityException
 from networksecurity.pipeline.training_pipeline import TrainingPipeline
 from networksecurity.utils.main_utils.utils import load_object
 from networksecurity.constant import training_pipeline
+from networksecurity.utils.ml_utils.data_validator import DataValidator
 
 # --- 可视化库导入 ---
 import matplotlib
@@ -117,7 +118,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="网络安全威胁预测 API", version="7.1.0 (fixed)", lifespan=lifespan)
 
 # --- 挂载静态文件和中间件 ---
-app.mount("/static", StaticFiles(directory="Templates"), name="static")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"],
                    allow_headers=["*"])
 templates = Jinja2Templates(directory="Templates")
@@ -213,6 +214,22 @@ async def serve_live_inference(request: Request): return templates.TemplateRespo
                                                                                                      "page": "predict"})
 
 
+# --- 新增的现代化页面路由 ---
+@app.get("/predict", tags=["Frontend"], response_class=HTMLResponse)
+async def serve_predict(request: Request):
+    return templates.TemplateResponse("predict.html", {"request": request, "page": "predict"})
+
+
+@app.get("/train", tags=["Frontend"], response_class=HTMLResponse)
+async def serve_train(request: Request):
+    return templates.TemplateResponse("training.html", {"request": request, "page": "training"})
+
+
+@app.get("/tutorial", tags=["Frontend"], response_class=HTMLResponse)
+async def serve_tutorial(request: Request):
+    return templates.TemplateResponse("tutorial.html", {"request": request, "page": "tutorial"})
+
+
 # --- Pydantic 模型 ---
 class PredictionInput(BaseModel):
     having_IP_Address: int;
@@ -248,10 +265,107 @@ class PredictionInput(BaseModel):
 
 
 # --- 核心API端点 ---
-@app.get("/train", tags=["Training"])
+@app.post("/api/train", tags=["Training"])
 async def trigger_training():
+    """触发模型训练管道"""
     asyncio.create_task(run_training_pipeline())
-    return Response(content="模型演化任务已在后台启动。", status_code=202)
+    return {"status": "success", "message": "模型训练任务已在后台启动"}
+
+
+# --- 数据上传和验证API ---
+@app.get("/api/features/requirements", tags=["Data"])
+async def get_feature_requirements():
+    """获取训练数据特征要求"""
+    validator = DataValidator()
+    return validator.get_feature_requirements()
+
+
+@app.post("/api/data/validate", tags=["Data"])
+async def validate_data(file: UploadFile = File(...)):
+    """验证上传的数据文件"""
+    try:
+        # 读取上传的CSV文件
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+
+        # 验证数据
+        validator = DataValidator()
+        is_valid, report = validator.validate_features(df)
+
+        # 获取补全建议
+        imputation_suggestions = validator.suggest_imputation_strategy(df)
+
+        return {
+            "status": "success",
+            "filename": file.filename,
+            "rows": len(df),
+            "columns": len(df.columns),
+            "is_valid": is_valid,
+            "validation_report": report,
+            "imputation_suggestions": imputation_suggestions
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": f"数据验证失败: {str(e)}"}
+        )
+
+
+@app.post("/api/data/impute", tags=["Data"])
+async def impute_data(
+    file: UploadFile = File(...),
+    strategy: str = Form("constant"),
+    fill_value: int = Form(0)
+):
+    """补全数据特征"""
+    try:
+        # 读取上传的CSV文件
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+
+        # 补全数据
+        validator = DataValidator()
+        df_imputed, impute_report = validator.impute_missing_features(
+            df,
+            strategy=strategy,
+            fill_value=fill_value
+        )
+
+        # 保存补全后的数据
+        output_path = f"uploads/imputed_{file.filename}"
+        os.makedirs("uploads", exist_ok=True)
+        df_imputed.to_csv(output_path, index=False)
+
+        return {
+            "status": "success",
+            "message": "数据补全成功",
+            "output_file": output_path,
+            "impute_report": impute_report,
+            "rows": len(df_imputed),
+            "columns": len(df_imputed.columns)
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": f"数据补全失败: {str(e)}"}
+        )
+
+
+@app.get("/api/data/download/{filename}", tags=["Data"])
+async def download_imputed_data(filename: str):
+    """下载补全后的数据"""
+    file_path = f"uploads/{filename}"
+    if os.path.exists(file_path):
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type='text/csv'
+        )
+    else:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error", "message": "文件不存在"}
+        )
 
 
 @app.get("/predict_on_test_data", tags=["Prediction"])
