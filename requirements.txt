@@ -1,63 +1,29 @@
-# Core Dependencies
+# 核心依赖
 python-dotenv>=1.0.0
 pandas>=2.0.0
 numpy>=1.24.0
 pymongo[srv]>=4.5.0
 certifi>=2023.0.0
 
-# Machine Learning
+# 机器学习
 scikit-learn>=1.3.0
 xgboost>=2.0.0
-lightgbm>=4.0.0
-catboost>=1.2.0
 imbalanced-learn>=0.11.0
-optuna>=3.3.0
 
-# Model Management & Tracking
-mlflow>=2.8.0
-dagshub>=0.3.0
-
-# Data Validation & Processing
+# 数据处理
 pyyaml>=6.0
 dill>=0.3.7
-pydantic>=2.4.0
-marshmallow>=3.20.0
 
-# API & Web Framework
+# Web框架
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
+jinja2>=3.1.0
 
-# Monitoring & Observability
-prometheus-client>=0.18.0
-psutil>=5.9.0
-
-# Testing
-pytest>=7.4.0
-pytest-cov>=4.1.0
-pytest-asyncio>=0.21.0
-httpx>=0.25.0
-
-# Code Quality
-black>=23.10.0
-flake8>=6.1.0
-mypy>=1.6.0
-pre-commit>=3.5.0
-
-# Documentation
-mkdocs>=1.5.0
-mkdocs-material>=9.4.0
-
-# Utilities
-tenacity>=8.2.0
+# 工具
 tqdm>=4.66.0
-click>=8.1.0
 
-# Security
-cryptography>=41.0.0
-
-# Production
-gunicorn>=21.2.0
-supervisor>=4.2.0
+# 可视化
+matplotlib>=3.7.0
 
 -e .

@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="网络安全项目" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="机器学习项目" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="IGoLibrary" project-jdk-type="Python SDK" />
 </project>

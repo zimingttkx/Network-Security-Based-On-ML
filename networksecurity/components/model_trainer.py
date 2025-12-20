@@ -6,9 +6,7 @@ import logging
 from functools import reduce
 from operator import mul
 
-import mlflow
 import joblib
-import dagshub
 
 from networksecurity.exception.exception import NetworkSecurityException
 from networksecurity.entity.config_entity import ModelTrainerConfig
@@ -22,13 +20,9 @@ from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.naive_bayes import GaussianNB
 import xgboost as xgb
-import lightgbm as lgb
-import catboost as cb
 
 from sklearn.model_selection import GridSearchCV
 
-# 注意：这个文件里的 NetworkModel 导入可能需要根据你的实际项目结构调整
-# 如果 estimator.py 在 networksecurity/utils/ml_utils/model/ 目录下
 from networksecurity.utils.ml_utils.model.estimator import NetworkModel
 
 
@@ -38,34 +32,8 @@ class ModelTrainer:
         try:
             self.model_trainer_config = model_trainer_config
             self.data_transformation_artifact = data_transformation_artifact
-            self.is_dagshub_initialized = False
         except Exception as e:
             raise NetworkSecurityException(e, sys) from e
-
-    def initialize_dagshub(self):
-        if not self.is_dagshub_initialized:
-            try:
-                # 你的 DagsHub 配置
-                # dagshub.init(repo_owner='zimingttkx', repo_name='---', mlflow=True)
-                self.is_dagshub_initialized = True
-            except Exception as e:
-                logging.warning(f"DagsHub 初始化失败，将跳过 MLflow 记录。错误: {e}")
-                self.is_dagshub_initialized = False
-
-    def tract_mlflow(self, best_model, classificationmetric):
-        self.initialize_dagshub()
-        if not self.is_dagshub_initialized:
-            return
-        try:
-            with mlflow.start_run():
-                mlflow.log_metric("f1_score", classificationmetric.f1_score)
-                mlflow.log_metric("precision", classificationmetric.precision_score)
-                mlflow.log_metric("recall_score", classificationmetric.recall_score)
-
-                # 记录模型
-                mlflow.sklearn.log_model(best_model, "model")
-        except Exception as e:
-            logging.error(f"向 MLflow 记录时发生错误: {e}")
 
     def _count_combinations(self, param_grid):
         if not param_grid:
@@ -83,9 +51,7 @@ class ModelTrainer:
                 'SVC': SVC(),
                 'KNeighborsClassifier': KNeighborsClassifier(),
                 'GaussianNB': GaussianNB(),
-                'XGBoost': xgb.XGBClassifier(eval_metric='logloss', use_label_encoder=False),
-                'LightGBM': lgb.LGBMClassifier(),
-                'CatBoost': cb.CatBoostClassifier(verbose=False, allow_writing_files=False)
+                'XGBoost': xgb.XGBClassifier(eval_metric='logloss', use_label_encoder=False)
             }
             params = {
                 'RandomForestClassifier': {'n_estimators': [50, 100], 'max_depth': [10, 20]},
@@ -95,9 +61,7 @@ class ModelTrainer:
                 'SVC': {'C': [1, 10], 'kernel': ['rbf']},
                 'KNeighborsClassifier': {'n_neighbors': [3, 5]},
                 'GaussianNB': {'var_smoothing': [1e-9]},
-                'XGBoost': {'n_estimators': [50, 100], 'learning_rate': [0.05, 0.1]},
-                'LightGBM': {'n_estimators': [50, 100], 'num_leaves': [31, 50]},
-                'CatBoost': {'iterations': [100, 200], 'depth': [4, 6]}
+                'XGBoost': {'n_estimators': [50, 100], 'learning_rate': [0.05, 0.1]}
             }
 
             total_fits = sum(self._count_combinations(params.get(name, {})) * 3 for name in models)  # cv=3
@@ -137,9 +101,6 @@ class ModelTrainer:
             # 在完整训练集上评估最佳模型
             y_train_pred = best_model.predict(x_train)
             train_metric = get_classification_metric(y_true=y_train, y_pred=y_train_pred)
-
-            # 向 MLflow 记录指标
-            self.tract_mlflow(best_model, train_metric)
 
             # 在测试集上评估
             y_test_pred = best_model.predict(x_test)

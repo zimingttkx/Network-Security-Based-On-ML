@@ -28,21 +28,44 @@ class DataIngestion:
 
     def export_collection_as_dataframe(self):
         """
-        Read data from mongodb
+        Read data from mongodb or local CSV file
         """
         try:
+            # 如果MongoDB URL未配置或为空，使用本地CSV文件
+            if not MONGO_DB_URL or MONGO_DB_URL.strip() == "":
+                logging.info("MongoDB未配置，使用本地CSV文件")
+                csv_path = "Network_Data/phisingData.csv"
+                if os.path.exists(csv_path):
+                    df = pd.read_csv(csv_path)
+                    df.replace({"na": np.nan}, inplace=True)
+                    logging.info(f"成功从本地CSV文件读取 {len(df)} 条记录")
+                    return df
+                else:
+                    raise FileNotFoundError(f"本地数据文件不存在: {csv_path}")
+
+            # 尝试从MongoDB读取
             database_name = self.data_ingestion_config.database_name
             collection_name = self.data_ingestion_config.collection_name
-            self.mongo_client = pymongo.MongoClient(MONGO_DB_URL)
+
+            # 设置较短的超时时间
+            self.mongo_client = pymongo.MongoClient(MONGO_DB_URL, serverSelectionTimeoutMS=5000)
             collection = self.mongo_client[database_name][collection_name]
 
             df = pd.DataFrame(list(collection.find()))
 
             if df.empty:
-                raise ValueError(
-                    f"在数据库 '{database_name}' 的集合 '{collection_name}' 中没有找到任何数据。"
-                    f"请检查您的数据库连接、库/集合名称以及集合中是否有数据。"
-                )
+                logging.warning("MongoDB中没有数据，尝试使用本地CSV文件")
+                csv_path = "Network_Data/phisingData.csv"
+                if os.path.exists(csv_path):
+                    df = pd.read_csv(csv_path)
+                    df.replace({"na": np.nan}, inplace=True)
+                    logging.info(f"成功从本地CSV文件读取 {len(df)} 条记录")
+                    return df
+                else:
+                    raise ValueError(
+                        f"在数据库 '{database_name}' 的集合 '{collection_name}' 中没有找到任何数据，"
+                        f"且本地CSV文件也不存在。"
+                    )
 
             if "_id" in df.columns.to_list():
                 df = df.drop(columns=["_id"], axis=1)
@@ -50,6 +73,17 @@ class DataIngestion:
             df.replace({"na": np.nan}, inplace=True)
             logging.info(f"成功从MongoDB导出 {len(df)} 条记录")
             return df
+        except (pymongo.errors.ServerSelectionTimeoutError, pymongo.errors.ConnectionFailure) as e:
+            # MongoDB连接失败，使用本地CSV文件
+            logging.warning(f"MongoDB连接失败: {e}，使用本地CSV文件")
+            csv_path = "Network_Data/phisingData.csv"
+            if os.path.exists(csv_path):
+                df = pd.read_csv(csv_path)
+                df.replace({"na": np.nan}, inplace=True)
+                logging.info(f"成功从本地CSV文件读取 {len(df)} 条记录")
+                return df
+            else:
+                raise FileNotFoundError(f"MongoDB连接失败且本地数据文件不存在: {csv_path}")
         except Exception as e:
             raise NetworkSecurityException(e, sys)
 
