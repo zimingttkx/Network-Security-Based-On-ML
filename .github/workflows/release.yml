@@ -1,0 +1,37 @@
+name: 自动发布
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v3
+
+    - name: 创建Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        body: |
+          ## 更新内容
+
+          请查看提交历史了解详细变更。
+
+          ## 安装方法
+
+          ```bash
+          git clone https://github.com/zimingttkx/Network-Security-Based-On-ML.git
+          cd Network-Security-Based-On-ML
+          pip install -r requirements.txt
+          python test_app.py
+          ```
+        draft: false
+        prerelease: false

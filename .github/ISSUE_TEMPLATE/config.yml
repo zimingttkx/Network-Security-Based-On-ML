@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 讨论区
+    url: https://github.com/zimingttkx/Network-Security-Based-On-ML/discussions
+    about: 提问、分享想法或讨论项目
+  - name: 📧 邮件联系
+    url: mailto:2147514473@qq.com
+    about: 通过邮件联系项目维护者

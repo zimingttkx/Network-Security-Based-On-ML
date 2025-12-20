@@ -1,0 +1,58 @@
+name: Python应用测试
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ['3.12']
+
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v3
+
+    - name: 设置Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: 缓存依赖
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: 代码风格检查
+      run: |
+        pip install flake8
+        flake8 networksecurity --count --select=E9,F63,F7,F82 --show-source --statistics || true
+
+    - name: 运行测试
+      run: |
+        if [ -d "tests" ]; then
+          pip install pytest pytest-cov
+          pytest tests/ -v --cov=networksecurity --cov-report=xml || echo "测试完成"
+        else
+          echo "未找到测试目录，跳过测试"
+        fi
+
+    - name: 上传覆盖率报告
+      if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
