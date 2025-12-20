@@ -114,6 +114,148 @@
                         </div>
                     </div>
 
+                    <!-- 模型类型选择 -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h3 class="mb-0">
+                                <i class="fas fa-robot"></i>
+                                模型类型选择
+                            </h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">选择训练方式</label>
+                                <select id="modelType" class="form-select">
+                                    <option value="ml">机器学习 (ML)</option>
+                                    <option value="dl">深度学习 (DL)</option>
+                                </select>
+                            </div>
+
+                            <!-- 深度学习配置区 -->
+                            <div id="dlConfigSection" style="display: none;">
+                                <div class="mb-3">
+                                    <label class="form-label fw-bold">深度学习模型</label>
+                                    <select id="dlModelType" class="form-select">
+                                        <option value="dnn">深度神经网络 (DNN)</option>
+                                        <option value="cnn">卷积神经网络 (CNN)</option>
+                                        <option value="lstm">长短期记忆网络 (LSTM)</option>
+                                    </select>
+                                    <small class="text-muted">选择适合的深度学习架构</small>
+                                </div>
+
+                                <div class="accordion" id="dlParamsAccordion">
+                                    <div class="accordion-item">
+                                        <h2 class="accordion-header">
+                                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#basicParams">
+                                                <i class="fas fa-sliders-h me-2"></i>基础参数
+                                            </button>
+                                        </h2>
+                                        <div id="basicParams" class="accordion-collapse collapse" data-bs-parent="#dlParamsAccordion">
+                                            <div class="accordion-body">
+                                                <div class="mb-3">
+                                                    <label class="form-label">学习率</label>
+                                                    <input type="number" id="learningRate" class="form-control" value="0.001" step="0.0001" min="0.0001" max="0.1">
+                                                </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label">批次大小</label>
+                                                    <input type="number" id="batchSize" class="form-control" value="32" min="8" max="256" step="8">
+                                                </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label">训练轮数</label>
+                                                    <input type="number" id="epochs" class="form-control" value="100" min="10" max="500" step="10">
+                                                </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label">优化器</label>
+                                                    <select id="optimizer" class="form-select">
+                                                        <option value="adam">Adam</option>
+                                                        <option value="sgd">SGD</option>
+                                                        <option value="rmsprop">RMSprop</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="accordion-item">
+                                        <h2 class="accordion-header">
+                                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#advancedParams">
+                                                <i class="fas fa-cog me-2"></i>高级参数
+                                            </button>
+                                        </h2>
+                                        <div id="advancedParams" class="accordion-collapse collapse" data-bs-parent="#dlParamsAccordion">
+                                            <div class="accordion-body">
+                                                <div class="mb-3">
+                                                    <label class="form-label">Dropout率</label>
+                                                    <input type="number" id="dropoutRate" class="form-control" value="0.3" step="0.1" min="0" max="0.8">
+                                                    <small class="text-muted">防止过拟合，推荐0.2-0.5</small>
+                                                </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label">L2正则化</label>
+                                                    <input type="number" id="l2Reg" class="form-control" value="0.001" step="0.0001" min="0" max="0.1">
+                                                </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label">早停耐心值</label>
+                                                    <input type="number" id="patience" class="form-control" value="10" min="5" max="50" step="5">
+                                                    <small class="text-muted">验证损失不改善时等待的轮数</small>
+                                                </div>
+                                                <div class="form-check mb-2">
+                                                    <input class="form-check-input" type="checkbox" id="useBatchNorm" checked>
+                                                    <label class="form-check-label" for="useBatchNorm">
+                                                        使用批归一化 (Batch Normalization)
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="accordion-item">
+                                        <h2 class="accordion-header">
+                                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#architectureParams">
+                                                <i class="fas fa-project-diagram me-2"></i>网络架构
+                                            </button>
+                                        </h2>
+                                        <div id="architectureParams" class="accordion-collapse collapse" data-bs-parent="#dlParamsAccordion">
+                                            <div class="accordion-body">
+                                                <div id="dnnArchitecture">
+                                                    <label class="form-label">隐藏层配置 (DNN)</label>
+                                                    <input type="text" id="hiddenLayers" class="form-control mb-2" value="128,64,32" placeholder="例如: 128,64,32">
+                                                    <small class="text-muted">用逗号分隔的神经元数量</small>
+                                                </div>
+                                                <div id="cnnArchitecture" style="display: none;">
+                                                    <label class="form-label">卷积层配置 (CNN)</label>
+                                                    <input type="text" id="convFilters" class="form-control mb-2" value="64,32" placeholder="例如: 64,32">
+                                                    <small class="text-muted">卷积核数量</small>
+                                                    <label class="form-label mt-2">全连接层</label>
+                                                    <input type="text" id="denseLayers" class="form-control mb-2" value="64,32" placeholder="例如: 64,32">
+                                                </div>
+                                                <div id="lstmArchitecture" style="display: none;">
+                                                    <label class="form-label">LSTM层配置</label>
+                                                    <input type="text" id="lstmUnits" class="form-control mb-2" value="64,32" placeholder="例如: 64,32">
+                                                    <small class="text-muted">LSTM单元数量</small>
+                                                    <label class="form-label mt-2">全连接层</label>
+                                                    <input type="text" id="lstmDenseLayers" class="form-control mb-2" value="32" placeholder="例如: 32">
+                                                </div>
+                                                <div class="mt-3">
+                                                    <label class="form-label">激活函数</label>
+                                                    <select id="activation" class="form-select">
+                                                        <option value="relu">ReLU</option>
+                                                        <option value="tanh">Tanh</option>
+                                                        <option value="sigmoid">Sigmoid</option>
+                                                        <option value="elu">ELU</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <button id="resetDLParams" class="btn btn-outline-secondary btn-sm w-100 mt-3">
+                                    <i class="fas fa-undo"></i> 重置为默认参数
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- 训练控制 -->
                     <div class="card">
                         <div class="card-header">
@@ -239,6 +381,63 @@
         document.getElementById('dataSource').addEventListener('change', function() {
             const customSection = document.getElementById('customDataSection');
             customSection.style.display = this.value === 'custom' ? 'block' : 'none';
+        });
+
+        // 模型类型选择处理
+        document.getElementById('modelType').addEventListener('change', function() {
+            const dlConfigSection = document.getElementById('dlConfigSection');
+            dlConfigSection.style.display = this.value === 'dl' ? 'block' : 'none';
+        });
+
+        // 深度学习模型类型选择处理
+        document.getElementById('dlModelType').addEventListener('change', function() {
+            const modelType = this.value;
+
+            // 隐藏所有架构配置
+            document.getElementById('dnnArchitecture').style.display = 'none';
+            document.getElementById('cnnArchitecture').style.display = 'none';
+            document.getElementById('lstmArchitecture').style.display = 'none';
+
+            // 显示对应的架构配置
+            if (modelType === 'dnn') {
+                document.getElementById('dnnArchitecture').style.display = 'block';
+            } else if (modelType === 'cnn') {
+                document.getElementById('cnnArchitecture').style.display = 'block';
+            } else if (modelType === 'lstm') {
+                document.getElementById('lstmArchitecture').style.display = 'block';
+            }
+        });
+
+        // 重置深度学习参数
+        document.getElementById('resetDLParams').addEventListener('click', function() {
+            const modelType = document.getElementById('dlModelType').value;
+
+            // 重置基础参数
+            document.getElementById('learningRate').value = '0.001';
+            document.getElementById('batchSize').value = '32';
+            document.getElementById('epochs').value = '100';
+            document.getElementById('optimizer').value = 'adam';
+
+            // 重置高级参数
+            document.getElementById('dropoutRate').value = '0.3';
+            document.getElementById('l2Reg').value = '0.001';
+            document.getElementById('patience').value = '10';
+            document.getElementById('useBatchNorm').checked = true;
+
+            // 重置架构参数
+            document.getElementById('activation').value = 'relu';
+
+            if (modelType === 'dnn') {
+                document.getElementById('hiddenLayers').value = '128,64,32';
+            } else if (modelType === 'cnn') {
+                document.getElementById('convFilters').value = '64,32';
+                document.getElementById('denseLayers').value = '64,32';
+            } else if (modelType === 'lstm') {
+                document.getElementById('lstmUnits').value = '64,32';
+                document.getElementById('lstmDenseLayers').value = '32';
+            }
+
+            alert('参数已重置为默认值');
         });
 
         // 查看特征要求
@@ -512,13 +711,64 @@
                 }
             };
 
+            // 收集训练配置
+            const modelType = document.getElementById('modelType').value;
+            const trainConfig = {
+                use_deep_learning: modelType === 'dl'
+            };
+
+            // 如果选择深度学习，收集深度学习参数
+            if (modelType === 'dl') {
+                const dlModelType = document.getElementById('dlModelType').value;
+                trainConfig.dl_model_type = dlModelType;
+
+                // 收集深度学习配置
+                const dlConfig = {
+                    learning_rate: parseFloat(document.getElementById('learningRate').value),
+                    batch_size: parseInt(document.getElementById('batchSize').value),
+                    epochs: parseInt(document.getElementById('epochs').value),
+                    optimizer: document.getElementById('optimizer').value,
+                    dropout_rate: parseFloat(document.getElementById('dropoutRate').value),
+                    l2_reg: parseFloat(document.getElementById('l2Reg').value),
+                    early_stopping_patience: parseInt(document.getElementById('patience').value),
+                    use_batch_norm: document.getElementById('useBatchNorm').checked,
+                    activation: document.getElementById('activation').value
+                };
+
+                // 根据模型类型收集架构参数
+                if (dlModelType === 'dnn') {
+                    const hiddenLayers = document.getElementById('hiddenLayers').value
+                        .split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+                    dlConfig.hidden_layers = hiddenLayers;
+                } else if (dlModelType === 'cnn') {
+                    const convFilters = document.getElementById('convFilters').value
+                        .split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+                    const denseLayers = document.getElementById('denseLayers').value
+                        .split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+                    dlConfig.conv_filters = convFilters;
+                    dlConfig.dense_layers = denseLayers;
+                    dlConfig.kernel_size = 3;
+                } else if (dlModelType === 'lstm') {
+                    const lstmUnits = document.getElementById('lstmUnits').value
+                        .split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+                    const lstmDenseLayers = document.getElementById('lstmDenseLayers').value
+                        .split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+                    dlConfig.lstm_units = lstmUnits;
+                    dlConfig.dense_layers = lstmDenseLayers;
+                    dlConfig.recurrent_dropout = 0.2;
+                }
+
+                trainConfig.dl_config = dlConfig;
+            }
+
             // 触发训练
             try {
                 const response = await fetch('/api/train', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
-                    }
+                    },
+                    body: JSON.stringify(trainConfig)
                 });
                 if (!response.ok) {
                     const errorData = await response.json();

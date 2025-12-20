@@ -137,7 +137,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 # --- 异步训练函数 ---
-async def run_training_pipeline():
+async def run_training_pipeline(use_deep_learning=False, dl_model_type='dnn', dl_config=None):
     # 操作系统层面的管道重定向
     r, w = os.pipe()
     stdout_original = os.dup(1)
@@ -163,7 +163,12 @@ async def run_training_pipeline():
 
     def training_task():
         try:
-            TrainingPipeline().run_pipeline()
+            pipeline = TrainingPipeline(
+                use_deep_learning=use_deep_learning,
+                dl_model_type=dl_model_type,
+                dl_config=dl_config
+            )
+            pipeline.run_pipeline()
             logging.info("✅ [FINISH] 模型演化流程执行完毕！")
         except Exception as e:
             logging.error(f"❌ [ERROR] 训练管道线程内部发生严重错误: {e}", exc_info=True)
@@ -264,12 +269,35 @@ class PredictionInput(BaseModel):
     Statistical_report: int
 
 
+class TrainingConfig(BaseModel):
+    use_deep_learning: bool = False
+    dl_model_type: str = 'dnn'
+    dl_config: dict = None
+
+
 # --- 核心API端点 ---
 @app.post("/api/train", tags=["Training"])
-async def trigger_training():
+async def trigger_training(config: TrainingConfig = None):
     """触发模型训练管道"""
-    asyncio.create_task(run_training_pipeline())
-    return {"status": "success", "message": "模型训练任务已在后台启动"}
+    if config is None:
+        config = TrainingConfig()
+
+    # 记录训练配置
+    if config.use_deep_learning:
+        logging.info(f"启动深度学习训练 - 模型类型: {config.dl_model_type}")
+        if config.dl_config:
+            logging.info(f"深度学习配置: {config.dl_config}")
+    else:
+        logging.info("启动机器学习训练")
+
+    asyncio.create_task(run_training_pipeline(
+        use_deep_learning=config.use_deep_learning,
+        dl_model_type=config.dl_model_type,
+        dl_config=config.dl_config
+    ))
+
+    training_type = "深度学习" if config.use_deep_learning else "机器学习"
+    return {"status": "success", "message": f"{training_type}模型训练任务已在后台启动"}
 
 
 # --- 数据上传和验证API ---

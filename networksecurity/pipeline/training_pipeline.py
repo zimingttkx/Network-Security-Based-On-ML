@@ -14,6 +14,14 @@ from networksecurity.components.data_validation import DataValidation
 from networksecurity.components.data_transformation import DataTransformation
 from networksecurity.components.model_trainer import ModelTrainer
 
+# 导入深度学习训练器
+try:
+    from networksecurity.components.dl_model_trainer import DLModelTrainer
+    DL_AVAILABLE = True
+except ImportError:
+    DL_AVAILABLE = False
+    logging.warning("深度学习模块不可用")
+
 from networksecurity.entity.config_entity import (
     TrainingPipelineConfig, DataIngestionConfig,
     DataValidationConfig, DataTransformationConfig, ModelTrainerConfig
@@ -26,10 +34,17 @@ from networksecurity.entity.artifact_entity import (
 
 
 class TrainingPipeline:
-    def __init__(self):
-        # --- 【修复 1】 ---
-        # 修正了无限递归的错误，现在正确地实例化了配置类 TrainingPipelineConfig
+    def __init__(self, use_deep_learning=False, dl_model_type='dnn', dl_config=None):
+        """
+        初始化训练管道
+        :param use_deep_learning: 是否使用深度学习
+        :param dl_model_type: 深度学习模型类型 ('dnn', 'cnn', 'lstm')
+        :param dl_config: 深度学习模型配置
+        """
         self.training_pipeline_config = TrainingPipelineConfig()
+        self.use_deep_learning = use_deep_learning
+        self.dl_model_type = dl_model_type
+        self.dl_config = dl_config
 
     def start_data_ingestion(self) -> DataIngestionArtifact:
         """
@@ -94,14 +109,33 @@ class TrainingPipeline:
         :return: 返回模型训练的组件
         """
         try:
-            # --- 【修复 2】 ---
-            # 修正了类型混淆的错误，现在正确地创建 ModelTrainerConfig 和 ModelTrainer 实例
-            logging.info("开始进行模型训练")
             model_trainer_config = ModelTrainerConfig(training_pipeline_config=self.training_pipeline_config)
-            model_trainer = ModelTrainer(model_trainer_config=model_trainer_config,
-                                         data_transformation_artifact=data_transformation_artifact)
-            model_trainer_artifact = model_trainer.initiate_model_trainer()
-            logging.info(f"模型训练完成, 生成的 Model_trainer_artifact: {model_trainer_artifact}")
+
+            # 根据配置选择使用机器学习或深度学习
+            if self.use_deep_learning:
+                if not DL_AVAILABLE:
+                    logging.error("深度学习功能不可用，请安装TensorFlow")
+                    raise ImportError("深度学习功能不可用，请先安装: pip install tensorflow keras")
+
+                logging.info(f"开始进行深度学习模型训练 - 模型类型: {self.dl_model_type}")
+                model_trainer = DLModelTrainer(
+                    model_trainer_config=model_trainer_config,
+                    data_transformation_artifact=data_transformation_artifact
+                )
+                model_trainer_artifact = model_trainer.initiate_model_trainer(
+                    model_type=self.dl_model_type,
+                    config=self.dl_config
+                )
+                logging.info(f"深度学习模型训练完成, 生成的 Model_trainer_artifact: {model_trainer_artifact}")
+            else:
+                logging.info("开始进行机器学习模型训练")
+                model_trainer = ModelTrainer(
+                    model_trainer_config=model_trainer_config,
+                    data_transformation_artifact=data_transformation_artifact
+                )
+                model_trainer_artifact = model_trainer.initiate_model_trainer()
+                logging.info(f"机器学习模型训练完成, 生成的 Model_trainer_artifact: {model_trainer_artifact}")
+
             return model_trainer_artifact
 
         except Exception as e:
