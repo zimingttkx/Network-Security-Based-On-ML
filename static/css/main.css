@@ -22,6 +22,10 @@
     box-sizing: border-box;
 }
 
+html {
+    scroll-behavior: smooth;
+}
+
 body {
     font-family: 'Inter', 'Segoe UI', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
     background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
@@ -37,7 +41,7 @@ body {
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-    padding: 1.2rem 0;
+    padding: 1rem 0;
     position: sticky;
     top: 0;
     z-index: 1000;
@@ -46,7 +50,7 @@ body {
 
 .navbar-brand {
     font-weight: 700;
-    font-size: 1.5rem;
+    font-size: 1.3rem;
     background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -57,15 +61,14 @@ body {
 .navbar-nav .nav-link {
     color: rgba(255, 255, 255, 0.7);
     font-weight: 500;
-    margin: 0 1rem;
-    transition: all 0.3s ease;
+    margin: 0 0.5rem;
+    transition: color 0.3s ease;
     position: relative;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
 }
 
 .navbar-nav .nav-link:hover {
     color: var(--primary-color);
-    transform: translateY(-2px);
 }
 
 .navbar-nav .nav-link::after {
@@ -76,7 +79,7 @@ body {
     width: 0;
     height: 2px;
     background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
-    transition: all 0.3s ease;
+    transition: width 0.3s ease;
     transform: translateX(-50%);
 }
 
@@ -88,11 +91,12 @@ body {
 .language-selector {
     border: 1px solid rgba(99, 102, 241, 0.3);
     border-radius: 8px;
-    padding: 0.6rem 1rem;
+    padding: 0.5rem 0.8rem;
     font-weight: 500;
     transition: all 0.3s ease;
     background: rgba(99, 102, 241, 0.1);
     color: rgba(255, 255, 255, 0.8);
+    font-size: 0.9rem;
 }
 
 .language-selector:focus {
@@ -103,14 +107,14 @@ body {
 
 /* Hero区域 */
 .hero {
-    padding: 120px 0;
+    padding: 80px 20px;
     text-align: center;
     color: white;
     background: linear-gradient(180deg, rgba(99, 102, 241, 0.1) 0%, transparent 100%);
 }
 
 .hero h1 {
-    font-size: 4rem;
+    font-size: clamp(2rem, 8vw, 3.5rem);
     font-weight: 800;
     margin-bottom: 1.5rem;
     text-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
@@ -122,8 +126,8 @@ body {
 }
 
 .hero p {
-    font-size: 1.3rem;
-    margin-bottom: 2.5rem;
+    font-size: clamp(1rem, 3vw, 1.3rem);
+    margin-bottom: 2rem;
     opacity: 0.9;
     color: rgba(255, 255, 255, 0.8);
 }
@@ -132,33 +136,33 @@ body {
 .btn-primary {
     background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
     border: none;
-    padding: 14px 36px;
+    padding: 12px 28px;
     font-weight: 600;
     border-radius: 12px;
     transition: all 0.3s ease;
     box-shadow: 0 8px 20px rgba(99, 102, 241, 0.3);
-    font-size: 1rem;
+    font-size: 0.95rem;
 }
 
 .btn-primary:hover {
-    transform: translateY(-3px);
+    transform: translateY(-2px);
     box-shadow: 0 12px 30px rgba(99, 102, 241, 0.4);
 }
 
 .btn-outline-light {
     border: 2px solid rgba(255, 255, 255, 0.5);
     color: white;
-    padding: 14px 36px;
+    padding: 12px 28px;
     font-weight: 600;
     border-radius: 12px;
     transition: all 0.3s ease;
-    font-size: 1rem;
+    font-size: 0.95rem;
 }
 
 .btn-outline-light:hover {
     background: rgba(255, 255, 255, 0.1);
     border-color: white;
-    transform: translateY(-3px);
+    transform: translateY(-2px);
 }
 
 /* 卡片 */
@@ -166,13 +170,13 @@ body {
     border: none;
     border-radius: 16px;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-    transition: all 0.3s ease;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
     overflow: hidden;
     background: white;
 }
 
 .card:hover {
-    transform: translateY(-8px);
+    transform: translateY(-5px);
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15);
 }
 
@@ -180,40 +184,40 @@ body {
     background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
     color: white;
     font-weight: 600;
-    padding: 2rem;
+    padding: 1.5rem;
     border-bottom: none;
 }
 
 .card-body {
-    padding: 2.5rem;
+    padding: 2rem;
 }
 
 /* 特性卡片 */
 .feature-card {
     text-align: center;
-    padding: 2.5rem;
-    margin-bottom: 2rem;
+    padding: 2rem 1.5rem;
+    margin-bottom: 1.5rem;
     background: white;
     border-radius: 16px;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
-    transition: all 0.3s ease;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
 
 .feature-card:hover {
-    transform: translateY(-10px);
+    transform: translateY(-5px);
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.12);
 }
 
 .feature-icon {
-    width: 100px;
-    height: 100px;
+    width: 80px;
+    height: 80px;
     background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
-    border-radius: 24px;
+    border-radius: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin: 0 auto 2rem;
-    font-size: 3rem;
+    margin: 0 auto 1.5rem;
+    font-size: 2.5rem;
     color: white;
     box-shadow: 0 12px 30px rgba(99, 102, 241, 0.3);
 }
@@ -222,12 +226,12 @@ body {
     font-weight: 700;
     margin-bottom: 1rem;
     color: var(--dark);
-    font-size: 1.3rem;
+    font-size: 1.2rem;
 }
 
 .feature-card p {
     color: var(--gray-600);
-    font-size: 1rem;
+    font-size: 0.95rem;
     line-height: 1.6;
 }
 
@@ -236,9 +240,9 @@ body {
 .form-select {
     border: 2px solid var(--gray-200);
     border-radius: 12px;
-    padding: 14px 16px;
+    padding: 12px 14px;
     transition: all 0.3s ease;
-    font-size: 1rem;
+    font-size: 0.95rem;
 }
 
 .form-control:focus,
@@ -252,7 +256,7 @@ body {
 .upload-area {
     border: 3px dashed var(--gray-300);
     border-radius: 16px;
-    padding: 4rem;
+    padding: 3rem 1.5rem;
     text-align: center;
     transition: all 0.3s ease;
     cursor: pointer;
@@ -270,7 +274,7 @@ body {
 }
 
 .upload-icon {
-    font-size: 4rem;
+    font-size: 3rem;
     color: var(--gray-400);
     margin-bottom: 1rem;
 }
@@ -280,7 +284,7 @@ body {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: white;
     border-radius: 16px;
-    padding: 2.5rem;
+    padding: 2rem;
     margin-top: 2rem;
     box-shadow: 0 15px 40px rgba(0, 0, 0, 0.2);
 }
@@ -295,17 +299,17 @@ body {
 
 .result-badge {
     display: inline-block;
-    padding: 0.7rem 2rem;
-    border-radius: 24px;
+    padding: 0.6rem 1.5rem;
+    border-radius: 20px;
     background: rgba(255, 255, 255, 0.2);
     font-weight: 600;
-    font-size: 1.1rem;
+    font-size: 1rem;
 }
 
 /* 进度条 */
 .progress {
-    height: 28px;
-    border-radius: 14px;
+    height: 24px;
+    border-radius: 12px;
     background: var(--gray-200);
     overflow: hidden;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
@@ -326,12 +330,12 @@ body {
     background: var(--gray-900);
     color: #00ff00;
     font-family: 'Monaco', 'Consolas', monospace;
-    padding: 2rem;
+    padding: 1.5rem;
     border-radius: 12px;
-    max-height: 500px;
+    max-height: 400px;
     overflow-y: auto;
-    font-size: 0.95rem;
-    line-height: 1.6;
+    font-size: 0.9rem;
+    line-height: 1.5;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
 }
 
@@ -353,10 +357,10 @@ body {
 
 /* 徽章 */
 .badge-custom {
-    padding: 0.6rem 1.2rem;
-    border-radius: 10px;
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
     font-weight: 600;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
 }
 
 .badge-success {
@@ -378,19 +382,19 @@ body {
 .stat-card {
     background: white;
     border-radius: 16px;
-    padding: 2rem;
+    padding: 1.5rem;
     text-align: center;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
-    transition: all 0.3s ease;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
 
 .stat-card:hover {
-    transform: translateY(-5px);
+    transform: translateY(-3px);
     box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
 }
 
 .stat-value {
-    font-size: 3rem;
+    font-size: clamp(1.5rem, 5vw, 2.5rem);
     font-weight: 800;
     background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
     -webkit-background-clip: text;
@@ -401,15 +405,15 @@ body {
 .stat-label {
     color: var(--gray-600);
     font-weight: 500;
-    margin-top: 0.8rem;
-    font-size: 1rem;
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
 }
 
 /* 教程步骤 */
 .tutorial-step {
     position: relative;
-    padding-left: 4rem;
-    margin-bottom: 2.5rem;
+    padding-left: 3.5rem;
+    margin-bottom: 2rem;
 }
 
 .tutorial-step::before {
@@ -417,8 +421,8 @@ body {
     position: absolute;
     left: 0;
     top: 0;
-    width: 50px;
-    height: 50px;
+    width: 45px;
+    height: 45px;
     background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
     color: white;
     border-radius: 50%;
@@ -426,44 +430,21 @@ body {
     align-items: center;
     justify-content: center;
     font-weight: 700;
-    font-size: 1.3rem;
+    font-size: 1.1rem;
     box-shadow: 0 8px 20px rgba(99, 102, 241, 0.3);
 }
 
 .tutorial-step h4 {
     font-weight: 700;
     margin-bottom: 0.5rem;
-    font-size: 1.1rem;
+    font-size: 1rem;
 }
 
-/* 响应式 */
-@media (max-width: 768px) {
-    .hero h1 {
-        font-size: 2.5rem;
-    }
-
-    .hero p {
-        font-size: 1.1rem;
-    }
-
-    .navbar-brand {
-        font-size: 1.2rem;
-    }
-
-    .feature-card {
-        padding: 2rem;
-    }
-
-    .stat-value {
-        font-size: 2rem;
-    }
-}
-
-/* 动画 */
-@keyframes fadeIn {
+/* 动画 - 只在初始加载时执行一次 */
+@keyframes fadeInUp {
     from {
         opacity: 0;
-        transform: translateY(20px);
+        transform: translateY(30px);
     }
     to {
         opacity: 1;
@@ -471,63 +452,207 @@ body {
     }
 }
 
-@keyframes slideInLeft {
-    from {
-        opacity: 0;
-        transform: translateX(-30px);
-    }
-    to {
-        opacity: 1;
-        transform: translateX(0);
-    }
-}
-
-@keyframes slideInRight {
-    from {
-        opacity: 0;
-        transform: translateX(30px);
-    }
-    to {
-        opacity: 1;
-        transform: translateX(0);
-    }
-}
-
-@keyframes glow {
-    0%, 100% {
-        box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
-    }
-    50% {
-        box-shadow: 0 0 40px rgba(99, 102, 241, 0.6);
-    }
-}
-
 .fade-in {
-    animation: fadeIn 0.6s ease-out;
+    animation: fadeInUp 0.6s ease-out forwards;
 }
 
-.slide-in-left {
-    animation: slideInLeft 0.6s ease-out;
+/* 响应式设计 */
+@media (max-width: 1200px) {
+    .container {
+        max-width: 1140px;
+    }
+
+    .hero {
+        padding: 60px 20px;
+    }
+
+    .feature-card {
+        padding: 1.5rem 1rem;
+    }
 }
 
-.slide-in-right {
-    animation: slideInRight 0.6s ease-out;
+@media (max-width: 768px) {
+    .navbar {
+        padding: 0.8rem 0;
+    }
+
+    .navbar-brand {
+        font-size: 1.1rem;
+    }
+
+    .navbar-nav .nav-link {
+        margin: 0.3rem 0;
+        font-size: 0.85rem;
+    }
+
+    .hero {
+        padding: 50px 15px;
+    }
+
+    .hero h1 {
+        font-size: 2rem;
+    }
+
+    .hero p {
+        font-size: 1rem;
+    }
+
+    .btn-primary,
+    .btn-outline-light {
+        padding: 10px 20px;
+        font-size: 0.9rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .feature-card {
+        padding: 1.5rem 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .feature-icon {
+        width: 70px;
+        height: 70px;
+        font-size: 2rem;
+    }
+
+    .feature-card h3 {
+        font-size: 1.1rem;
+    }
+
+    .feature-card p {
+        font-size: 0.9rem;
+    }
+
+    .stat-card {
+        padding: 1.2rem;
+        margin-bottom: 1rem;
+    }
+
+    .stat-value {
+        font-size: 1.8rem;
+    }
+
+    .stat-label {
+        font-size: 0.85rem;
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    .upload-area {
+        padding: 2rem 1rem;
+    }
+
+    .tutorial-step {
+        padding-left: 3rem;
+    }
+
+    .tutorial-step::before {
+        width: 40px;
+        height: 40px;
+        font-size: 1rem;
+    }
 }
 
-/* Loading spinner */
-.spinner {
-    border: 4px solid rgba(255, 255, 255, 0.3);
-    border-top: 4px solid white;
-    border-radius: 50%;
-    width: 50px;
-    height: 50px;
-    animation: spin 1s linear infinite;
-    margin: 0 auto;
-}
+@media (max-width: 576px) {
+    .navbar-brand {
+        font-size: 1rem;
+    }
 
-@keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
+    .navbar-nav .nav-link {
+        margin: 0.2rem 0;
+        font-size: 0.8rem;
+    }
+
+    .language-selector {
+        padding: 0.4rem 0.6rem;
+        font-size: 0.8rem;
+    }
+
+    .hero {
+        padding: 40px 12px;
+    }
+
+    .hero h1 {
+        font-size: 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .hero p {
+        font-size: 0.9rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .btn-primary,
+    .btn-outline-light {
+        padding: 8px 16px;
+        font-size: 0.85rem;
+        display: block;
+        width: 100%;
+        margin-bottom: 0.5rem;
+    }
+
+    .feature-card {
+        padding: 1.2rem 0.8rem;
+        margin-bottom: 0.8rem;
+    }
+
+    .feature-icon {
+        width: 60px;
+        height: 60px;
+        font-size: 1.8rem;
+        margin-bottom: 1rem;
+    }
+
+    .feature-card h3 {
+        font-size: 1rem;
+        margin-bottom: 0.8rem;
+    }
+
+    .feature-card p {
+        font-size: 0.85rem;
+    }
+
+    .stat-card {
+        padding: 1rem;
+        margin-bottom: 0.8rem;
+    }
+
+    .stat-value {
+        font-size: 1.5rem;
+    }
+
+    .stat-label {
+        font-size: 0.8rem;
+        margin-top: 0.3rem;
+    }
+
+    .card-body {
+        padding: 1.2rem;
+    }
+
+    .upload-area {
+        padding: 1.5rem 0.8rem;
+    }
+
+    .upload-icon {
+        font-size: 2.5rem;
+    }
+
+    .tutorial-step {
+        padding-left: 2.5rem;
+    }
+
+    .tutorial-step::before {
+        width: 35px;
+        height: 35px;
+        font-size: 0.9rem;
+    }
+
+    .tutorial-step h4 {
+        font-size: 0.95rem;
+    }
 }
 
 /* 滚动条美化 */
@@ -549,25 +674,26 @@ body {
     background: var(--primary-dark);
 }
 
-/* 容器宽度优化 */
+/* 容器优化 */
 .container {
-    max-width: 1400px;
-    padding: 0 2rem;
+    max-width: 1200px;
+    padding: 0 1.5rem;
 }
 
 /* 间距优化 */
 .py-5 {
-    padding-top: 4rem !important;
-    padding-bottom: 4rem !important;
+    padding-top: 3rem !important;
+    padding-bottom: 3rem !important;
 }
 
 .mb-4 {
-    margin-bottom: 2rem !important;
+    margin-bottom: 1.5rem !important;
 }
 
-/* 渐变背景区域 */
-.gradient-section {
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(14, 165, 233, 0.1) 100%);
-    border-radius: 20px;
-    padding: 3rem;
+.bg-light {
+    background-color: #f8fafc !important;
+}
+
+.bg-dark {
+    background-color: #0f172a !important;
 }
