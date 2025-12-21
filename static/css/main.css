@@ -380,12 +380,13 @@ body {
 
 /* 统计卡片 */
 .stat-card {
-    background: white;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.98));
     border-radius: 16px;
     padding: 1.5rem;
     text-align: center;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
     transition: transform 0.3s ease, box-shadow 0.3s ease;
+    border: 1px solid rgba(99, 102, 241, 0.1);
 }
 
 .stat-card:hover {
@@ -400,6 +401,7 @@ body {
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+    margin-bottom: 0.5rem;
 }
 
 .stat-label {
@@ -407,6 +409,25 @@ body {
     font-weight: 500;
     margin-top: 0.5rem;
     font-size: 0.9rem;
+}
+
+/* 统计区域 */
+.stats-section {
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.5) 0%, rgba(30, 41, 59, 0.5) 50%, rgba(15, 23, 42, 0.5) 100%);
+    border-top: 1px solid rgba(99, 102, 241, 0.2);
+    border-bottom: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.stats-title {
+    color: white;
+    font-weight: 700;
+    font-size: clamp(1.5rem, 4vw, 2rem);
+    margin-bottom: 2rem !important;
+}
+
+.stats-title i {
+    color: var(--primary-color);
+    margin-right: 0.5rem;
 }
 
 /* 教程步骤 */
