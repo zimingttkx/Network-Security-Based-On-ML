@@ -52,7 +52,7 @@ pip install -r requirements.txt
 ### 4. 启动服务
 
 ```bash
-python test_app.py
+python app.py
 ```
 
 ### 5. 访问应用
@@ -119,12 +119,16 @@ Network-Security-Based-On-ML/
 │   ├── pipeline/            # 训练和预测流程
 │   ├── config/              # 配置管理
 │   └── logging/             # 日志记录
-├── Templates/               # HTML模板
+├── templates/               # HTML模板
 ├── static/                  # 静态资源（CSS、JS）
-├── Network_Data/            # 训练数据
-├── test_app.py             # 主程序入口
-├── requirements.txt        # 依赖包列表
-└── README.md              # 项目说明
+├── data/                    # 训练数据
+├── models/                  # 训练好的模型
+├── artifacts/               # 训练产物
+├── docs/                    # 项目文档
+├── tests/                   # 测试文件
+├── app.py                   # 主程序入口
+├── requirements.txt         # 依赖包列表
+└── README.md                # 项目说明
 ```
 
 ## 数据特征说明
@@ -171,7 +175,7 @@ Network-Security-Based-On-ML/
 
 ### 如何更换训练数据？
 
-将你的CSV文件放到 `Network_Data/` 目录下，或通过Web界面上传。
+将你的CSV文件放到 `data/` 目录下，或通过Web界面上传。
 
 ### 训练需要多长时间？
 
@@ -193,7 +197,7 @@ Network-Security-Based-On-ML/
 
 1. **先运行起来**：按照"快速开始"步骤启动项目
 2. **体验功能**：使用Web界面进行预测和训练
-3. **阅读代码**：从 `test_app.py` 开始，了解项目入口
+3. **阅读代码**：从 `app.py` 开始，了解项目入口
 4. **理解流程**：查看 `networksecurity/pipeline/` 了解训练流程
 5. **修改尝试**：尝试修改参数，观察效果变化
 
