@@ -3,276 +3,215 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="predict.title">威胁预测</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <title>威胁检测 - CyberShield</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link href="/static/css/main.css" rel="stylesheet">
+    <style>
+        .page-wrapper { padding-top: 64px; min-height: 100vh; }
+        
+        .page-hero {
+            padding: 60px 24px 40px;
+            text-align: center;
+            position: relative;
+        }
+        
+        .page-hero::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: radial-gradient(ellipse at center top, rgba(99, 102, 241, 0.12) 0%, transparent 60%);
+            pointer-events: none;
+        }
+        
+        .page-hero h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+        
+        .page-hero p { color: var(--text-secondary); font-size: 1.1rem; }
+        
+        .main-content {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 0 24px 80px;
+        }
+        
+        .input-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+        
+        .input-group label {
+            display: block;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+            font-weight: 500;
+        }
+        
+        .input-group input {
+            width: 100%;
+            padding: 12px 14px;
+            background: var(--bg-glass);
+            border: 1px solid var(--border-primary);
+            border-radius: 10px;
+            color: var(--text-primary);
+            font-size: 0.95rem;
+            transition: all 0.2s;
+        }
+        
+        .input-group input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+        
+        .action-bar {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 40px;
+        }
+        
+        .result-section {
+            display: none;
+            animation: fadeInUp 0.5s ease-out;
+        }
+        
+        .result-section.show { display: block; }
+        
+        .result-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-primary);
+            border-radius: 20px;
+            padding: 48px;
+            text-align: center;
+        }
+        
+        .result-icon {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 24px;
+            font-size: 3.5rem;
+        }
+        
+        .result-safe .result-icon {
+            background: rgba(34, 197, 94, 0.1);
+            color: #22c55e;
+            border: 2px solid rgba(34, 197, 94, 0.3);
+            box-shadow: 0 0 40px rgba(34, 197, 94, 0.2);
+        }
+        
+        .result-danger .result-icon {
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+            border: 2px solid rgba(239, 68, 68, 0.3);
+            box-shadow: 0 0 40px rgba(239, 68, 68, 0.2);
+        }
+        
+        .result-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+        
+        .result-safe .result-title { color: #22c55e; }
+        .result-danger .result-title { color: #ef4444; }
+        
+        .result-desc { color: var(--text-secondary); font-size: 1rem; }
+        
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
 </head>
 <body>
-    <!-- 导航栏 -->
-    <nav class="navbar navbar-expand-lg">
+    <div class="bg-glow" style="position:fixed;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(ellipse at 20% 20%, rgba(99,102,241,0.15) 0%, transparent 50%),radial-gradient(ellipse at 80% 80%, rgba(168,85,247,0.1) 0%, transparent 50%);pointer-events:none;z-index:-1;"></div>
+    
+    <nav class="navbar">
         <div class="container">
             <a class="navbar-brand" href="/">
-                <i class="fas fa-shield-alt"></i>
-                <span data-i18n="nav.home">网络安全检测</span>
+                <div class="logo-icon"><i class="fas fa-shield-halved"></i></div>
+                <span>CyberShield</span>
             </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/">
-                            <i class="fas fa-home"></i>
-                            <span data-i18n="nav.home">首页</span>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link active" href="/predict">
-                            <i class="fas fa-chart-line"></i>
-                            <span data-i18n="nav.predict">威胁预测</span>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/train">
-                            <i class="fas fa-brain"></i>
-                            <span data-i18n="nav.train">模型训练</span>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/tutorial">
-                            <i class="fas fa-book-open"></i>
-                            <span data-i18n="nav.tutorial">使用教程</span>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/docs" target="_blank">
-                            <i class="fas fa-code"></i>
-                            <span data-i18n="nav.api">API文档</span>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <select id="languageSelector" class="language-selector" onchange="setLanguage(this.value)">
-                            <option value="zh-CN">中文</option>
-                            <option value="en-US">English</option>
-                            <option value="ja-JP">日本語</option>
-                        </select>
-                    </li>
-                </ul>
-            </div>
+            <ul class="navbar-nav">
+                <li><a class="nav-link" href="/">首页</a></li>
+                <li><a class="nav-link" href="/dashboard">仪表盘</a></li>
+                <li><a class="nav-link" href="/model-select">模型选择</a></li>
+                <li><a class="nav-link" href="/benchmark">拦截测试</a></li>
+                <li><a class="nav-link active" href="/predict">威胁检测</a></li>
+                <li><a class="nav-link" href="/train">模型训练</a></li>
+            </ul>
         </div>
     </nav>
 
-    <!-- 主内容区 -->
-    <section class="py-5" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: calc(100vh - 200px);">
-        <div class="container">
-            <div class="text-center text-white mb-5">
-                <h1 class="display-4 fw-bold">
-                    <i class="fas fa-search-plus"></i>
-                    <span data-i18n="predict.title">威胁预测</span>
-                </h1>
-                <p class="lead" data-i18n="predict.upload.desc">输入网络流量特征数据，系统将实时分析威胁等级</p>
-            </div>
-
-            <!-- 预测表单 -->
-            <div class="row">
-                <div class="col-lg-10 offset-lg-1">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="mb-0">
-                                <i class="fas fa-keyboard"></i>
-                                <span data-i18n="predict.json.title">手动输入数据</span>
-                            </h3>
-                            <p class="mb-0 mt-2 opacity-75" data-i18n="predict.json.desc">输入网络流量特征数据（JSON格式）</p>
-                        </div>
-                        <div class="card-body">
-                            <form id="prediction-form">
-                                <!-- 提示信息 -->
-                                <div class="alert alert-info">
-                                    <i class="fas fa-info-circle"></i>
-                                    <strong>提示：</strong>请填写以下网络流量特征值（通常为 -1, 0, 1）。如果不确定，可以使用默认值。
-                                </div>
-
-                                <!-- 快速操作按钮 -->
-                                <div class="mb-4">
-                                    <button type="button" class="btn btn-outline-primary me-2" onclick="fillSafeExample()">
-                                        <i class="fas fa-check-circle"></i> 填充安全示例
-                                    </button>
-                                    <button type="button" class="btn btn-outline-danger me-2" onclick="fillDangerExample()">
-                                        <i class="fas fa-exclamation-triangle"></i> 填充威胁示例
-                                    </button>
-                                    <button type="button" class="btn btn-outline-secondary" onclick="resetForm()">
-                                        <i class="fas fa-redo"></i> 重置
-                                    </button>
-                                </div>
-
-                                <!-- 特征输入网格 -->
-                                <div class="row g-3">
-                                    <div class="col-md-4">
-                                        <label for="having_IP_Address" class="form-label">having_IP_Address</label>
-                                        <input type="number" id="having_IP_Address" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="URL_Length" class="form-label">URL_Length</label>
-                                        <input type="number" id="URL_Length" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Shortining_Service" class="form-label">Shortining_Service</label>
-                                        <input type="number" id="Shortining_Service" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="having_At_Symbol" class="form-label">having_At_Symbol</label>
-                                        <input type="number" id="having_At_Symbol" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="double_slash_redirecting" class="form-label">double_slash_redirecting</label>
-                                        <input type="number" id="double_slash_redirecting" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Prefix_Suffix" class="form-label">Prefix_Suffix</label>
-                                        <input type="number" id="Prefix_Suffix" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="having_Sub_Domain" class="form-label">having_Sub_Domain</label>
-                                        <input type="number" id="having_Sub_Domain" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="SSLfinal_State" class="form-label">SSLfinal_State</label>
-                                        <input type="number" id="SSLfinal_State" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Domain_registeration_length" class="form-label">Domain_registeration_length</label>
-                                        <input type="number" id="Domain_registeration_length" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Favicon" class="form-label">Favicon</label>
-                                        <input type="number" id="Favicon" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="port" class="form-label">port</label>
-                                        <input type="number" id="port" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="HTTPS_token" class="form-label">HTTPS_token</label>
-                                        <input type="number" id="HTTPS_token" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Request_URL" class="form-label">Request_URL</label>
-                                        <input type="number" id="Request_URL" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="URL_of_Anchor" class="form-label">URL_of_Anchor</label>
-                                        <input type="number" id="URL_of_Anchor" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Links_in_tags" class="form-label">Links_in_tags</label>
-                                        <input type="number" id="Links_in_tags" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="SFH" class="form-label">SFH</label>
-                                        <input type="number" id="SFH" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Submitting_to_email" class="form-label">Submitting_to_email</label>
-                                        <input type="number" id="Submitting_to_email" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Abnormal_URL" class="form-label">Abnormal_URL</label>
-                                        <input type="number" id="Abnormal_URL" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Redirect" class="form-label">Redirect</label>
-                                        <input type="number" id="Redirect" class="form-control" value="0" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="on_mouseover" class="form-label">on_mouseover</label>
-                                        <input type="number" id="on_mouseover" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="RightClick" class="form-label">RightClick</label>
-                                        <input type="number" id="RightClick" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="popUpWidnow" class="form-label">popUpWidnow</label>
-                                        <input type="number" id="popUpWidnow" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Iframe" class="form-label">Iframe</label>
-                                        <input type="number" id="Iframe" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="age_of_domain" class="form-label">age_of_domain</label>
-                                        <input type="number" id="age_of_domain" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="DNSRecord" class="form-label">DNSRecord</label>
-                                        <input type="number" id="DNSRecord" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="web_traffic" class="form-label">web_traffic</label>
-                                        <input type="number" id="web_traffic" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Page_Rank" class="form-label">Page_Rank</label>
-                                        <input type="number" id="Page_Rank" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Google_Index" class="form-label">Google_Index</label>
-                                        <input type="number" id="Google_Index" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Links_pointing_to_page" class="form-label">Links_pointing_to_page</label>
-                                        <input type="number" id="Links_pointing_to_page" class="form-control" value="1" step="1" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <label for="Statistical_report" class="form-label">Statistical_report</label>
-                                        <input type="number" id="Statistical_report" class="form-control" value="1" step="1" required>
-                                    </div>
-                                </div>
-
-                                <!-- 提交按钮 -->
-                                <div class="text-center mt-4">
-                                    <button type="submit" class="btn btn-primary btn-lg px-5" id="predictBtn">
-                                        <i class="fas fa-search"></i>
-                                        <span data-i18n="predict.json.submit">立即预测</span>
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
+    <div class="page-wrapper">
+        <div class="page-hero">
+            <h1><i class="fas fa-search"></i> 威胁检测</h1>
+            <p>输入网络流量特征，实时分析潜在威胁</p>
+        </div>
+        
+        <div class="main-content">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h3><i class="fas fa-keyboard"></i> 输入特征数据</h3>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info mb-4">
+                        <i class="fas fa-info-circle"></i>
+                        <span>请填写30个网络流量特征值（通常为 -1, 0, 1）。可使用快捷按钮填充示例数据。</span>
                     </div>
+                    
+                    <form id="predictForm">
+                        <div class="input-grid" id="inputGrid"></div>
+                        
+                        <div class="action-bar">
+                            <button type="button" class="btn btn-secondary" onclick="fillSafe()">
+                                <i class="fas fa-check-circle"></i> 安全示例
+                            </button>
+                            <button type="button" class="btn btn-secondary" onclick="fillDanger()">
+                                <i class="fas fa-exclamation-triangle"></i> 威胁示例
+                            </button>
+                            <button type="button" class="btn btn-secondary" onclick="resetForm()">
+                                <i class="fas fa-redo"></i> 重置
+                            </button>
+                            <button type="submit" class="btn btn-primary" id="submitBtn">
+                                <i class="fas fa-search"></i> 开始检测
+                            </button>
+                        </div>
+                    </form>
                 </div>
             </div>
-
-            <!-- 结果展示 -->
-            <div class="row mt-4" id="resultSection" style="display: none;">
-                <div class="col-lg-10 offset-lg-1">
-                    <div class="card" id="resultCard">
-                        <div class="card-body text-center py-5">
-                            <h2 class="mb-4">
-                                <i class="fas fa-chart-pie"></i>
-                                <span data-i18n="predict.result.title">预测结果</span>
-                            </h2>
-                            <div id="resultContent">
-                                <!-- 动态填充结果 -->
-                            </div>
-                        </div>
-                    </div>
+            
+            <div class="result-section" id="resultSection">
+                <div class="result-card" id="resultCard">
+                    <div class="result-icon"><i id="resultIcon"></i></div>
+                    <h2 class="result-title" id="resultTitle"></h2>
+                    <p class="result-desc" id="resultDesc"></p>
                 </div>
             </div>
         </div>
-    </section>
+    </div>
 
-    <!-- Footer -->
-    <footer class="py-4 bg-dark text-white text-center">
+    <footer>
         <div class="container">
-            <p class="mb-0">&copy; 2025 网络安全威胁检测系统. All rights reserved.</p>
+            <p>&copy; 2025 CyberShield</p>
         </div>
     </footer>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/i18n.js"></script>
     <script>
-        const featureNames = [
+        const features = [
             'having_IP_Address', 'URL_Length', 'Shortining_Service', 'having_At_Symbol',
             'double_slash_redirecting', 'Prefix_Suffix', 'having_Sub_Domain', 'SSLfinal_State',
             'Domain_registeration_length', 'Favicon', 'port', 'HTTPS_token', 'Request_URL',
@@ -282,180 +221,92 @@
             'Statistical_report'
         ];
 
-        // 填充安全示例 (来自真实数据集中 Result=-1 的样本)
-        function fillSafeExample() {
-            const safeData = {
-                'having_IP_Address': -1,
-                'URL_Length': 1,
-                'Shortining_Service': 1,
-                'having_At_Symbol': 1,
-                'double_slash_redirecting': -1,
-                'Prefix_Suffix': -1,
-                'having_Sub_Domain': -1,
-                'SSLfinal_State': -1,
-                'Domain_registeration_length': -1,
-                'Favicon': 1,
-                'port': 1,
-                'HTTPS_token': -1,
-                'Request_URL': 1,
-                'URL_of_Anchor': -1,
-                'Links_in_tags': 1,
-                'SFH': -1,
-                'Submitting_to_email': -1,
-                'Abnormal_URL': -1,
-                'Redirect': 0,
-                'on_mouseover': 1,
-                'RightClick': 1,
-                'popUpWidnow': 1,
-                'Iframe': 1,
-                'age_of_domain': -1,
-                'DNSRecord': -1,
-                'web_traffic': -1,
-                'Page_Rank': -1,
-                'Google_Index': 1,
-                'Links_pointing_to_page': 1,
-                'Statistical_report': -1
-            };
-            for (const [name, value] of Object.entries(safeData)) {
-                document.getElementById(name).value = value;
-            }
+        const safeData = {
+            'having_IP_Address': -1, 'URL_Length': 1, 'Shortining_Service': 1, 'having_At_Symbol': 1,
+            'double_slash_redirecting': -1, 'Prefix_Suffix': -1, 'having_Sub_Domain': -1, 'SSLfinal_State': -1,
+            'Domain_registeration_length': -1, 'Favicon': 1, 'port': 1, 'HTTPS_token': -1, 'Request_URL': 1,
+            'URL_of_Anchor': -1, 'Links_in_tags': 1, 'SFH': -1, 'Submitting_to_email': -1, 'Abnormal_URL': -1,
+            'Redirect': 0, 'on_mouseover': 1, 'RightClick': 1, 'popUpWidnow': 1, 'Iframe': 1, 'age_of_domain': -1,
+            'DNSRecord': -1, 'web_traffic': -1, 'Page_Rank': -1, 'Google_Index': 1, 'Links_pointing_to_page': 1,
+            'Statistical_report': -1
+        };
+
+        const dangerData = {
+            'having_IP_Address': 1, 'URL_Length': 0, 'Shortining_Service': -1, 'having_At_Symbol': 1,
+            'double_slash_redirecting': 1, 'Prefix_Suffix': -1, 'having_Sub_Domain': 1, 'SSLfinal_State': 1,
+            'Domain_registeration_length': -1, 'Favicon': 1, 'port': 1, 'HTTPS_token': 1, 'Request_URL': 1,
+            'URL_of_Anchor': 0, 'Links_in_tags': 0, 'SFH': -1, 'Submitting_to_email': 1, 'Abnormal_URL': 1,
+            'Redirect': 0, 'on_mouseover': -1, 'RightClick': 1, 'popUpWidnow': -1, 'Iframe': 1, 'age_of_domain': -1,
+            'DNSRecord': -1, 'web_traffic': 0, 'Page_Rank': -1, 'Google_Index': 1, 'Links_pointing_to_page': 1,
+            'Statistical_report': 1
+        };
+
+        // 生成输入框
+        const grid = document.getElementById('inputGrid');
+        features.forEach(f => {
+            grid.innerHTML += `
+                <div class="input-group">
+                    <label>${f}</label>
+                    <input type="number" id="${f}" value="1" step="1" required>
+                </div>
+            `;
+        });
+
+        function fillSafe() {
+            Object.entries(safeData).forEach(([k, v]) => document.getElementById(k).value = v);
         }
 
-        // 填充威胁示例 (来自真实数据集中 Result=1 的样本)
-        function fillDangerExample() {
-            const dangerData = {
-                'having_IP_Address': 1,
-                'URL_Length': 0,
-                'Shortining_Service': -1,
-                'having_At_Symbol': 1,
-                'double_slash_redirecting': 1,
-                'Prefix_Suffix': -1,
-                'having_Sub_Domain': 1,
-                'SSLfinal_State': 1,
-                'Domain_registeration_length': -1,
-                'Favicon': 1,
-                'port': 1,
-                'HTTPS_token': 1,
-                'Request_URL': 1,
-                'URL_of_Anchor': 0,
-                'Links_in_tags': 0,
-                'SFH': -1,
-                'Submitting_to_email': 1,
-                'Abnormal_URL': 1,
-                'Redirect': 0,
-                'on_mouseover': -1,
-                'RightClick': 1,
-                'popUpWidnow': -1,
-                'Iframe': 1,
-                'age_of_domain': -1,
-                'DNSRecord': -1,
-                'web_traffic': 0,
-                'Page_Rank': -1,
-                'Google_Index': 1,
-                'Links_pointing_to_page': 1,
-                'Statistical_report': 1
-            };
-            for (const [name, value] of Object.entries(dangerData)) {
-                document.getElementById(name).value = value;
-            }
+        function fillDanger() {
+            Object.entries(dangerData).forEach(([k, v]) => document.getElementById(k).value = v);
         }
 
-        // 重置表单
         function resetForm() {
-            document.getElementById('prediction-form').reset();
-            document.getElementById('resultSection').style.display = 'none';
+            features.forEach(f => document.getElementById(f).value = 1);
+            document.getElementById('resultSection').classList.remove('show');
         }
 
-        // 表单提交
-        document.getElementById('prediction-form').addEventListener('submit', async (e) => {
+        document.getElementById('predictForm').addEventListener('submit', async (e) => {
             e.preventDefault();
+            const btn = document.getElementById('submitBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 分析中...';
 
-            const predictBtn = document.getElementById('predictBtn');
-            const originalText = predictBtn.innerHTML;
-
-            // 显示加载状态
-            predictBtn.disabled = true;
-            predictBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>分析中...';
-
-            // 收集数据
-            const inputData = {};
-            featureNames.forEach(name => {
-                inputData[name] = parseInt(document.getElementById(name).value, 10);
-            });
+            const data = {};
+            features.forEach(f => data[f] = parseInt(document.getElementById(f).value));
 
             try {
-                const response = await fetch('/predict_live', {
+                const res = await fetch('/predict_live', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(inputData)
+                    body: JSON.stringify(data)
                 });
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.message || '服务器响应错误');
-                }
-
-                const result = await response.json();
-                displayResult(result);
-
-            } catch (error) {
-                displayError(error.message);
+                const result = await res.json();
+                showResult(result);
+            } catch (err) {
+                alert('检测失败: ' + err.message);
             } finally {
-                predictBtn.disabled = false;
-                predictBtn.innerHTML = originalText;
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-search"></i> 开始检测';
             }
         });
 
-        // 显示结果
-        function displayResult(result) {
-            const resultSection = document.getElementById('resultSection');
-            const resultCard = document.getElementById('resultCard');
-            const resultContent = document.getElementById('resultContent');
+        function showResult(result) {
+            const section = document.getElementById('resultSection');
+            const card = document.getElementById('resultCard');
+            const icon = document.getElementById('resultIcon');
+            const title = document.getElementById('resultTitle');
+            const desc = document.getElementById('resultDesc');
 
             const isSafe = result.raw_prediction === 0;
-            const resultClass = isSafe ? 'result-safe' : 'result-danger';
-            const icon = isSafe ? 'fa-check-circle' : 'fa-exclamation-triangle';
-            const color = isSafe ? '#10b981' : '#ef4444';
+            card.className = 'result-card ' + (isSafe ? 'result-safe' : 'result-danger');
+            icon.className = isSafe ? 'fas fa-check-circle' : 'fas fa-exclamation-triangle';
+            title.textContent = result.prediction;
+            desc.textContent = isSafe 
+                ? '该网络流量未检测到威胁特征，判定为安全。' 
+                : '检测到异常特征，建议进一步审查该流量来源！';
 
-            resultContent.innerHTML = `
-                <div style="font-size: 5rem; color: ${color}; margin-bottom: 1rem;">
-                    <i class="fas ${icon}"></i>
-                </div>
-                <h3 style="color: ${color}; font-weight: bold; font-size: 2.5rem; margin-bottom: 1rem;">
-                    ${result.prediction}
-                </h3>
-                <p class="text-muted mb-4">
-                    <strong>预测值:</strong> ${result.raw_prediction}
-                </p>
-                <div class="alert ${isSafe ? 'alert-success' : 'alert-danger'} d-inline-block">
-                    <i class="fas fa-info-circle"></i>
-                    ${isSafe ? '该网络流量未检测到威胁特征，判定为安全。' : '检测到异常特征，建议进一步审查该流量来源！'}
-                </div>
-            `;
-
-            resultCard.classList.remove('result-safe', 'result-danger');
-            resultCard.classList.add(resultClass);
-            resultSection.style.display = 'block';
-
-            // 滚动到结果区域
-            resultSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-
-        // 显示错误
-        function displayError(message) {
-            const resultSection = document.getElementById('resultSection');
-            const resultContent = document.getElementById('resultContent');
-
-            resultContent.innerHTML = `
-                <div style="font-size: 4rem; color: #ef4444; margin-bottom: 1rem;">
-                    <i class="fas fa-times-circle"></i>
-                </div>
-                <h3 style="color: #ef4444;">预测失败</h3>
-                <p class="text-muted">${message}</p>
-            `;
-
-            resultSection.style.display = 'block';
-            resultSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            section.classList.add('show');
+            section.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
     </script>
 </body>
