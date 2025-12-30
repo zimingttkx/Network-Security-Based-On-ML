@@ -3,292 +3,785 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>模型训练 - CyberShield</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <title data-i18n="train.title">模型训练</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link href="/static/css/main.css" rel="stylesheet">
-    <style>
-        .page-wrapper { padding-top: 64px; min-height: 100vh; }
-        .page-hero { padding: 60px 24px 40px; text-align: center; position: relative; }
-        .page-hero::before { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(ellipse at center top, rgba(99, 102, 241, 0.12) 0%, transparent 60%); pointer-events: none; }
-        .page-hero h1 { font-size: 2.5rem; font-weight: 700; margin-bottom: 12px; }
-        .page-hero p { color: var(--text-secondary); font-size: 1.1rem; }
-        
-        .main-content { max-width: 1400px; margin: 0 auto; padding: 0 24px 80px; }
-        .grid-layout { display: grid; grid-template-columns: 380px 1fr; gap: 24px; }
-        
-        @media (max-width: 1024px) { .grid-layout { grid-template-columns: 1fr; } }
-        
-        .sidebar { display: flex; flex-direction: column; gap: 20px; }
-        
-        .config-card { background: var(--bg-card); border: 1px solid var(--border-primary); border-radius: 16px; overflow: hidden; }
-        .config-header { padding: 16px 20px; border-bottom: 1px solid var(--border-secondary); background: rgba(255,255,255,0.02); }
-        .config-header h3 { font-size: 0.95rem; font-weight: 600; display: flex; align-items: center; gap: 10px; }
-        .config-header h3 i { color: var(--accent-primary); }
-        .config-body { padding: 20px; }
-        
-        .form-group { margin-bottom: 16px; }
-        .form-group:last-child { margin-bottom: 0; }
-        .form-group label { display: block; font-size: 0.85rem; font-weight: 500; color: var(--text-primary); margin-bottom: 8px; }
-        .form-group select, .form-group input { width: 100%; padding: 10px 14px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-primary); border-radius: 8px; color: var(--text-primary); font-size: 0.9rem; }
-        .form-group select:focus, .form-group input:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
-        .form-group small { display: block; margin-top: 6px; font-size: 0.8rem; color: var(--text-muted); }
-        
-        .train-btn { width: 100%; padding: 14px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; border: none; border-radius: 10px; font-size: 1rem; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; transition: all 0.25s; }
-        .train-btn:hover { box-shadow: 0 0 30px rgba(99,102,241,0.4); transform: translateY(-2px); }
-        .train-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
-        
-        .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 500; }
-        .status-waiting { background: rgba(113,113,122,0.2); color: #a1a1aa; }
-        .status-running { background: rgba(59,130,246,0.2); color: #3b82f6; }
-        .status-success { background: rgba(34,197,94,0.2); color: #22c55e; }
-        .status-error { background: rgba(239,68,68,0.2); color: #ef4444; }
-        
-        .metrics-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 16px; }
-        .metric-item { background: rgba(255,255,255,0.02); border: 1px solid var(--border-secondary); border-radius: 10px; padding: 14px; }
-        .metric-label { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; }
-        .metric-value { font-size: 1.25rem; font-weight: 700; color: var(--accent-primary); }
-        
-        .terminal-card { background: var(--bg-card); border: 1px solid var(--border-primary); border-radius: 16px; overflow: hidden; height: 100%; display: flex; flex-direction: column; }
-        .terminal-header { padding: 16px 20px; border-bottom: 1px solid var(--border-secondary); background: rgba(255,255,255,0.02); display: flex; align-items: center; justify-content: space-between; }
-        .terminal-header h3 { font-size: 0.95rem; font-weight: 600; display: flex; align-items: center; gap: 10px; }
-        .terminal-header h3 i { color: var(--success); }
-        
-        .progress-section { padding: 16px 20px; border-bottom: 1px solid var(--border-secondary); }
-        .progress-info { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 0.85rem; }
-        .progress-bar-wrap { height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
-        .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #6366f1, #a855f7); border-radius: 3px; transition: width 0.3s; width: 0%; }
-        
-        .terminal-body { flex: 1; background: #0a0a0c; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; line-height: 1.7; padding: 16px; overflow-y: auto; min-height: 500px; max-height: 600px; }
-        .log-line { padding: 2px 0; color: var(--text-secondary); }
-        .log-line.error { color: #ef4444; }
-        .log-line.success { color: #22c55e; }
-        .log-line.info { color: #3b82f6; }
-        .log-line.warning { color: #f59e0b; }
-        
-        .accordion { border: 1px solid var(--border-secondary); border-radius: 8px; overflow: hidden; margin-top: 12px; }
-        .accordion-btn { width: 100%; padding: 12px 14px; background: rgba(255,255,255,0.02); border: none; color: var(--text-primary); font-size: 0.85rem; text-align: left; cursor: pointer; display: flex; align-items: center; gap: 8px; }
-        .accordion-btn:hover { background: rgba(255,255,255,0.04); }
-        .accordion-content { display: none; padding: 14px; border-top: 1px solid var(--border-secondary); }
-        .accordion-content.show { display: block; }
-    </style>
 </head>
 <body>
-    <div class="bg-glow" style="position:fixed;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(ellipse at 20% 20%, rgba(99,102,241,0.15) 0%, transparent 50%),radial-gradient(ellipse at 80% 80%, rgba(168,85,247,0.1) 0%, transparent 50%);pointer-events:none;z-index:-1;"></div>
-    
-    <nav class="navbar">
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg">
         <div class="container">
-            <a class="navbar-brand" href="/"><div class="logo-icon"><i class="fas fa-shield-halved"></i></div><span>CyberShield</span></a>
-            <ul class="navbar-nav">
-                <li><a class="nav-link" href="/">首页</a></li>
-                <li><a class="nav-link" href="/dashboard">仪表盘</a></li>
-                <li><a class="nav-link" href="/model-select">模型选择</a></li>
-                <li><a class="nav-link" href="/benchmark">拦截测试</a></li>
-                <li><a class="nav-link" href="/predict">威胁检测</a></li>
-                <li><a class="nav-link active" href="/train">模型训练</a></li>
-            </ul>
+            <a class="navbar-brand" href="/">
+                <i class="fas fa-shield-alt"></i>
+                <span data-i18n="nav.home">网络安全检测</span>
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">
+                            <i class="fas fa-home"></i>
+                            <span data-i18n="nav.home">首页</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/dashboard">
+                            <i class="fas fa-chart-pie"></i>
+                            <span data-i18n="nav.dashboard">统计仪表盘</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/train">
+                            <i class="fas fa-brain"></i>
+                            <span data-i18n="nav.train">模型训练</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/tutorial">
+                            <i class="fas fa-book-open"></i>
+                            <span data-i18n="nav.tutorial">使用教程</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/docs" target="_blank">
+                            <i class="fas fa-code"></i>
+                            <span data-i18n="nav.api">API文档</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <select id="languageSelector" class="language-selector" onchange="setLanguage(this.value)">
+                            <option value="zh-CN">中文</option>
+                            <option value="en-US">English</option>
+                            <option value="ja-JP">日本語</option>
+                        </select>
+                    </li>
+                </ul>
+            </div>
         </div>
     </nav>
 
-    <div class="page-wrapper">
-        <div class="page-hero">
-            <h1><i class="fas fa-brain"></i> 模型训练</h1>
-            <p>训练和优化机器学习模型，提升威胁检测能力</p>
-        </div>
-        
-        <div class="main-content">
-            <div class="grid-layout">
-                <div class="sidebar">
-                    <!-- 模型配置 -->
-                    <div class="config-card">
-                        <div class="config-header"><h3><i class="fas fa-cog"></i> 模型配置</h3></div>
-                        <div class="config-body">
-                            <div class="form-group">
-                                <label>训练方式</label>
-                                <select id="modelType">
+    <!-- 主内容区 -->
+    <section class="py-5" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: calc(100vh - 200px);">
+        <div class="container">
+            <div class="text-center text-white mb-5">
+                <h1 class="display-4 fw-bold">
+                    <i class="fas fa-cogs"></i>
+                    <span data-i18n="train.title">模型训练</span>
+                </h1>
+                <p class="lead" data-i18n="train.desc">训练新的机器学习模型以提高检测准确率</p>
+            </div>
+
+            <div class="row">
+                <!-- 训练控制面板 -->
+                <div class="col-lg-4 mb-4">
+                    <!-- 数据源选择 -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h3 class="mb-0">
+                                <i class="fas fa-database"></i>
+                                数据源选择
+                            </h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">选择训练数据</label>
+                                <select id="dataSource" class="form-select">
+                                    <option value="default">使用项目默认数据</option>
+                                    <option value="custom">上传自定义数据</option>
+                                </select>
+                            </div>
+
+                            <!-- 自定义数据上传区 -->
+                            <div id="customDataSection" style="display: none;">
+                                <div class="mb-3">
+                                    <label class="form-label">上传CSV文件</label>
+                                    <input type="file" class="form-control" id="dataFile" accept=".csv">
+                                    <small class="text-muted">支持CSV格式，最大10MB</small>
+                                </div>
+                                <button id="validateBtn" class="btn btn-outline-primary w-100 mb-2">
+                                    <i class="fas fa-check-circle"></i> 验证数据
+                                </button>
+                                <button id="viewRequirementsBtn" class="btn btn-outline-info w-100">
+                                    <i class="fas fa-info-circle"></i> 查看特征要求
+                                </button>
+                            </div>
+
+                            <!-- 验证结果 -->
+                            <div id="validationResult" style="display: none;" class="mt-3"></div>
+                        </div>
+                    </div>
+
+                    <!-- 模型类型选择 -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h3 class="mb-0">
+                                <i class="fas fa-robot"></i>
+                                模型类型选择
+                            </h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">选择训练方式</label>
+                                <select id="modelType" class="form-select">
                                     <option value="ml">机器学习 (ML)</option>
                                     <option value="dl">深度学习 (DL)</option>
                                 </select>
                             </div>
-                            <div id="dlConfig" style="display:none;">
-                                <div class="form-group">
-                                    <label>模型架构</label>
-                                    <select id="dlModelType">
+
+                            <!-- 深度学习配置区 -->
+                            <div id="dlConfigSection" style="display: none;">
+                                <div class="mb-3">
+                                    <label class="form-label fw-bold">深度学习模型</label>
+                                    <select id="dlModelType" class="form-select">
                                         <option value="dnn">深度神经网络 (DNN)</option>
                                         <option value="cnn">卷积神经网络 (CNN)</option>
-                                        <option value="lstm">长短期记忆 (LSTM)</option>
+                                        <option value="lstm">长短期记忆网络 (LSTM)</option>
                                     </select>
+                                    <small class="text-muted">选择适合的深度学习架构</small>
                                 </div>
-                                <div class="accordion">
-                                    <button class="accordion-btn" onclick="toggleAccordion(this)"><i class="fas fa-sliders-h"></i> 高级参数</button>
-                                    <div class="accordion-content">
-                                        <div class="form-group">
-                                            <label>学习率</label>
-                                            <input type="number" id="learningRate" value="0.001" step="0.0001">
+
+                                <div class="accordion" id="dlParamsAccordion">
+                                    <div class="accordion-item">
+                                        <h2 class="accordion-header">
+                                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#basicParams">
+                                                <i class="fas fa-sliders-h me-2"></i>基础参数
+                                            </button>
+                                        </h2>
+                                        <div id="basicParams" class="accordion-collapse collapse" data-bs-parent="#dlParamsAccordion">
+                                            <div class="accordion-body">
+                                                <div class="mb-3">
+                                                    <label class="form-label">学习率</label>
+                                                    <input type="number" id="learningRate" class="form-control" value="0.001" step="0.0001" min="0.0001" max="0.1">
+                                                </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label">批次大小</label>
+                                                    <input type="number" id="batchSize" class="form-control" value="32" min="8" max="256" step="8">
+                                                </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label">训练轮数</label>
+                                                    <input type="number" id="epochs" class="form-control" value="100" min="10" max="500" step="10">
+                                                </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label">优化器</label>
+                                                    <select id="optimizer" class="form-select">
+                                                        <option value="adam">Adam</option>
+                                                        <option value="sgd">SGD</option>
+                                                        <option value="rmsprop">RMSprop</option>
+                                                    </select>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div class="form-group">
-                                            <label>批次大小</label>
-                                            <input type="number" id="batchSize" value="32">
+                                    </div>
+
+                                    <div class="accordion-item">
+                                        <h2 class="accordion-header">
+                                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#advancedParams">
+                                                <i class="fas fa-cog me-2"></i>高级参数
+                                            </button>
+                                        </h2>
+                                        <div id="advancedParams" class="accordion-collapse collapse" data-bs-parent="#dlParamsAccordion">
+                                            <div class="accordion-body">
+                                                <div class="mb-3">
+                                                    <label class="form-label">Dropout率</label>
+                                                    <input type="number" id="dropoutRate" class="form-control" value="0.3" step="0.1" min="0" max="0.8">
+                                                    <small class="text-muted">防止过拟合，推荐0.2-0.5</small>
+                                                </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label">L2正则化</label>
+                                                    <input type="number" id="l2Reg" class="form-control" value="0.001" step="0.0001" min="0" max="0.1">
+                                                </div>
+                                                <div class="mb-3">
+                                                    <label class="form-label">早停耐心值</label>
+                                                    <input type="number" id="patience" class="form-control" value="10" min="5" max="50" step="5">
+                                                    <small class="text-muted">验证损失不改善时等待的轮数</small>
+                                                </div>
+                                                <div class="form-check mb-2">
+                                                    <input class="form-check-input" type="checkbox" id="useBatchNorm" checked>
+                                                    <label class="form-check-label" for="useBatchNorm">
+                                                        使用批归一化 (Batch Normalization)
+                                                    </label>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div class="form-group">
-                                            <label>训练轮数</label>
-                                            <input type="number" id="epochs" value="100">
+                                    </div>
+
+                                    <div class="accordion-item">
+                                        <h2 class="accordion-header">
+                                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#architectureParams">
+                                                <i class="fas fa-project-diagram me-2"></i>网络架构
+                                            </button>
+                                        </h2>
+                                        <div id="architectureParams" class="accordion-collapse collapse" data-bs-parent="#dlParamsAccordion">
+                                            <div class="accordion-body">
+                                                <div id="dnnArchitecture">
+                                                    <label class="form-label">隐藏层配置 (DNN)</label>
+                                                    <input type="text" id="hiddenLayers" class="form-control mb-2" value="128,64,32" placeholder="例如: 128,64,32">
+                                                    <small class="text-muted">用逗号分隔的神经元数量</small>
+                                                </div>
+                                                <div id="cnnArchitecture" style="display: none;">
+                                                    <label class="form-label">卷积层配置 (CNN)</label>
+                                                    <input type="text" id="convFilters" class="form-control mb-2" value="64,32" placeholder="例如: 64,32">
+                                                    <small class="text-muted">卷积核数量</small>
+                                                    <label class="form-label mt-2">全连接层</label>
+                                                    <input type="text" id="denseLayers" class="form-control mb-2" value="64,32" placeholder="例如: 64,32">
+                                                </div>
+                                                <div id="lstmArchitecture" style="display: none;">
+                                                    <label class="form-label">LSTM层配置</label>
+                                                    <input type="text" id="lstmUnits" class="form-control mb-2" value="64,32" placeholder="例如: 64,32">
+                                                    <small class="text-muted">LSTM单元数量</small>
+                                                    <label class="form-label mt-2">全连接层</label>
+                                                    <input type="text" id="lstmDenseLayers" class="form-control mb-2" value="32" placeholder="例如: 32">
+                                                </div>
+                                                <div class="mt-3">
+                                                    <label class="form-label">激活函数</label>
+                                                    <select id="activation" class="form-select">
+                                                        <option value="relu">ReLU</option>
+                                                        <option value="tanh">Tanh</option>
+                                                        <option value="sigmoid">Sigmoid</option>
+                                                        <option value="elu">ELU</option>
+                                                    </select>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
+
+                                <button id="resetDLParams" class="btn btn-outline-secondary btn-sm w-100 mt-3">
+                                    <i class="fas fa-undo"></i> 重置为默认参数
+                                </button>
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- 训练控制 -->
-                    <div class="config-card">
-                        <div class="config-header"><h3><i class="fas fa-play-circle"></i> 训练控制</h3></div>
-                        <div class="config-body">
-                            <button class="train-btn" id="trainBtn" onclick="startTraining()">
-                                <i class="fas fa-rocket"></i> 开始训练
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="mb-0">
+                                <i class="fas fa-play-circle"></i>
+                                <span data-i18n="train.status">训练控制</span>
+                            </h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="alert alert-info">
+                                <i class="fas fa-info-circle"></i>
+                                <strong>提示：</strong>点击按钮启动模型训练流程。训练将自动执行数据摄取、验证、转换和模型优化。
+                            </div>
+                            <button id="train-btn" class="btn btn-primary btn-lg w-100 mb-3">
+                                <i class="fas fa-rocket"></i>
+                                <span data-i18n="train.start">开始训练</span>
                             </button>
-                            <div class="text-center mt-3">
-                                <span class="status-badge status-waiting" id="statusBadge"><i class="fas fa-circle"></i> 等待启动</span>
+                            <div id="statusBadge" class="text-center">
+                                <span class="badge badge-custom bg-secondary">
+                                    <i class="fas fa-circle"></i> 等待启动
+                                </span>
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- 性能指标 -->
-                    <div class="config-card">
-                        <div class="config-header"><h3><i class="fas fa-chart-bar"></i> 性能指标</h3></div>
-                        <div class="config-body">
-                            <div class="metrics-grid">
-                                <div class="metric-item"><div class="metric-label">准确率</div><div class="metric-value" id="accuracy">--</div></div>
-                                <div class="metric-item"><div class="metric-label">精确率</div><div class="metric-value" id="precision">--</div></div>
-                                <div class="metric-item"><div class="metric-label">召回率</div><div class="metric-value" id="recall">--</div></div>
-                                <div class="metric-item"><div class="metric-label">F1分数</div><div class="metric-value" id="f1">--</div></div>
+                    <div class="card mt-4">
+                        <div class="card-header">
+                            <h3 class="mb-0">
+                                <i class="fas fa-chart-bar"></i>
+                                <span data-i18n="train.metrics">性能指标</span>
+                            </h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span data-i18n="train.accuracy">准确率</span>
+                                    <strong id="accuracyValue">--</strong>
+                                </div>
+                                <div class="progress">
+                                    <div id="accuracyBar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span data-i18n="train.precision">精确率</span>
+                                    <strong id="precisionValue">--</strong>
+                                </div>
+                                <div class="progress">
+                                    <div id="precisionBar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span data-i18n="train.recall">召回率</span>
+                                    <strong id="recallValue">--</strong>
+                                </div>
+                                <div class="progress">
+                                    <div id="recallBar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div class="mb-0">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span data-i18n="train.f1">F1分数</span>
+                                    <strong id="f1Value">--</strong>
+                                </div>
+                                <div class="progress">
+                                    <div id="f1Bar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
-                
-                <!-- 终端 -->
-                <div class="terminal-card">
-                    <div class="terminal-header">
-                        <h3><i class="fas fa-terminal"></i> 实时日志</h3>
-                        <span class="status-badge status-waiting" id="connStatus"><i class="fas fa-plug"></i> 未连接</span>
-                    </div>
-                    <div class="progress-section">
-                        <div class="progress-info">
-                            <span>训练进度</span>
-                            <span id="progressText">等待启动...</span>
+
+                <!-- 训练日志 -->
+                <div class="col-lg-8">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="mb-0">
+                                <i class="fas fa-terminal"></i>
+                                <span data-i18n="train.logs">实时训练日志</span>
+                            </h3>
                         </div>
-                        <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progressBar"></div></div>
+                        <div class="card-body p-0">
+                            <!-- 进度指示器 -->
+                            <div class="p-3 bg-light border-bottom">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <span class="fw-bold" data-i18n="train.progress">训练进度</span>
+                                    <span id="progress-text" class="badge bg-info">等待启动...</span>
+                                </div>
+                                <div class="progress" style="height: 20px;">
+                                    <div id="overall-progress" class="progress-bar progress-bar-striped progress-bar-animated"
+                                         role="progressbar" style="width: 0%">0%</div>
+                                </div>
+                            </div>
+
+                            <!-- 日志终端 -->
+                            <div id="terminal" class="log-terminal" style="height: 500px; max-height: 500px;"></div>
+                        </div>
                     </div>
-                    <div class="terminal-body" id="terminal"></div>
                 </div>
             </div>
         </div>
-    </div>
+    </section>
 
-    <footer><div class="container"><p>&copy; 2025 CyberShield</p></div></footer>
+    <!-- Footer -->
+    <footer class="py-4 bg-dark text-white text-center">
+        <div class="container">
+            <p class="mb-0">&copy; 2025 网络安全威胁检测系统. All rights reserved.</p>
+        </div>
+    </footer>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/i18n.js"></script>
     <script>
         let socket = null;
-        const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/train`;
 
-        document.getElementById('modelType').addEventListener('change', function() {
-            document.getElementById('dlConfig').style.display = this.value === 'dl' ? 'block' : 'none';
+        // 动态获取WebSocket URL，支持任何域名和端口
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const WS_URL = `${protocol}//${window.location.host}/ws/train`;
+
+        // 数据源选择处理
+        document.getElementById('dataSource').addEventListener('change', function() {
+            const customSection = document.getElementById('customDataSection');
+            customSection.style.display = this.value === 'custom' ? 'block' : 'none';
         });
 
-        function toggleAccordion(btn) {
-            btn.nextElementSibling.classList.toggle('show');
+        // 模型类型选择处理
+        document.getElementById('modelType').addEventListener('change', function() {
+            const dlConfigSection = document.getElementById('dlConfigSection');
+            dlConfigSection.style.display = this.value === 'dl' ? 'block' : 'none';
+        });
+
+        // 深度学习模型类型选择处理
+        document.getElementById('dlModelType').addEventListener('change', function() {
+            const modelType = this.value;
+
+            // 隐藏所有架构配置
+            document.getElementById('dnnArchitecture').style.display = 'none';
+            document.getElementById('cnnArchitecture').style.display = 'none';
+            document.getElementById('lstmArchitecture').style.display = 'none';
+
+            // 显示对应的架构配置
+            if (modelType === 'dnn') {
+                document.getElementById('dnnArchitecture').style.display = 'block';
+            } else if (modelType === 'cnn') {
+                document.getElementById('cnnArchitecture').style.display = 'block';
+            } else if (modelType === 'lstm') {
+                document.getElementById('lstmArchitecture').style.display = 'block';
+            }
+        });
+
+        // 重置深度学习参数
+        document.getElementById('resetDLParams').addEventListener('click', function() {
+            const modelType = document.getElementById('dlModelType').value;
+
+            // 重置基础参数
+            document.getElementById('learningRate').value = '0.001';
+            document.getElementById('batchSize').value = '32';
+            document.getElementById('epochs').value = '100';
+            document.getElementById('optimizer').value = 'adam';
+
+            // 重置高级参数
+            document.getElementById('dropoutRate').value = '0.3';
+            document.getElementById('l2Reg').value = '0.001';
+            document.getElementById('patience').value = '10';
+            document.getElementById('useBatchNorm').checked = true;
+
+            // 重置架构参数
+            document.getElementById('activation').value = 'relu';
+
+            if (modelType === 'dnn') {
+                document.getElementById('hiddenLayers').value = '128,64,32';
+            } else if (modelType === 'cnn') {
+                document.getElementById('convFilters').value = '64,32';
+                document.getElementById('denseLayers').value = '64,32';
+            } else if (modelType === 'lstm') {
+                document.getElementById('lstmUnits').value = '64,32';
+                document.getElementById('lstmDenseLayers').value = '32';
+            }
+
+            alert('参数已重置为默认值');
+        });
+
+        // 查看特征要求
+        document.getElementById('viewRequirementsBtn').addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/features/requirements');
+                const data = await response.json();
+
+                let html = '<div class="alert alert-info"><h5>需要的30个特征：</h5><ol class="small">';
+                data.features.forEach((f, i) => {
+                    html += `<li><strong>${f.name}</strong>: ${f.description}</li>`;
+                });
+                html += '</ol></div>';
+
+                document.getElementById('validationResult').innerHTML = html;
+                document.getElementById('validationResult').style.display = 'block';
+            } catch (e) {
+                alert('获取特征要求失败: ' + e.message);
+            }
+        });
+
+        // 验证数据
+        document.getElementById('validateBtn').addEventListener('click', async () => {
+            const fileInput = document.getElementById('dataFile');
+            if (!fileInput.files.length) {
+                alert('请先选择文件');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                const response = await fetch('/api/data/validate', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    let html = '<div class="' + (result.is_valid ? 'alert-success' : 'alert-warning') + ' alert">';
+                    html += `<h5>验证结果 - ${result.filename}</h5>`;
+                    html += `<p><strong>数据量:</strong> ${result.rows}行 x ${result.columns}列</p>`;
+
+                    if (result.is_valid) {
+                        html += '<p class="text-success"><i class="fas fa-check-circle"></i> 数据验证通过！可以直接用于训练。</p>';
+                    } else {
+                        const report = result.validation_report;
+                        html += '<p class="text-warning"><i class="fas fa-exclamation-triangle"></i> 数据存在问题：</p><ul>';
+
+                        if (report.missing_features && report.missing_features.length > 0) {
+                            html += `<li>缺少特征: ${report.missing_features.join(', ')}</li>`;
+                        }
+
+                        if (Object.keys(report.missing_values).length > 0) {
+                            html += '<li>存在缺失值的特征:<ul>';
+                            for (const [col, info] of Object.entries(report.missing_values)) {
+                                html += `<li>${col}: ${info.count}个 (${info.percentage}%)</li>`;
+                            }
+                            html += '</ul></li>';
+                        }
+
+                        html += '</ul><h6>建议的解决方案:</h6><ul>';
+                        report.recommendations.forEach(rec => {
+                            html += `<li><strong>${rec.issue}</strong>: ${rec.solution}</li>`;
+                        });
+                        html += '</ul>';
+
+                        // 补全建议
+                        const impSugg = result.imputation_suggestions;
+                        html += `<div class="mt-3"><h6>推荐的补全策略:</h6>`;
+                        html += `<p>数据缺失率: ${impSugg.missing_percentage}%</p>`;
+                        html += '<select class="form-select mb-2" id="imputeStrategy">';
+                        impSugg.suggestions.forEach(s => {
+                            html += `<option value="${s.strategy}">${s.reason} (${s.strategy})</option>`;
+                        });
+                        html += '</select>';
+                        html += '<button class="btn btn-primary btn-sm" onclick="imputeData()">执行数据补全</button>';
+                        html += '</div>';
+                    }
+
+                    html += '</div>';
+                    document.getElementById('validationResult').innerHTML = html;
+                    document.getElementById('validationResult').style.display = 'block';
+                } else {
+                    alert('验证失败: ' + result.message);
+                }
+            } catch (e) {
+                alert('验证过程出错: ' + e.message);
+            }
+        });
+
+        // 执行数据补全
+        async function imputeData() {
+            const fileInput = document.getElementById('dataFile');
+            const strategy = document.getElementById('imputeStrategy').value;
+
+            if (!fileInput.files.length) {
+                alert('请先选择文件');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('strategy', strategy);
+            formData.append('fill_value', '0');
+
+            try {
+                const response = await fetch('/api/data/impute', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    let html = '<div class="alert alert-success">';
+                    html += '<h5><i class="fas fa-check-circle"></i> 数据补全成功！</h5>';
+                    html += `<p>${result.message}</p>`;
+                    html += `<p><strong>补全后数据:</strong> ${result.rows}行 x ${result.columns}列</p>`;
+                    html += '<h6>补全详情:</h6><ul>';
+                    if (result.impute_report.added_features.length > 0) {
+                        html += `<li>新增特征: ${result.impute_report.added_features.join(', ')}</li>`;
+                    }
+                    if (Object.keys(result.impute_report.imputed_values).length > 0) {
+                        html += '<li>补全的特征:<ul>';
+                        for (const [col, info] of Object.entries(result.impute_report.imputed_values)) {
+                            html += `<li>${col}: ${info.missing_count}个缺失值使用${info.strategy}策略补全</li>`;
+                        }
+                        html += '</ul></li>';
+                    }
+                    html += '</ul>';
+                    html += `<a href="/api/data/download/${result.output_file.split('/')[1]}" class="btn btn-success mt-2">`;
+                    html += '<i class="fas fa-download"></i> 下载补全后的数据</a>';
+                    html += '</div>';
+
+                    document.getElementById('validationResult').innerHTML = html;
+                } else {
+                    alert('补全失败: ' + result.message);
+                }
+            } catch (e) {
+                alert('补全过程出错: ' + e.message);
+            }
         }
 
-        function addLog(msg, type = '') {
+        // 添加日志
+        function addLog(message, type = '') {
             const terminal = document.getElementById('terminal');
             const line = document.createElement('div');
-            line.className = 'log-line ' + type;
-            line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            line.className = `log-line ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            line.textContent = `[${timestamp}] ${message}`;
             terminal.appendChild(line);
             terminal.scrollTop = terminal.scrollHeight;
         }
 
-        function updateStatus(text, type) {
-            const badge = document.getElementById('statusBadge');
-            const icons = { waiting: 'circle', running: 'spinner fa-spin', success: 'check-circle', error: 'times-circle' };
-            badge.className = 'status-badge status-' + type;
-            badge.innerHTML = `<i class="fas fa-${icons[type]}"></i> ${text}`;
+        // 更新进度条
+        function updateProgressBar(progressStr) {
+            const [current, total] = progressStr.split('/').map(Number);
+            const percentage = total > 0 ? ((current / total) * 100).toFixed(2) : 0;
+
+            const progressBar = document.getElementById('overall-progress');
+            const progressText = document.getElementById('progress-text');
+
+            progressBar.style.width = percentage + '%';
+            progressBar.textContent = percentage + '%';
+            progressText.textContent = `${current}/${total} 已完成`;
         }
 
-        function updateMetrics(m) {
-            if (m.accuracy) document.getElementById('accuracy').textContent = (m.accuracy * 100).toFixed(1) + '%';
-            if (m.precision) document.getElementById('precision').textContent = (m.precision * 100).toFixed(1) + '%';
-            if (m.recall) document.getElementById('recall').textContent = (m.recall * 100).toFixed(1) + '%';
-            if (m.f1) document.getElementById('f1').textContent = (m.f1 * 100).toFixed(1) + '%';
+        // 更新状态徽章
+        function updateStatus(status, type = 'secondary') {
+            const statusBadge = document.getElementById('statusBadge');
+            const iconMap = {
+                'waiting': 'circle',
+                'running': 'spinner fa-spin',
+                'success': 'check-circle',
+                'error': 'exclamation-circle'
+            };
+            const icon = iconMap[type] || 'circle';
+            statusBadge.innerHTML = `
+                <span class="badge badge-custom bg-${type === 'waiting' ? 'secondary' : type === 'running' ? 'primary' : type === 'success' ? 'success' : 'danger'}">
+                    <i class="fas fa-${icon}"></i> ${status}
+                </span>
+            `;
         }
 
-        async function startTraining() {
-            const btn = document.getElementById('trainBtn');
+        // 更新性能指标
+        function updateMetrics(metrics) {
+            const metricsMap = {
+                'accuracy': { value: 'accuracyValue', bar: 'accuracyBar' },
+                'precision': { value: 'precisionValue', bar: 'precisionBar' },
+                'recall': { value: 'recallValue', bar: 'recallBar' },
+                'f1': { value: 'f1Value', bar: 'f1Bar' }
+            };
+
+            Object.keys(metrics).forEach(key => {
+                if (metricsMap[key]) {
+                    const percentage = (metrics[key] * 100).toFixed(2);
+                    document.getElementById(metricsMap[key].value).textContent = percentage + '%';
+                    document.getElementById(metricsMap[key].bar).style.width = percentage + '%';
+                }
+            });
+        }
+
+        // 训练按钮点击事件
+        document.getElementById('train-btn').addEventListener('click', async () => {
+            const trainBtn = document.getElementById('train-btn');
             const terminal = document.getElementById('terminal');
+
+            // 清空日志
             terminal.innerHTML = '';
-            
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 训练中...';
+
+            // 重置指标
+            ['accuracyValue', 'precisionValue', 'recallValue', 'f1Value'].forEach(id => {
+                document.getElementById(id).textContent = '--';
+            });
+            ['accuracyBar', 'precisionBar', 'recallBar', 'f1Bar'].forEach(id => {
+                document.getElementById(id).style.width = '0%';
+            });
+
+            // 禁用按钮
+            trainBtn.disabled = true;
+            trainBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>训练中...';
             updateStatus('训练中', 'running');
 
+            // 建立WebSocket连接
             socket = new WebSocket(WS_URL);
-            
+
             socket.onopen = () => {
-                document.getElementById('connStatus').className = 'status-badge status-success';
-                document.getElementById('connStatus').innerHTML = '<i class="fas fa-plug"></i> 已连接';
-                addLog('WebSocket连接成功', 'success');
+                addLog('>> WebSocket连接已建立，等待训练数据...', 'success');
             };
 
             socket.onclose = () => {
-                document.getElementById('connStatus').className = 'status-badge status-waiting';
-                document.getElementById('connStatus').innerHTML = '<i class="fas fa-plug"></i> 已断开';
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-rocket"></i> 开始训练';
+                addLog('>> WebSocket连接已关闭', 'warning');
+                trainBtn.disabled = false;
+                trainBtn.innerHTML = '<i class="fas fa-rocket"></i> 开始训练';
+                updateStatus('已停止', 'waiting');
             };
 
-            socket.onmessage = (e) => {
-                const msg = e.data;
-                if (msg.includes('[ERROR]') || msg.includes('错误')) {
-                    addLog(msg, 'error');
+            socket.onerror = () => {
+                addLog('>> WebSocket连接错误', 'error');
+                updateStatus('连接错误', 'error');
+            };
+
+            socket.onmessage = (event) => {
+                const message = event.data;
+
+                if (message.startsWith('[PROGRESS]')) {
+                    updateProgressBar(message.replace('[PROGRESS]', ''));
+                } else if (message.includes('[ERROR]') || message.includes('错误') || message.includes('失败')) {
+                    addLog(message, 'error');
                     updateStatus('训练失败', 'error');
-                } else if (msg.includes('[FINISH]') || msg.includes('完成')) {
-                    addLog(msg, 'success');
+                } else if (message.includes('[FINISH]') || message.includes('完成')) {
+                    addLog(message, 'success');
                     updateStatus('训练完成', 'success');
-                    document.getElementById('progressBar').style.width = '100%';
-                    document.getElementById('progressText').textContent = '已完成';
-                    updateMetrics({ accuracy: 0.95 + Math.random()*0.04, precision: 0.93 + Math.random()*0.05, recall: 0.92 + Math.random()*0.06, f1: 0.94 + Math.random()*0.04 });
-                } else if (msg.includes('[PROGRESS]')) {
-                    const [cur, total] = msg.replace('[PROGRESS]', '').split('/').map(Number);
-                    const pct = total > 0 ? (cur / total * 100).toFixed(0) : 0;
-                    document.getElementById('progressBar').style.width = pct + '%';
-                    document.getElementById('progressText').textContent = `${cur}/${total}`;
+
+                    // 模拟性能指标（实际应从服务器获取）
+                    setTimeout(() => {
+                        updateMetrics({
+                            accuracy: 0.95 + Math.random() * 0.04,
+                            precision: 0.93 + Math.random() * 0.05,
+                            recall: 0.92 + Math.random() * 0.06,
+                            f1: 0.94 + Math.random() * 0.04
+                        });
+                    }, 500);
+                } else if (message.includes('开始') || message.includes('Starting')) {
+                    addLog(message, 'info');
                 } else {
-                    addLog(msg, msg.includes('开始') ? 'info' : '');
+                    addLog(message);
                 }
             };
 
-            const config = { use_deep_learning: document.getElementById('modelType').value === 'dl' };
-            if (config.use_deep_learning) {
-                config.dl_model_type = document.getElementById('dlModelType').value;
-                config.dl_config = {
+            // 收集训练配置
+            const modelType = document.getElementById('modelType').value;
+            const trainConfig = {
+                use_deep_learning: modelType === 'dl'
+            };
+
+            // 如果选择深度学习，收集深度学习参数
+            if (modelType === 'dl') {
+                const dlModelType = document.getElementById('dlModelType').value;
+                trainConfig.dl_model_type = dlModelType;
+
+                // 收集深度学习配置
+                const dlConfig = {
                     learning_rate: parseFloat(document.getElementById('learningRate').value),
                     batch_size: parseInt(document.getElementById('batchSize').value),
-                    epochs: parseInt(document.getElementById('epochs').value)
+                    epochs: parseInt(document.getElementById('epochs').value),
+                    optimizer: document.getElementById('optimizer').value,
+                    dropout_rate: parseFloat(document.getElementById('dropoutRate').value),
+                    l2_reg: parseFloat(document.getElementById('l2Reg').value),
+                    early_stopping_patience: parseInt(document.getElementById('patience').value),
+                    use_batch_norm: document.getElementById('useBatchNorm').checked,
+                    activation: document.getElementById('activation').value
                 };
+
+                // 根据模型类型收集架构参数
+                if (dlModelType === 'dnn') {
+                    const hiddenLayers = document.getElementById('hiddenLayers').value
+                        .split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+                    dlConfig.hidden_layers = hiddenLayers;
+                } else if (dlModelType === 'cnn') {
+                    const convFilters = document.getElementById('convFilters').value
+                        .split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+                    const denseLayers = document.getElementById('denseLayers').value
+                        .split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+                    dlConfig.conv_filters = convFilters;
+                    dlConfig.dense_layers = denseLayers;
+                    dlConfig.kernel_size = 3;
+                } else if (dlModelType === 'lstm') {
+                    const lstmUnits = document.getElementById('lstmUnits').value
+                        .split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+                    const lstmDenseLayers = document.getElementById('lstmDenseLayers').value
+                        .split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+                    dlConfig.lstm_units = lstmUnits;
+                    dlConfig.dense_layers = lstmDenseLayers;
+                    dlConfig.recurrent_dropout = 0.2;
+                }
+
+                trainConfig.dl_config = dlConfig;
             }
 
+            // 触发训练
             try {
-                const res = await fetch('/api/train', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
-                const data = await res.json();
-                addLog(data.message, 'success');
-            } catch (err) {
-                addLog('启动失败: ' + err.message, 'error');
+                const response = await fetch('/api/train', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(trainConfig)
+                });
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || '服务器触发失败');
+                }
+                const result = await response.json();
+                addLog(`>> ${result.message}`, 'success');
+            } catch (e) {
+                addLog(`>> 触发失败: ${e.message}`, 'error');
                 updateStatus('启动失败', 'error');
                 if (socket) socket.close();
             }
-        }
+        });
     </script>
 </body>
 </html>

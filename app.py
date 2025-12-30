@@ -255,12 +255,6 @@ async def serve_tutorial(request: Request):
     return templates.TemplateResponse("tutorial.html", {"request": request, "page": "tutorial"})
 
 
-@app.get("/benchmark", tags=["Frontend"], response_class=HTMLResponse)
-async def serve_benchmark(request: Request):
-    """拦截测试页面"""
-    return templates.TemplateResponse("benchmark.html", {"request": request, "page": "benchmark"})
-
-
 @app.get("/explanation", tags=["Frontend"], response_class=HTMLResponse)
 async def serve_explanation(request: Request):
     """模型解释页面"""
