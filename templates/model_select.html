@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>模型选择 - 网络安全威胁检测系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/css/main.css" rel="stylesheet">
+    <style>
+        body { background: #0a0a0f; min-height: 100vh; }
+        .page-container { padding: 20px; max-width: 1400px; margin: 0 auto; }
+        .section-card { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 12px; padding: 20px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; }
+        .section-title { color: #00d4ff; font-size: 1.1rem; margin-bottom: 15px; font-weight: 600; }
+        .model-card { background: rgba(0,0,0,0.3); border-radius: 10px; padding: 15px; border: 1px solid rgba(255,255,255,0.1); cursor: pointer; transition: all 0.3s; height: 100%; }
+        .model-card:hover { border-color: #00d4ff; transform: translateY(-2px); }
+        .model-card.selected { border-color: #2ed573; background: rgba(46,213,115,0.1); }
+        .model-card .model-name { color: #fff; font-weight: 600; font-size: 0.95rem; }
+        .model-card .model-desc { color: #8892b0; font-size: 0.8rem; margin: 8px 0; }
+        .model-card .model-stats { display: flex; gap: 15px; font-size: 0.75rem; }
+        .model-card .stat { color: #ccd6f6; }
+        .model-card .stat-value { color: #2ed573; font-weight: 600; }
+        .category-badge { font-size: 0.7rem; padding: 3px 8px; border-radius: 4px; }
+        .badge-ml { background: #3498db; }
+        .badge-dl { background: #9b59b6; }
+        .badge-anomaly { background: #e67e22; }
+        .badge-rl { background: #1abc9c; }
+        .preset-card { background: rgba(0,212,255,0.1); border: 1px solid rgba(0,212,255,0.3); border-radius: 10px; padding: 15px; cursor: pointer; transition: all 0.3s; }
+        .preset-card:hover { background: rgba(0,212,255,0.2); }
+        .preset-card.active { border-color: #2ed573; background: rgba(46,213,115,0.15); }
+        .preset-name { color: #fff; font-weight: 600; }
+        .preset-desc { color: #8892b0; font-size: 0.85rem; }
+        .config-panel { background: rgba(0,0,0,0.3); border-radius: 10px; padding: 20px; }
+        .config-label { color: #8892b0; font-size: 0.85rem; margin-bottom: 5px; }
+        .form-select, .form-control { background: rgba(26,26,46,0.9); border: 1px solid rgba(255,255,255,0.2); color: #fff; }
+        .form-select:focus, .form-control:focus { border-color: #00d4ff; box-shadow: none; background: rgba(26,26,46,0.9); color: #fff; }
+        .btn-apply { background: linear-gradient(135deg, #2ed573 0%, #1abc9c 100%); border: none; padding: 12px 30px; font-weight: 600; }
+        .btn-apply:hover { transform: translateY(-2px); }
+        .selected-models { display: flex; flex-wrap: wrap; gap: 8px; min-height: 40px; }
+        .selected-tag { background: rgba(0,212,255,0.2); border: 1px solid #00d4ff; border-radius: 20px; padding: 5px 12px; font-size: 0.8rem; color: #00d4ff; display: flex; align-items: center; gap: 5px; }
+        .selected-tag .remove { cursor: pointer; opacity: 0.7; }
+        .selected-tag .remove:hover { opacity: 1; }
+        .pipeline-flow { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 20px; flex-wrap: wrap; }
+        .pipeline-step { background: rgba(0,0,0,0.4); border-radius: 8px; padding: 10px 15px; text-align: center; min-width: 120px; }
+        .pipeline-step .step-icon { font-size: 1.5rem; margin-bottom: 5px; }
+        .pipeline-step .step-name { font-size: 0.8rem; color: #ccd6f6; }
+        .pipeline-arrow { color: #00d4ff; font-size: 1.2rem; }
+        .attack-tag { font-size: 0.65rem; background: rgba(255,71,87,0.2); color: #ff4757; padding: 2px 6px; border-radius: 3px; margin: 2px; display: inline-block; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg">
+        <div class="container">
+            <a class="navbar-brand" href="/"><i class="fas fa-shield-alt"></i><span>网络安全检测</span></a>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item"><a class="nav-link" href="/"><i class="fas fa-home"></i> 首页</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/dashboard"><i class="fas fa-chart-pie"></i> 仪表盘</a></li>
+                    <li class="nav-item"><a class="nav-link active" href="/model-select"><i class="fas fa-cubes"></i> 模型选择</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/docs" target="_blank"><i class="fas fa-code"></i> API</a></li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="page-container">
+        <div class="row mb-4">
+            <div class="col-12">
+                <h4 class="text-white"><i class="fas fa-cubes me-2"></i>智能拦截模型配置</h4>
+                <p class="text-muted">选择和组合多种检测算法，构建您的网络安全防护策略</p>
+            </div>
+        </div>
+
+        <!-- 检测流程图 -->
+        <div class="section-card">
+            <div class="section-title"><i class="fas fa-project-diagram me-2"></i>检测流程</div>
+            <div class="pipeline-flow">
+                <div class="pipeline-step"><div class="step-icon text-info"><i class="fas fa-network-wired"></i></div><div class="step-name">流量输入</div></div>
+                <div class="pipeline-arrow"><i class="fas fa-arrow-right"></i></div>
+                <div class="pipeline-step"><div class="step-icon text-primary"><i class="fas fa-robot"></i></div><div class="step-name">ML分类器</div></div>
+                <div class="pipeline-arrow"><i class="fas fa-arrow-right"></i></div>
+                <div class="pipeline-step"><div class="step-icon text-purple" style="color:#9b59b6"><i class="fas fa-brain"></i></div><div class="step-name">DL分类器</div></div>
+                <div class="pipeline-arrow"><i class="fas fa-arrow-right"></i></div>
+                <div class="pipeline-step"><div class="step-icon text-warning"><i class="fas fa-search"></i></div><div class="step-name">异常检测</div></div>
+                <div class="pipeline-arrow"><i class="fas fa-arrow-right"></i></div>
+                <div class="pipeline-step"><div class="step-icon text-success"><i class="fas fa-gamepad"></i></div><div class="step-name">RL决策</div></div>
+                <div class="pipeline-arrow"><i class="fas fa-arrow-right"></i></div>
+                <div class="pipeline-step"><div class="step-icon text-danger"><i class="fas fa-gavel"></i></div><div class="step-name">拦截/放行</div></div>
+            </div>
+        </div>
+
+        <!-- 预设方案 -->
+        <div class="section-card">
+            <div class="section-title"><i class="fas fa-magic me-2"></i>快速预设</div>
+            <div class="row g-3" id="presetContainer"></div>
+        </div>
+
+        <div class="row">
+            <!-- 模型选择 -->
+            <div class="col-lg-8">
+                <div class="section-card">
+                    <div class="section-title"><i class="fas fa-layer-group me-2"></i>可用模型</div>
+                    <ul class="nav nav-tabs mb-3" id="modelTabs">
+                        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#ml">机器学习</a></li>
+                        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#dl">深度学习</a></li>
+                        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#anomaly">异常检测</a></li>
+                        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#rl">强化学习</a></li>
+                    </ul>
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="ml"><div class="row g-3" id="mlModels"></div></div>
+                        <div class="tab-pane fade" id="dl"><div class="row g-3" id="dlModels"></div></div>
+                        <div class="tab-pane fade" id="anomaly"><div class="row g-3" id="anomalyModels"></div></div>
+                        <div class="tab-pane fade" id="rl"><div class="row g-3" id="rlModels"></div></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 配置面板 -->
+            <div class="col-lg-4">
+                <div class="section-card">
+                    <div class="section-title"><i class="fas fa-cog me-2"></i>当前配置</div>
+                    <div class="config-panel">
+                        <div class="mb-3">
+                            <div class="config-label">已选模型</div>
+                            <div class="selected-models" id="selectedModels">
+                                <span class="text-muted small">点击模型卡片添加</span>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="config-label">投票策略</div>
+                            <select class="form-select form-select-sm" id="votingStrategy">
+                                <option value="majority">多数投票 (过半判定威胁)</option>
+                                <option value="any">任一检出 (高安全)</option>
+                                <option value="weighted">加权投票 (按准确率)</option>
+                                <option value="all">全部一致 (低误报)</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <div class="config-label">威胁阈值</div>
+                            <input type="range" class="form-range" id="threshold" min="0.1" max="0.9" step="0.1" value="0.5">
+                            <div class="d-flex justify-content-between small text-muted"><span>宽松</span><span id="thresholdValue">0.5</span><span>严格</span></div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="config-label">RL决策代理</div>
+                            <select class="form-select form-select-sm" id="rlAgent">
+                                <option value="">不使用</option>
+                                <option value="dqn_firewall">DQN Firewall Agent</option>
+                                <option value="ppo_security">PPO Security Agent</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-apply w-100 mt-3" onclick="applyConfig()">
+                            <i class="fas fa-check me-2"></i>应用配置
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let allModels = [];
+        let selectedModels = new Set();
+        const categoryMap = { 
+            ml_classifier: 'ml', 
+            dl_classifier: 'dl', 
+            anomaly_detector: 'anomaly', 
+            rl_agent: 'rl',
+            ensemble: 'ml'  // 集成模型归入ML类别显示
+        };
+        const badgeClass = { 
+            ml_classifier: 'badge-ml', 
+            dl_classifier: 'badge-dl', 
+            anomaly_detector: 'badge-anomaly', 
+            rl_agent: 'badge-rl',
+            ensemble: 'badge-ml'
+        };
+        const categoryName = { 
+            ml_classifier: 'ML', 
+            dl_classifier: 'DL', 
+            anomaly_detector: '异常', 
+            rl_agent: 'RL',
+            ensemble: '集成'
+        };
+
+        async function loadModels() {
+            try {
+                const res = await fetch('/api/v1/models/list');
+                const data = await res.json();
+                console.log('Loaded models:', data);
+                if (data.success && data.models) {
+                    allModels = data.models;
+                    renderModels();
+                } else {
+                    console.error('Failed to load models:', data);
+                }
+            } catch (err) {
+                console.error('Error loading models:', err);
+            }
+        }
+
+        async function loadPresets() {
+            const res = await fetch('/api/v1/models/presets');
+            const data = await res.json();
+            const container = document.getElementById('presetContainer');
+            container.innerHTML = data.presets.map(p => `
+                <div class="col-md-3 col-sm-6">
+                    <div class="preset-card" onclick="applyPreset('${p.id}', this)" data-preset='${JSON.stringify(p)}'>
+                        <div class="preset-name"><i class="fas fa-bolt me-1"></i>${p.name}</div>
+                        <div class="preset-desc">${p.description}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderModels() {
+            console.log('Rendering models, total:', allModels.length);
+            const containers = { ml: [], dl: [], anomaly: [], rl: [] };
+            allModels.forEach(m => {
+                const cat = categoryMap[m.category];
+                console.log('Model:', m.name, 'Category:', m.category, '-> Tab:', cat);
+                if (!cat) {
+                    console.warn('Unknown category:', m.category);
+                    return;
+                }
+                const attacks = m.attack_types.slice(0, 3).map(a => `<span class="attack-tag">${a}</span>`).join('');
+                containers[cat].push(`
+                    <div class="col-md-6">
+                        <div class="model-card ${selectedModels.has(m.id) ? 'selected' : ''}" onclick="toggleModel('${m.id}')" data-id="${m.id}">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div class="model-name">${m.name}</div>
+                                <span class="category-badge ${badgeClass[m.category] || 'badge-ml'}">${categoryName[m.category] || m.category}</span>
+                            </div>
+                            <div class="model-desc">${m.description}</div>
+                            <div class="mb-2">${attacks}</div>
+                            <div class="model-stats">
+                                <div class="stat">准确率: <span class="stat-value">${(m.accuracy*100).toFixed(1)}%</span></div>
+                                <div class="stat">F1: <span class="stat-value">${(m.f1_score*100).toFixed(1)}%</span></div>
+                            </div>
+                        </div>
+                    </div>
+                `);
+            });
+            console.log('ML models:', containers.ml.length, 'DL:', containers.dl.length, 'Anomaly:', containers.anomaly.length, 'RL:', containers.rl.length);
+            document.getElementById('mlModels').innerHTML = containers.ml.length > 0 ? containers.ml.join('') : '<div class="col-12 text-muted">暂无模型</div>';
+            document.getElementById('dlModels').innerHTML = containers.dl.length > 0 ? containers.dl.join('') : '<div class="col-12 text-muted">暂无模型</div>';
+            document.getElementById('anomalyModels').innerHTML = containers.anomaly.length > 0 ? containers.anomaly.join('') : '<div class="col-12 text-muted">暂无模型</div>';
+            document.getElementById('rlModels').innerHTML = containers.rl.length > 0 ? containers.rl.join('') : '<div class="col-12 text-muted">暂无模型</div>';
+        }
+
+        function toggleModel(id) {
+            const model = allModels.find(m => m.id === id);
+            if (model.category === 'rl_agent') {
+                document.getElementById('rlAgent').value = selectedModels.has(id) ? '' : id;
+            } else {
+                selectedModels.has(id) ? selectedModels.delete(id) : selectedModels.add(id);
+            }
+            updateSelectedDisplay();
+            renderModels();
+        }
+
+        function updateSelectedDisplay() {
+            const container = document.getElementById('selectedModels');
+            if (selectedModels.size === 0) {
+                container.innerHTML = '<span class="text-muted small">点击模型卡片添加</span>';
+            } else {
+                container.innerHTML = Array.from(selectedModels).map(id => {
+                    const m = allModels.find(x => x.id === id);
+                    return `<span class="selected-tag">${m?.name || id}<span class="remove" onclick="event.stopPropagation();toggleModel('${id}')"><i class="fas fa-times"></i></span></span>`;
+                }).join('');
+            }
+        }
+
+        function applyPreset(id, el) {
+            document.querySelectorAll('.preset-card').forEach(c => c.classList.remove('active'));
+            el.classList.add('active');
+            const preset = JSON.parse(el.dataset.preset);
+            selectedModels.clear();
+            [...preset.ml_models, ...preset.dl_models, ...preset.anomaly_models].forEach(m => selectedModels.add(m));
+            document.getElementById('rlAgent').value = preset.rl_agent || '';
+            document.getElementById('votingStrategy').value = preset.voting_strategy;
+            updateSelectedDisplay();
+            renderModels();
+        }
+
+        async function applyConfig() {
+            const config = {
+                name: 'custom_' + Date.now(),
+                ml_models: Array.from(selectedModels).filter(id => allModels.find(m => m.id === id)?.category === 'ml_classifier'),
+                dl_models: Array.from(selectedModels).filter(id => allModels.find(m => m.id === id)?.category === 'dl_classifier'),
+                anomaly_models: Array.from(selectedModels).filter(id => allModels.find(m => m.id === id)?.category === 'anomaly_detector'),
+                rl_agent: document.getElementById('rlAgent').value || null,
+                voting_strategy: document.getElementById('votingStrategy').value,
+                threshold: parseFloat(document.getElementById('threshold').value)
+            };
+            const res = await fetch('/api/v1/models/combination', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
+            const data = await res.json();
+            if (data.success) { alert('配置已应用！'); }
+        }
+
+        document.getElementById('threshold').addEventListener('input', e => {
+            document.getElementById('thresholdValue').textContent = e.target.value;
+        });
+
+        document.addEventListener('DOMContentLoaded', () => { loadModels(); loadPresets(); });
+    </script>
+</body>
+</html>

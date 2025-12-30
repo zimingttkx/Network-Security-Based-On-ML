@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>统计仪表盘 - 网络安全威胁检测系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/css/main.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background: #0a0a0f; min-height: 100vh; overflow-x: hidden; }
+        .dashboard-container { padding: 20px; max-width: 1600px; margin: 0 auto; }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+            height: 100%;
+        }
+        .stat-card .stat-value { font-size: 2rem; font-weight: bold; color: #00d4ff; }
+        .stat-card .stat-label { color: #8892b0; font-size: 0.85rem; margin-bottom: 5px; }
+        .stat-card.danger .stat-value { color: #ff4757; }
+        .stat-card.success .stat-value { color: #2ed573; }
+        .stat-card.warning .stat-value { color: #ffa502; }
+        
+        .chart-box {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            padding: 15px;
+            border: 1px solid rgba(255,255,255,0.1);
+            height: 100%;
+        }
+        .chart-box .chart-title { color: #fff; font-size: 0.95rem; margin-bottom: 10px; font-weight: 500; }
+        .chart-wrapper { position: relative; height: 220px; }
+        .chart-wrapper-pie { position: relative; height: 200px; }
+        
+        .log-table { font-size: 0.85rem; }
+        .log-table th { color: #00d4ff; border-color: rgba(255,255,255,0.1); padding: 8px; }
+        .log-table td { color: #ccd6f6; border-color: rgba(255,255,255,0.1); padding: 8px; }
+        .badge-threat { background: #ff4757; font-size: 0.75rem; }
+        .badge-safe { background: #2ed573; }
+        .badge-warning { background: #ffa502; }
+        
+        .control-bar {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            padding: 15px 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 20px;
+        }
+        .refresh-btn {
+            background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 0.9rem;
+        }
+        .time-filter {
+            background: rgba(26, 26, 46, 0.9);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #fff;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 0.9rem;
+        }
+        .time-filter:focus { outline: none; border-color: #00d4ff; }
+        .time-filter option { background: #1a1a2e; }
+        
+        .section-title { color: #fff; font-size: 1.1rem; margin-bottom: 15px; }
+        .row-gap { margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg">
+        <div class="container">
+            <a class="navbar-brand" href="/"><i class="fas fa-shield-alt"></i><span>网络安全检测</span></a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item"><a class="nav-link" href="/"><i class="fas fa-home"></i> 首页</a></li>
+                    <li class="nav-item"><a class="nav-link active" href="/dashboard"><i class="fas fa-chart-pie"></i> 仪表盘</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/train"><i class="fas fa-brain"></i> 训练</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/docs" target="_blank"><i class="fas fa-code"></i> API</a></li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="dashboard-container">
+        <div class="control-bar d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <h5 class="text-white mb-0"><i class="fas fa-chart-pie me-2"></i>流量统计仪表盘</h5>
+            <div class="d-flex gap-2 align-items-center">
+                <select id="timeRange" class="time-filter">
+                    <option value="1">1小时</option>
+                    <option value="6">6小时</option>
+                    <option value="24" selected>24小时</option>
+                    <option value="168">7天</option>
+                </select>
+                <span class="text-success small"><i class="fas fa-circle me-1" style="font-size:8px;"></i>实时更新</span>
+                <span class="text-muted small" id="lastUpdate"></span>
+            </div>
+        </div>
+
+        <div class="row row-gap g-3">
+            <div class="col-6 col-md-3">
+                <div class="stat-card">
+                    <div class="stat-label"><i class="fas fa-globe me-1"></i>总请求</div>
+                    <div class="stat-value" id="totalRequests">-</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="stat-card success">
+                    <div class="stat-label"><i class="fas fa-check me-1"></i>放行</div>
+                    <div class="stat-value" id="allowedRequests">-</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="stat-card danger">
+                    <div class="stat-label"><i class="fas fa-ban me-1"></i>拦截</div>
+                    <div class="stat-value" id="blockedRequests">-</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="stat-card warning">
+                    <div class="stat-label"><i class="fas fa-user-check me-1"></i>验证</div>
+                    <div class="stat-value" id="challengedRequests">-</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row row-gap g-3">
+            <div class="col-lg-8">
+                <div class="chart-box">
+                    <div class="chart-title"><i class="fas fa-chart-line me-2"></i>流量趋势</div>
+                    <div class="chart-wrapper"><canvas id="timelineChart"></canvas></div>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="chart-box">
+                    <div class="chart-title"><i class="fas fa-chart-pie me-2"></i>威胁分布</div>
+                    <div class="chart-wrapper-pie"><canvas id="threatChart"></canvas></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row row-gap g-3">
+            <div class="col-lg-6">
+                <div class="chart-box">
+                    <div class="chart-title"><i class="fas fa-tasks me-2"></i>处理动作</div>
+                    <div class="chart-wrapper"><canvas id="actionChart"></canvas></div>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="chart-box">
+                    <div class="chart-title"><i class="fas fa-server me-2"></i>TOP 10 源IP</div>
+                    <div class="chart-wrapper"><canvas id="sourceChart"></canvas></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row g-3">
+            <div class="col-12">
+                <div class="chart-box">
+                    <div class="chart-title"><i class="fas fa-exclamation-triangle me-2"></i>最近威胁日志</div>
+                    <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                        <table class="table table-sm log-table mb-0">
+                            <thead style="position: sticky; top: 0; background: #1a1a2e;">
+                                <tr><th>时间</th><th>源IP</th><th>目标</th><th>威胁类型</th><th>风险</th><th>动作</th></tr>
+                            </thead>
+                            <tbody id="threatLogs"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let charts = {};
+        let isLoading = false;
+
+        function initCharts() {
+            const defaultOpts = {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 },
+                plugins: { legend: { labels: { color: '#ccd6f6', font: { size: 11 } } } }
+            };
+            const scaleOpts = {
+                x: { ticks: { color: '#8892b0', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                y: { ticks: { color: '#8892b0', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+            };
+
+            charts.timeline = new Chart(document.getElementById('timelineChart'), {
+                type: 'line',
+                data: { labels: [], datasets: [
+                    { label: '总请求', data: [], borderColor: '#00d4ff', borderWidth: 2, tension: 0.3, fill: false, pointRadius: 0 },
+                    { label: '拦截', data: [], borderColor: '#ff4757', borderWidth: 2, tension: 0.3, fill: false, pointRadius: 0 }
+                ]},
+                options: { ...defaultOpts, scales: scaleOpts, plugins: { ...defaultOpts.plugins, legend: { position: 'top', align: 'end', labels: { color: '#ccd6f6', boxWidth: 12, padding: 8 } } } }
+            });
+
+            charts.threat = new Chart(document.getElementById('threatChart'), {
+                type: 'doughnut',
+                data: { labels: [], datasets: [{ data: [], backgroundColor: ['#2ed573','#ff4757','#ffa502','#00d4ff','#a55eea','#ff6b81','#70a1ff','#7bed9f','#eccc68','#ff7f50'] }] },
+                options: { ...defaultOpts, plugins: { legend: { position: 'right', labels: { color: '#ccd6f6', font: { size: 10 }, boxWidth: 10, padding: 6 } } } }
+            });
+
+            charts.action = new Chart(document.getElementById('actionChart'), {
+                type: 'bar',
+                data: { labels: [], datasets: [{ label: '数量', data: [], backgroundColor: ['#2ed573','#ff4757','#ffa502','#00d4ff','#a55eea'] }] },
+                options: { ...defaultOpts, indexAxis: 'y', scales: scaleOpts, plugins: { legend: { display: false } } }
+            });
+
+            charts.source = new Chart(document.getElementById('sourceChart'), {
+                type: 'bar',
+                data: { labels: [], datasets: [{ label: '请求数', data: [], backgroundColor: '#00d4ff' }] },
+                options: { ...defaultOpts, scales: scaleOpts, plugins: { legend: { display: false } } }
+            });
+        }
+
+        async function loadAllData() {
+            if (isLoading) return;
+            isLoading = true;
+            const hours = document.getElementById('timeRange').value;
+            try {
+                await Promise.all([loadOverview(hours), loadTimeline(hours), loadThreats(hours), loadActions(hours), loadSources(hours), loadRecentThreats()]);
+                document.getElementById('lastUpdate').textContent = '更新: ' + new Date().toLocaleTimeString();
+            } catch (e) { console.error(e); }
+            isLoading = false;
+        }
+
+        async function loadOverview(hours) {
+            const res = await fetch(`/api/v1/stats/overview?hours=${hours}`);
+            const d = await res.json();
+            document.getElementById('totalRequests').textContent = d.total_requests.toLocaleString();
+            document.getElementById('allowedRequests').textContent = d.allowed_requests.toLocaleString();
+            document.getElementById('blockedRequests').textContent = d.blocked_requests.toLocaleString();
+            document.getElementById('challengedRequests').textContent = d.challenged_requests.toLocaleString();
+        }
+
+        async function loadTimeline(hours) {
+            const res = await fetch(`/api/v1/stats/timeline?hours=${hours}&interval=60`);
+            const d = await res.json();
+            if (d.success && d.data) {
+                charts.timeline.data.labels = d.data.map(x => new Date(x.timestamp).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit'}));
+                charts.timeline.data.datasets[0].data = d.data.map(x => x.total);
+                charts.timeline.data.datasets[1].data = d.data.map(x => x.blocked);
+                charts.timeline.update('none');
+            }
+        }
+
+        async function loadThreats(hours) {
+            const res = await fetch(`/api/v1/stats/threats?hours=${hours}`);
+            const d = await res.json();
+            if (d.success && d.data) {
+                const filtered = Object.entries(d.data).filter(([k,v]) => k !== 'benign' && v > 0).slice(0, 8);
+                charts.threat.data.labels = filtered.map(([k]) => k.toUpperCase());
+                charts.threat.data.datasets[0].data = filtered.map(([,v]) => v);
+                charts.threat.update('none');
+            }
+        }
+
+        async function loadActions(hours) {
+            const res = await fetch(`/api/v1/stats/actions?hours=${hours}`);
+            const d = await res.json();
+            if (d.success && d.data) {
+                const names = { allow:'放行', block:'拦截', challenge:'验证', log:'记录', alert:'告警' };
+                charts.action.data.labels = Object.keys(d.data).map(k => names[k] || k);
+                charts.action.data.datasets[0].data = Object.values(d.data);
+                charts.action.update('none');
+            }
+        }
+
+        async function loadSources(hours) {
+            const res = await fetch(`/api/v1/stats/sources?hours=${hours}&limit=10`);
+            const d = await res.json();
+            if (d.success && d.data) {
+                charts.source.data.labels = d.data.map(x => x.ip.length > 15 ? x.ip.slice(0,12)+'...' : x.ip);
+                charts.source.data.datasets[0].data = d.data.map(x => x.count);
+                charts.source.update('none');
+            }
+        }
+
+        async function loadRecentThreats() {
+            const res = await fetch('/api/v1/stats/recent-threats?limit=10');
+            const d = await res.json();
+            const tbody = document.getElementById('threatLogs');
+            if (d.success && d.data && d.data.length > 0) {
+                tbody.innerHTML = d.data.map(log => `<tr>
+                    <td>${new Date(log.timestamp).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</td>
+                    <td>${log.source_ip}</td>
+                    <td>${log.dest_ip}:${log.dest_port}</td>
+                    <td><span class="badge badge-threat">${log.threat_type}</span></td>
+                    <td>${(log.risk_score*100).toFixed(0)}%</td>
+                    <td><span class="badge ${log.action==='block'?'badge-threat':'badge-warning'}">${log.action}</span></td>
+                </tr>`).join('');
+            } else {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">暂无威胁日志</td></tr>';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initCharts();
+            loadAllData();
+            document.getElementById('timeRange').addEventListener('change', loadAllData);
+            // 每秒自动刷新
+            setInterval(loadAllData, 1000);
+        });
+    </script>
+</body>
+</html>
