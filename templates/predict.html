@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="predict.title">威胁预测</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/css/main.css" rel="stylesheet">
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="fas fa-shield-alt"></i>
+                <span data-i18n="nav.home">网络安全检测</span>
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">
+                            <i class="fas fa-home"></i>
+                            <span data-i18n="nav.home">首页</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/predict">
+                            <i class="fas fa-chart-line"></i>
+                            <span data-i18n="nav.predict">威胁预测</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/train">
+                            <i class="fas fa-brain"></i>
+                            <span data-i18n="nav.train">模型训练</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/tutorial">
+                            <i class="fas fa-book-open"></i>
+                            <span data-i18n="nav.tutorial">使用教程</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/docs" target="_blank">
+                            <i class="fas fa-code"></i>
+                            <span data-i18n="nav.api">API文档</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <select id="languageSelector" class="language-selector" onchange="setLanguage(this.value)">
+                            <option value="zh-CN">中文</option>
+                            <option value="en-US">English</option>
+                            <option value="ja-JP">日本語</option>
+                        </select>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主内容区 -->
+    <section class="py-5" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: calc(100vh - 200px);">
+        <div class="container">
+            <div class="text-center text-white mb-5">
+                <h1 class="display-4 fw-bold">
+                    <i class="fas fa-search-plus"></i>
+                    <span data-i18n="predict.title">威胁预测</span>
+                </h1>
+                <p class="lead" data-i18n="predict.upload.desc">输入网络流量特征数据，系统将实时分析威胁等级</p>
+            </div>
+
+            <!-- 预测表单 -->
+            <div class="row">
+                <div class="col-lg-10 offset-lg-1">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="mb-0">
+                                <i class="fas fa-keyboard"></i>
+                                <span data-i18n="predict.json.title">手动输入数据</span>
+                            </h3>
+                            <p class="mb-0 mt-2 opacity-75" data-i18n="predict.json.desc">输入网络流量特征数据（JSON格式）</p>
+                        </div>
+                        <div class="card-body">
+                            <form id="prediction-form">
+                                <!-- 提示信息 -->
+                                <div class="alert alert-info">
+                                    <i class="fas fa-info-circle"></i>
+                                    <strong>提示：</strong>请填写以下网络流量特征值（通常为 -1, 0, 1）。如果不确定，可以使用默认值。
+                                </div>
+
+                                <!-- 快速操作按钮 -->
+                                <div class="mb-4">
+                                    <button type="button" class="btn btn-outline-primary me-2" onclick="fillSafeExample()">
+                                        <i class="fas fa-check-circle"></i> 填充安全示例
+                                    </button>
+                                    <button type="button" class="btn btn-outline-danger me-2" onclick="fillDangerExample()">
+                                        <i class="fas fa-exclamation-triangle"></i> 填充威胁示例
+                                    </button>
+                                    <button type="button" class="btn btn-outline-secondary" onclick="resetForm()">
+                                        <i class="fas fa-redo"></i> 重置
+                                    </button>
+                                </div>
+
+                                <!-- 特征输入网格 -->
+                                <div class="row g-3">
+                                    <div class="col-md-4">
+                                        <label for="having_IP_Address" class="form-label">having_IP_Address</label>
+                                        <input type="number" id="having_IP_Address" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="URL_Length" class="form-label">URL_Length</label>
+                                        <input type="number" id="URL_Length" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Shortining_Service" class="form-label">Shortining_Service</label>
+                                        <input type="number" id="Shortining_Service" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="having_At_Symbol" class="form-label">having_At_Symbol</label>
+                                        <input type="number" id="having_At_Symbol" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="double_slash_redirecting" class="form-label">double_slash_redirecting</label>
+                                        <input type="number" id="double_slash_redirecting" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Prefix_Suffix" class="form-label">Prefix_Suffix</label>
+                                        <input type="number" id="Prefix_Suffix" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="having_Sub_Domain" class="form-label">having_Sub_Domain</label>
+                                        <input type="number" id="having_Sub_Domain" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="SSLfinal_State" class="form-label">SSLfinal_State</label>
+                                        <input type="number" id="SSLfinal_State" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Domain_registeration_length" class="form-label">Domain_registeration_length</label>
+                                        <input type="number" id="Domain_registeration_length" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Favicon" class="form-label">Favicon</label>
+                                        <input type="number" id="Favicon" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="port" class="form-label">port</label>
+                                        <input type="number" id="port" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="HTTPS_token" class="form-label">HTTPS_token</label>
+                                        <input type="number" id="HTTPS_token" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Request_URL" class="form-label">Request_URL</label>
+                                        <input type="number" id="Request_URL" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="URL_of_Anchor" class="form-label">URL_of_Anchor</label>
+                                        <input type="number" id="URL_of_Anchor" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Links_in_tags" class="form-label">Links_in_tags</label>
+                                        <input type="number" id="Links_in_tags" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="SFH" class="form-label">SFH</label>
+                                        <input type="number" id="SFH" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Submitting_to_email" class="form-label">Submitting_to_email</label>
+                                        <input type="number" id="Submitting_to_email" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Abnormal_URL" class="form-label">Abnormal_URL</label>
+                                        <input type="number" id="Abnormal_URL" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Redirect" class="form-label">Redirect</label>
+                                        <input type="number" id="Redirect" class="form-control" value="0" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="on_mouseover" class="form-label">on_mouseover</label>
+                                        <input type="number" id="on_mouseover" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="RightClick" class="form-label">RightClick</label>
+                                        <input type="number" id="RightClick" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="popUpWidnow" class="form-label">popUpWidnow</label>
+                                        <input type="number" id="popUpWidnow" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Iframe" class="form-label">Iframe</label>
+                                        <input type="number" id="Iframe" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="age_of_domain" class="form-label">age_of_domain</label>
+                                        <input type="number" id="age_of_domain" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="DNSRecord" class="form-label">DNSRecord</label>
+                                        <input type="number" id="DNSRecord" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="web_traffic" class="form-label">web_traffic</label>
+                                        <input type="number" id="web_traffic" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Page_Rank" class="form-label">Page_Rank</label>
+                                        <input type="number" id="Page_Rank" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Google_Index" class="form-label">Google_Index</label>
+                                        <input type="number" id="Google_Index" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Links_pointing_to_page" class="form-label">Links_pointing_to_page</label>
+                                        <input type="number" id="Links_pointing_to_page" class="form-control" value="1" step="1" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label for="Statistical_report" class="form-label">Statistical_report</label>
+                                        <input type="number" id="Statistical_report" class="form-control" value="1" step="1" required>
+                                    </div>
+                                </div>
+
+                                <!-- 提交按钮 -->
+                                <div class="text-center mt-4">
+                                    <button type="submit" class="btn btn-primary btn-lg px-5" id="predictBtn">
+                                        <i class="fas fa-search"></i>
+                                        <span data-i18n="predict.json.submit">立即预测</span>
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 结果展示 -->
+            <div class="row mt-4" id="resultSection" style="display: none;">
+                <div class="col-lg-10 offset-lg-1">
+                    <div class="card" id="resultCard">
+                        <div class="card-body text-center py-5">
+                            <h2 class="mb-4">
+                                <i class="fas fa-chart-pie"></i>
+                                <span data-i18n="predict.result.title">预测结果</span>
+                            </h2>
+                            <div id="resultContent">
+                                <!-- 动态填充结果 -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="py-4 bg-dark text-white text-center">
+        <div class="container">
+            <p class="mb-0">&copy; 2025 网络安全威胁检测系统. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/i18n.js"></script>
+    <script>
+        const featureNames = [
+            'having_IP_Address', 'URL_Length', 'Shortining_Service', 'having_At_Symbol',
+            'double_slash_redirecting', 'Prefix_Suffix', 'having_Sub_Domain', 'SSLfinal_State',
+            'Domain_registeration_length', 'Favicon', 'port', 'HTTPS_token', 'Request_URL',
+            'URL_of_Anchor', 'Links_in_tags', 'SFH', 'Submitting_to_email', 'Abnormal_URL',
+            'Redirect', 'on_mouseover', 'RightClick', 'popUpWidnow', 'Iframe', 'age_of_domain',
+            'DNSRecord', 'web_traffic', 'Page_Rank', 'Google_Index', 'Links_pointing_to_page',
+            'Statistical_report'
+        ];
+
+        // 填充安全示例
+        function fillSafeExample() {
+            featureNames.forEach(name => {
+                document.getElementById(name).value = 1;
+            });
+            document.getElementById('Redirect').value = 0;
+        }
+
+        // 填充威胁示例
+        function fillDangerExample() {
+            featureNames.forEach(name => {
+                document.getElementById(name).value = -1;
+            });
+        }
+
+        // 重置表单
+        function resetForm() {
+            document.getElementById('prediction-form').reset();
+            document.getElementById('resultSection').style.display = 'none';
+        }
+
+        // 表单提交
+        document.getElementById('prediction-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const predictBtn = document.getElementById('predictBtn');
+            const originalText = predictBtn.innerHTML;
+
+            // 显示加载状态
+            predictBtn.disabled = true;
+            predictBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>分析中...';
+
+            // 收集数据
+            const inputData = {};
+            featureNames.forEach(name => {
+                inputData[name] = parseInt(document.getElementById(name).value, 10);
+            });
+
+            try {
+                const response = await fetch('/predict_live', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(inputData)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || '服务器响应错误');
+                }
+
+                const result = await response.json();
+                displayResult(result);
+
+            } catch (error) {
+                displayError(error.message);
+            } finally {
+                predictBtn.disabled = false;
+                predictBtn.innerHTML = originalText;
+            }
+        });
+
+        // 显示结果
+        function displayResult(result) {
+            const resultSection = document.getElementById('resultSection');
+            const resultCard = document.getElementById('resultCard');
+            const resultContent = document.getElementById('resultContent');
+
+            const isSafe = result.raw_prediction === 0;
+            const resultClass = isSafe ? 'result-safe' : 'result-danger';
+            const icon = isSafe ? 'fa-check-circle' : 'fa-exclamation-triangle';
+            const color = isSafe ? '#10b981' : '#ef4444';
+
+            resultContent.innerHTML = `
+                <div style="font-size: 5rem; color: ${color}; margin-bottom: 1rem;">
+                    <i class="fas ${icon}"></i>
+                </div>
+                <h3 style="color: ${color}; font-weight: bold; font-size: 2.5rem; margin-bottom: 1rem;">
+                    ${result.prediction}
+                </h3>
+                <p class="text-muted mb-4">
+                    <strong>预测值:</strong> ${result.raw_prediction}
+                </p>
+                <div class="alert ${isSafe ? 'alert-success' : 'alert-danger'} d-inline-block">
+                    <i class="fas fa-info-circle"></i>
+                    ${isSafe ? '该网络流量未检测到威胁特征，判定为安全。' : '检测到异常特征，建议进一步审查该流量来源！'}
+                </div>
+            `;
+
+            resultCard.classList.remove('result-safe', 'result-danger');
+            resultCard.classList.add(resultClass);
+            resultSection.style.display = 'block';
+
+            // 滚动到结果区域
+            resultSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        // 显示错误
+        function displayError(message) {
+            const resultSection = document.getElementById('resultSection');
+            const resultContent = document.getElementById('resultContent');
+
+            resultContent.innerHTML = `
+                <div style="font-size: 4rem; color: #ef4444; margin-bottom: 1rem;">
+                    <i class="fas fa-times-circle"></i>
+                </div>
+                <h3 style="color: #ef4444;">预测失败</h3>
+                <p class="text-muted">${message}</p>
+            `;
+
+            resultSection.style.display = 'block';
+            resultSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    </script>
+</body>
+</html>

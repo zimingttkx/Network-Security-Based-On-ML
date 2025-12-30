@@ -1,0 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+    --bg-color: #0d1117;
+    --header-bg: rgba(22, 27, 34, 0.8);
+    --card-bg-color: #161b22;
+    --text-color: #c9d1d9;
+    --text-secondary-color: #8b949e;
+    --primary-color: #238636;
+    --accent-color: #39d353;
+    --border-color: #30363d;
+    --font-sans: 'Inter', sans-serif;
+    --font-mono: 'Roboto Mono', monospace;
+}
+body { background-color: var(--bg-color); color: var(--text-color); font-family: var(--font-sans); margin: 0; }
+a { color: var(--accent-color); text-decoration: none; }
+header.main-header {
+    position: sticky; top: 0; z-index: 100;
+    background-color: var(--header-bg); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border-color); padding: 0 2rem;
+    display: flex; align-items: center; justify-content: space-between; height: 60px;
+}
+.logo { font-size: 1.25rem; font-weight: 600; }
+.logo span { color: var(--accent-color); }
+.main-nav a {
+    color: var(--text-secondary-color); font-weight: 500; padding: 1rem;
+    transition: color 0.2s; border-bottom: 2px solid transparent; margin: 0 0.5rem;
+}
+.main-nav a:hover { color: var(--text-color); }
+.main-nav a.active { color: var(--text-color); border-bottom-color: var(--accent-color); }
+main { padding: 2rem; max-width: 1200px; margin: 0 auto; }
+.card {
+    background-color: var(--card-bg-color); border: 1px solid var(--border-color);
+    border-radius: 6px; padding: 1.5rem; margin-bottom: 2rem;
+}
+h1, h2, h3 { border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-top: 0; font-weight: 600; }
+h1 { font-size: 2rem; } h2 { font-size: 1.5rem; } h3 { font-size: 1.25rem; margin-bottom: 1rem; }
+.btn {
+    display: inline-block; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid var(--primary-color);
+    background-color: var(--primary-color); color: white; font-weight: 500; cursor: pointer; transition: background-color 0.2s;
+    font-family: var(--font-mono);
+}
+.btn:hover { background-color: #2ea043; }
+.btn:disabled { background-color: var(--text-secondary-color); border-color: var(--text-secondary-color); cursor: not-allowed; }
+.terminal {
+    background-color: #010409; font-family: var(--font-mono); font-size: 0.9rem;
+    min-height: 400px; max-height: 60vh; overflow-y: scroll; border: 1px solid var(--border-color);
+    padding: 1rem; border-radius: 6px; white-space: pre-wrap; word-break: break-all;
+}
+.terminal-line { margin-bottom: 0.25rem; }
+.terminal-line.info { color: #58a6ff; } .terminal-line.success { color: var(--accent-color); } .terminal-line.error { color: #f85149; }
+.progress-bar-container { margin: 1rem 0; font-family: var(--font-mono); }
+#progress-text { color: var(--accent-color); white-space: pre; }
+.tree ul { position: relative; padding-left: 20px; list-style: none; }
+.tree li { position: relative; padding-left: 20px; padding-top: 5px; padding-bottom: 5px; }
+.tree li::before, .tree li::after { content: ''; position: absolute; left: 0; }
+.tree li::before { border-left: 1px solid var(--accent-color); height: 100%; width: 1px; top: -10px; }
+.tree li::after { border-top: 1px solid var(--accent-color); height: 1px; width: 15px; top: 15px; }
+.tree li:last-child::before { height: 25px; }
+.tree ul > li:first-child::before { top: 15px; }
+.tree code { background-color: rgba(110,118,129,0.4); padding: 0.2em 0.4em; border-radius: 6px; font-size: 0.85em; }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 2rem; }
+.results-img { max-width: 100%; border-radius: 6px; background: rgba(255,255,255,0.05); padding: 1rem; box-sizing: border-box; }
+#results-table-wrapper table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+#results-table-wrapper th, #results-table-wrapper td { padding: 0.5rem; text-align: left; border-bottom: 1px solid var(--border-color); }
+#results-table-wrapper th { background-color: rgba(255,255,255,0.1); }

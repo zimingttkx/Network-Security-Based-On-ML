@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>模型可解释性分析 - SHAP</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/css/main.css" rel="stylesheet">
+    <style>
+        .explanation-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .shap-image {
+            max-width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+        .feature-bar {
+            height: 25px;
+            border-radius: 5px;
+            margin-bottom: 8px;
+            transition: width 0.5s ease;
+        }
+        .feature-bar.positive {
+            background: linear-gradient(90deg, #28a745, #20c997);
+        }
+        .feature-bar.negative {
+            background: linear-gradient(90deg, #dc3545, #fd7e14);
+        }
+        .feature-label {
+            font-size: 0.9rem;
+            color: #adb5bd;
+        }
+        .shap-value {
+            font-weight: bold;
+            font-family: monospace;
+        }
+        .loading-spinner {
+            display: none;
+            text-align: center;
+            padding: 3rem;
+        }
+        .result-section {
+            display: none;
+        }
+        .info-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="fas fa-shield-alt"></i>
+                <span>网络安全检测</span>
+            </a>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item"><a class="nav-link" href="/"><i class="fas fa-home"></i> 首页</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/predict"><i class="fas fa-chart-line"></i> 威胁预测</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/train"><i class="fas fa-brain"></i> 模型训练</a></li>
+                    <li class="nav-item"><a class="nav-link active" href="/explanation"><i class="fas fa-lightbulb"></i> 模型解释</a></li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主内容 -->
+    <section class="py-5">
+        <div class="container">
+            <h1 class="text-center mb-4">
+                <i class="fas fa-lightbulb text-warning"></i> 模型可解释性分析
+            </h1>
+            
+            <div class="info-box">
+                <h5><i class="fas fa-info-circle"></i> 什么是SHAP？</h5>
+                <p class="mb-0">SHAP (SHapley Additive exPlanations) 是一种解释机器学习模型预测的方法。它基于博弈论中的Shapley值，能够量化每个特征对预测结果的贡献程度，帮助我们理解模型为什么做出某个预测。</p>
+            </div>
+
+            <div class="row">
+                <!-- 左侧：生成解释 -->
+                <div class="col-lg-5">
+                    <div class="explanation-card">
+                        <h4><i class="fas fa-cogs"></i> 生成模型解释</h4>
+                        <hr>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">选择分析类型</label>
+                            <select class="form-select" id="analysisType">
+                                <option value="summary">特征重要性总结图</option>
+                                <option value="single">单样本解释</option>
+                            </select>
+                        </div>
+                        
+                        <div class="mb-3" id="sampleCountDiv">
+                            <label class="form-label">分析样本数量</label>
+                            <input type="number" class="form-control" id="sampleCount" value="50" min="10" max="200">
+                            <small class="text-muted">建议50-100个样本以获得稳定结果</small>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">图表类型</label>
+                            <select class="form-select" id="plotType">
+                                <option value="dot">点图 (Dot Plot)</option>
+                                <option value="bar">条形图 (Bar Plot)</option>
+                            </select>
+                        </div>
+                        
+                        <button class="btn btn-primary w-100" onclick="generateExplanation()">
+                            <i class="fas fa-magic"></i> 生成解释
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- 右侧：结果展示 -->
+                <div class="col-lg-7">
+                    <div class="loading-spinner" id="loadingSpinner">
+                        <div class="spinner-border text-primary" style="width: 3rem; height: 3rem;"></div>
+                        <p class="mt-3">正在计算SHAP值，请稍候...</p>
+                        <small class="text-muted">这可能需要几秒钟时间</small>
+                    </div>
+                    
+                    <div class="result-section" id="resultSection">
+                        <div class="explanation-card">
+                            <h4><i class="fas fa-chart-bar"></i> SHAP分析结果</h4>
+                            <hr>
+                            <div id="shapPlot" class="text-center">
+                                <img id="shapImage" class="shap-image" src="" alt="SHAP Plot">
+                            </div>
+                        </div>
+                        
+                        <div class="explanation-card" id="featureContributions" style="display:none;">
+                            <h4><i class="fas fa-list-ol"></i> 特征贡献排名</h4>
+                            <hr>
+                            <div id="featureList"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="py-4 bg-dark text-white text-center">
+        <div class="container">
+            <p class="mb-0">&copy; 2025 网络安全威胁检测系统</p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        async function generateExplanation() {
+            const analysisType = document.getElementById('analysisType').value;
+            const sampleCount = document.getElementById('sampleCount').value;
+            const plotType = document.getElementById('plotType').value;
+            
+            document.getElementById('loadingSpinner').style.display = 'block';
+            document.getElementById('resultSection').style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/explanation/generate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        analysis_type: analysisType,
+                        sample_count: parseInt(sampleCount),
+                        plot_type: plotType
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('shapImage').src = 'data:image/png;base64,' + data.image_base64;
+                    document.getElementById('resultSection').style.display = 'block';
+                    
+                    if (data.top_features) {
+                        displayFeatureContributions(data.top_features);
+                    }
+                } else {
+                    alert('生成失败: ' + data.error);
+                }
+            } catch (error) {
+                alert('请求失败: ' + error.message);
+            } finally {
+                document.getElementById('loadingSpinner').style.display = 'none';
+            }
+        }
+        
+        function displayFeatureContributions(features) {
+            const container = document.getElementById('featureList');
+            container.innerHTML = '';
+            
+            const maxVal = Math.max(...features.map(f => Math.abs(f.importance)));
+            
+            features.forEach((feature, index) => {
+                const width = (Math.abs(feature.importance) / maxVal * 100).toFixed(1);
+                const isPositive = feature.importance >= 0;
+                
+                container.innerHTML += `
+                    <div class="mb-2">
+                        <div class="d-flex justify-content-between">
+                            <span class="feature-label">${index + 1}. ${feature.name}</span>
+                            <span class="shap-value ${isPositive ? 'text-success' : 'text-danger'}">
+                                ${isPositive ? '+' : ''}${feature.importance.toFixed(4)}
+                            </span>
+                        </div>
+                        <div class="feature-bar ${isPositive ? 'positive' : 'negative'}" style="width: ${width}%"></div>
+                    </div>
+                `;
+            });
+            
+            document.getElementById('featureContributions').style.display = 'block';
+        }
+    </script>
+</body>
+</html>

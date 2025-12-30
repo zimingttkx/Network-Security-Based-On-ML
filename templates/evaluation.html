@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>效能评估报告 - NeuralShield 平台</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-page="evaluation">
+    {% include '_header.html' %}
+    <main>
+        <h1>模型效能评估报告</h1>
+        <div class="card">
+            <h2>评估触发器</h2>
+            <p>基于最新一次成功演化的模型，对保留的测试数据集进行全面效能评估。</p>
+            <button id="eval-btn" class="btn">生成最新评估报告</button>
+        </div>
+        <div id="results-container" style="display: none;">
+            <div class="grid-2">
+                <div class="card">
+                    <h3>混淆矩阵 (Confusion Matrix)</h3>
+                    <img id="img-cm" src="" alt="混淆矩阵" class="results-img"/>
+                </div>
+                <div class="card">
+                    <h3>预测类别分布</h3>
+                    <img id="img-pie" src="" alt="预测分布饼图" class="results-img"/>
+                </div>
+            </div>
+            <div class="card">
+                <h3>详细预测数据</h3>
+                <div id="results-table-wrapper" class="terminal" style="min-height: 200px; max-height: 400px;"></div>
+            </div>
+        </div>
+    </main>
+    <script src="/static/main.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const evalBtn = document.getElementById('eval-btn');
+            const resultsContainer = document.getElementById('results-container');
+            const tableWrapper = document.getElementById('results-table-wrapper');
+
+            evalBtn.addEventListener('click', async () => {
+                evalBtn.textContent = '正在生成...';
+                evalBtn.disabled = true;
+                tableWrapper.innerHTML = '<p>Loading...</p>';
+                resultsContainer.style.display = 'block';
+
+                try {
+                    const response = await fetch('/predict_on_test_data');
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.message || '无法获取评估数据');
+                    }
+                    const data = await response.json();
+
+                    document.getElementById('img-cm').src = data.img_confusion_matrix;
+                    document.getElementById('img-pie').src = data.img_pie_chart;
+                    renderTable(data.table_data);
+
+                } catch (e) {
+                    tableWrapper.innerHTML = `<p style="color: var(--red-color)">错误: ${e.message}</p>`;
+                } finally {
+                    evalBtn.textContent = '重新生成评估报告';
+                    evalBtn.disabled = false;
+                }
+            });
+
+            function renderTable(data) {
+                if (!data || data.length === 0) {
+                    tableWrapper.innerHTML = '<p>无数据可供显示。</p>';
+                    return;
+                }
+                const table = document.createElement('table');
+                const headers = Object.keys(data[0]);
+                const thead = `<thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>`;
+                const tbody = `<tbody>${data.map(row => {
+                    let predictionClass = '';
+                    if (row.prediction && row.prediction.includes('危险')) {
+                        predictionClass = 'style="color: var(--red-color);"';
+                    } else if (row.prediction && row.prediction.includes('安全')) {
+                        predictionClass = 'style="color: var(--accent-color);"';
+                    }
+                    return `<tr>${headers.map(h => `<td ${h === 'prediction' ? predictionClass : ''}>${row[h]}</td>`).join('')}</tr>`;
+                }).join('')}</tbody>`;
+                table.innerHTML = thead + tbody;
+                tableWrapper.innerHTML = '';
+                tableWrapper.appendChild(table);
+            }
+        });
+    </script>
+</body>
+</html>

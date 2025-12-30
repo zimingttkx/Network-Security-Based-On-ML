@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>数据流勘探器 - NeuralShield 平台</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-page="pipeline">
+    {% include '_header.html' %}
+    <main>
+        <h1>数据处理流水线全景</h1>
+        <div class="card tree">
+            <ul>
+                <li>
+                    <strong>数据摄取 (Ingestion)</strong>
+                    <ul>
+                        <li>连接至 <code>MongoDB</code> 数据源</li>
+                        <li>导出数据为 <code>Pandas DataFrame</code></li>
+                        <li>执行 <code>train_test_split</code> 分割数据集
+                            <ul>
+                                <li>产物: <code>train.csv</code></li>
+                                <li>产物: <code>test.csv</code></li>
+                            </ul>
+                        </li>
+                    </ul>
+                </li>
+                <li>
+                    <strong>数据验证 (Validation)</strong>
+                    <ul>
+                        <li>加载预定义 <code>schema.yaml</code></li>
+                        <li>验证数据结构
+                            <ul>
+                                <li>检查列数与名称</li>
+                                <li>检查数值列数据类型</li>
+                            </ul>
+                        </li>
+                        <li>执行概念漂移检测
+                            <ul>
+                                <li>方法: <code>Kolmogorov-Smirnov Test</code></li>
+                                <li>产物: <code>drift_report.yaml</code></li>
+                            </ul>
+                        </li>
+                    </ul>
+                </li>
+                <li>
+                    <strong>数据转换 (Transformation)</strong>
+                    <ul>
+                        <li>构建 Scikit-learn <code>Pipeline</code></li>
+                        <li>核心步骤: 缺失值填充
+                            <ul>
+                                <li>算法: <code>KNNImputer</code></li>
+                                <li>参数: n_neighbors=3</li>
+                            </ul>
+                        </li>
+                        <li>序列化产物
+                            <ul>
+                                <li>产物: <code>train.npy</code> & <code>test.npy</code></li>
+                                <li>产物: <code>preprocessing.pkl</code> (预处理器对象)</li>
+                            </ul>
+                        </li>
+                    </ul>
+                </li>
+            </ul>
+        </div>
+    </main>
+    <script src="/static/main.js"></script>
+</body>
+</html>
