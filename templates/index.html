@@ -28,21 +28,21 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/predict">
-                            <i class="fas fa-chart-line"></i>
-                            <span data-i18n="nav.predict">威胁预测</span>
+                        <a class="nav-link" href="/dashboard">
+                            <i class="fas fa-chart-pie"></i>
+                            <span>仪表盘</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/model-select">
+                            <i class="fas fa-cubes"></i>
+                            <span>模型选择</span>
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/train">
                             <i class="fas fa-brain"></i>
-                            <span data-i18n="nav.train">模型训练</span>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/tutorial">
-                            <i class="fas fa-book-open"></i>
-                            <span data-i18n="nav.tutorial">使用教程</span>
+                            <span>模型训练</span>
                         </a>
                     </li>
                     <li class="nav-item">
@@ -50,13 +50,6 @@
                             <i class="fas fa-code"></i>
                             <span data-i18n="nav.api">API文档</span>
                         </a>
-                    </li>
-                    <li class="nav-item">
-                        <select id="languageSelector" class="language-selector" onchange="setLanguage(this.value)">
-                            <option value="zh-CN">中文</option>
-                            <option value="en-US">English</option>
-                            <option value="ja-JP">日本語</option>
-                        </select>
                     </li>
                 </ul>
             </div>
@@ -71,13 +64,13 @@
                     <h1 data-i18n="home.title">网络安全威胁检测系统</h1>
                     <p class="lead" data-i18n="home.subtitle">基于机器学习的实时网络流量异常检测与预警平台</p>
                     <div class="mt-4">
-                        <a href="/predict" class="btn btn-primary btn-lg me-3">
-                            <i class="fas fa-rocket"></i>
-                            <span data-i18n="home.getStarted">开始使用</span>
+                        <a href="/model-select" class="btn btn-primary btn-lg me-3">
+                            <i class="fas fa-cubes"></i>
+                            <span>配置检测模型</span>
                         </a>
-                        <a href="/tutorial" class="btn btn-outline-light btn-lg">
-                            <i class="fas fa-graduation-cap"></i>
-                            <span data-i18n="home.learnMore">了解更多</span>
+                        <a href="/dashboard" class="btn btn-outline-light btn-lg">
+                            <i class="fas fa-chart-pie"></i>
+                            <span>查看仪表盘</span>
                         </a>
                     </div>
                 </div>
@@ -123,29 +116,6 @@
                         </div>
                         <h3 data-i18n="home.feature4.title">高可用性</h3>
                         <p data-i18n="home.feature4.desc">企业级架构，支持大规模部署</p>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- 新功能：模型解释 -->
-            <div class="row mt-5">
-                <div class="col-12">
-                    <div class="card feature-card fade-in" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
-                        <div class="row align-items-center">
-                            <div class="col-md-8">
-                                <div class="feature-icon" style="font-size: 2rem; margin-bottom: 1rem;">
-                                    <i class="fas fa-lightbulb"></i>
-                                </div>
-                                <h3 style="color: white;">模型可解释性分析 (SHAP)</h3>
-                                <p style="color: rgba(255,255,255,0.9);">使用SHAP技术深入理解模型预测背后的原因，查看每个特征对预测结果的贡献值，让AI决策更加透明可信。</p>
-                                <a href="/explanation" class="btn btn-light mt-2">
-                                    <i class="fas fa-search-plus"></i> 探索模型解释
-                                </a>
-                            </div>
-                            <div class="col-md-4 text-center">
-                                <i class="fas fa-chart-pie" style="font-size: 6rem; color: rgba(255,255,255,0.3);"></i>
-                            </div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -208,12 +178,16 @@
         // 加载系统统计
         async function loadStats() {
             try {
-                const response = await fetch('/api/health');
+                const response = await fetch('/api/system-stats');
                 const data = await response.json();
 
                 if (data.status === 'healthy') {
-                    document.getElementById('totalPredictions').textContent =
-                        Math.floor(Math.random() * 10000 + 1000);
+                    document.getElementById('totalPredictions').textContent = 
+                        data.total_predictions.toLocaleString();
+                    document.getElementById('modelAccuracy').textContent = 
+                        data.accuracy + '%';
+                    document.getElementById('apiVersion').textContent = 
+                        data.version;
                 }
             } catch (error) {
                 console.error('Failed to load stats:', error);
@@ -223,6 +197,8 @@
         // 页面加载时获取统计
         document.addEventListener('DOMContentLoaded', () => {
             loadStats();
+            // 每10秒刷新一次
+            setInterval(loadStats, 10000);
 
             // 动画效果
             const observer = new IntersectionObserver((entries) => {
