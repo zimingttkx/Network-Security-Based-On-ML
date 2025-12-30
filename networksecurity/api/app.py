@@ -24,6 +24,8 @@ from networksecurity.logging.logger import logging
 from networksecurity.pipeline.training_pipeline import TrainingPipeline
 from networksecurity.utils.main_utils.utils import load_object
 from networksecurity.config.config_manager import get_config_manager
+from networksecurity.utils.ml_utils.model_explanation import ModelExplainer
+from networksecurity.utils.url_feature_extractor import URLFeatureExtractor
 
 
 # ==================== Prometheus Metrics ====================
@@ -86,6 +88,43 @@ class TrainingResponse(BaseModel):
     metrics: Optional[dict] = None
 
 
+class FeatureContribution(BaseModel):
+    """特征贡献模型"""
+    feature_name: str = Field(..., description="特征名称")
+    shap_value: float = Field(..., description="SHAP值")
+    contribution: str = Field(..., description="贡献方向 (positive/negative)")
+
+
+class ExplainResponse(BaseModel):
+    """解释响应模型"""
+    predictions: List[int] = Field(..., description="预测结果")
+    probabilities: Optional[List[float]] = Field(None, description="预测概率")
+    threat_level: List[str] = Field(..., description="威胁级别")
+    explanations: List[dict] = Field(..., description="每个样本的特征贡献分析")
+
+
+class URLRequest(BaseModel):
+    """URL预测请求模型"""
+    url: str = Field(..., description="要检测的URL")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "url": "https://example.com"
+            }
+        }
+
+
+class URLPredictionResponse(BaseModel):
+    """URL预测响应模型"""
+    url: str = Field(..., description="检测的URL")
+    prediction: int = Field(..., description="预测结果 (0: 安全, 1: 危险)")
+    probability: Optional[float] = Field(None, description="危险概率")
+    threat_level: str = Field(..., description="威胁级别")
+    features: dict = Field(..., description="提取的特征")
+    feature_extraction_time: float = Field(..., description="特征提取耗时(秒)")
+
+
 # ==================== Lifespan Context Manager ====================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -97,7 +136,7 @@ async def lifespan(app: FastAPI):
 
     # 加载模型（如果存在）
     try:
-        model_path = "final_models/model.pkl"
+        model_path = "models/model.pkl"
         if os.path.exists(model_path):
             app.state.model = load_object(model_path)
             logging.info("模型加载成功")
@@ -309,6 +348,152 @@ async def predict(request: PredictionRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"预测失败: {str(e)}"
+        )
+
+
+# ==================== Explanation Endpoint ====================
+@app.post("/api/v1/explain", response_model=ExplainResponse, tags=["Explanation"])
+async def explain_prediction(request: PredictionRequest):
+    """预测并解释结果 - 返回预测结果及Top 5特征贡献分析"""
+    try:
+        # 检查模型
+        if not hasattr(app.state, 'model') or app.state.model is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="模型未加载，请先训练模型"
+            )
+
+        # 转换数据
+        df = pd.DataFrame(request.data)
+        
+        # 预测
+        predictions = app.state.model.predict(df)
+        threat_levels = ['危险 (Malicious)' if p == 1 else '安全 (Benign)' for p in predictions]
+        
+        # 获取概率
+        probabilities = None
+        if hasattr(app.state.model, 'predict_proba'):
+            proba = app.state.model.predict_proba(df)
+            probabilities = proba[:, 1].tolist()
+        
+        # 生成SHAP解释
+        explainer = ModelExplainer()
+        explanation_result = explainer.get_explanation(app.state.model, df.values)
+        
+        # 提取每个样本的Top 5特征贡献
+        sample_explanations = []
+        if explanation_result["success"]:
+            for exp in explanation_result["explanations"]:
+                top_5_features = exp["top_features"][:5]
+                sample_explanations.append({
+                    "sample_index": exp["sample_index"],
+                    "base_value": exp["base_value"],
+                    "top_5_contributions": [
+                        {
+                            "feature_name": f["name"],
+                            "feature_value": f["value"],
+                            "shap_value": f["shap_value"],
+                            "contribution": f["contribution"]
+                        }
+                        for f in top_5_features
+                    ]
+                })
+        else:
+            logging.warning(f"SHAP解释生成失败: {explanation_result.get('error', 'Unknown error')}")
+            sample_explanations = [{"error": "无法生成特征解释"}]
+        
+        PREDICTION_COUNT.labels(status='success').inc()
+        
+        return ExplainResponse(
+            predictions=predictions.tolist(),
+            probabilities=probabilities,
+            threat_level=threat_levels,
+            explanations=sample_explanations
+        )
+
+    except Exception as e:
+        PREDICTION_COUNT.labels(status='failed').inc()
+        logging.error(f"预测解释失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"预测解释失败: {str(e)}"
+        )
+
+
+# ==================== URL Prediction Endpoint ====================
+@app.post("/api/v1/predict/url", response_model=URLPredictionResponse, tags=["Prediction"])
+async def predict_from_url(request: URLRequest):
+    """
+    从URL自动提取特征并预测
+    
+    输入一个URL，系统自动提取30个特征并返回预测结果
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    
+    try:
+        # 检查模型
+        if not hasattr(app.state, 'model') or app.state.model is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="模型未加载，请先训练模型"
+            )
+        
+        # 在线程池中执行特征提取（避免阻塞事件循环）
+        start_time = time.time()
+        
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            extractor = URLFeatureExtractor(timeout=15)
+            features = await loop.run_in_executor(
+                executor, 
+                extractor.extract_features, 
+                request.url
+            )
+        
+        extraction_time = time.time() - start_time
+        
+        # 转换为DataFrame（按特征顺序）
+        feature_order = [
+            'having_IP_Address', 'URL_Length', 'Shortining_Service', 'having_At_Symbol',
+            'double_slash_redirecting', 'Prefix_Suffix', 'having_Sub_Domain', 'SSLfinal_State',
+            'Domain_registeration_length', 'Favicon', 'port', 'HTTPS_token', 'Request_URL',
+            'URL_of_Anchor', 'Links_in_tags', 'SFH', 'Submitting_to_email', 'Abnormal_URL',
+            'Redirect', 'on_mouseover', 'RightClick', 'popUpWidnow', 'Iframe', 'age_of_domain',
+            'DNSRecord', 'web_traffic', 'Page_Rank', 'Google_Index', 'Links_pointing_to_page',
+            'Statistical_report'
+        ]
+        df = pd.DataFrame([[features[f] for f in feature_order]], columns=feature_order)
+        
+        # 预测
+        prediction = app.state.model.predict(df)[0]
+        threat_level = '危险 (Malicious)' if prediction == 1 else '安全 (Benign)'
+        
+        # 获取概率
+        probability = None
+        if hasattr(app.state.model, 'predict_proba'):
+            proba = app.state.model.predict_proba(df)
+            probability = float(proba[0, 1])
+        
+        PREDICTION_COUNT.labels(status='success').inc()
+        
+        return URLPredictionResponse(
+            url=request.url,
+            prediction=int(prediction),
+            probability=probability,
+            threat_level=threat_level,
+            features=features,
+            feature_extraction_time=round(extraction_time, 2)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        PREDICTION_COUNT.labels(status='failed').inc()
+        logging.error(f"URL预测失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"URL预测失败: {str(e)}"
         )
 
 

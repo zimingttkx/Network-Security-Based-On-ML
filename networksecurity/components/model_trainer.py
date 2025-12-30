@@ -117,8 +117,8 @@ class ModelTrainer:
             os.makedirs(os.path.dirname(self.model_trainer_config.trained_model_file_path), exist_ok=True)
             save_object(file_path=self.model_trainer_config.trained_model_file_path, obj=network_model)
 
-            # 也保存一份到固定的 final_models 目录，供预测 API 使用
-            final_model_dir = "final_models"
+            # 也保存一份到固定的 models 目录，供预测 API 使用
+            final_model_dir = "models"
             os.makedirs(final_model_dir, exist_ok=True)
             save_object(os.path.join(final_model_dir, "model.pkl"), best_model)
 

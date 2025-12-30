@@ -8,7 +8,7 @@ defining common constant variable for training pipeline
 """
 TARGET_COLUMN = "Result"
 PIPELINE_NAME: str = "NetworkSecurity"
-ARTIFACT_DIR: str = "Artifacts"
+ARTIFACT_DIR: str = "artifacts"
 FILE_NAME: str = "phisingData.csv"
 
 TRAIN_FILE_NAME: str = "train.csv"

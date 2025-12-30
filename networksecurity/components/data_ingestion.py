@@ -34,7 +34,7 @@ class DataIngestion:
             # 如果MongoDB URL未配置或为空，使用本地CSV文件
             if not MONGO_DB_URL or MONGO_DB_URL.strip() == "":
                 logging.info("MongoDB未配置，使用本地CSV文件")
-                csv_path = "Network_Data/phisingData.csv"
+                csv_path = "data/phisingData.csv"
                 if os.path.exists(csv_path):
                     df = pd.read_csv(csv_path)
                     df.replace({"na": np.nan}, inplace=True)
@@ -55,7 +55,7 @@ class DataIngestion:
 
             if df.empty:
                 logging.warning("MongoDB中没有数据，尝试使用本地CSV文件")
-                csv_path = "Network_Data/phisingData.csv"
+                csv_path = "data/phisingData.csv"
                 if os.path.exists(csv_path):
                     df = pd.read_csv(csv_path)
                     df.replace({"na": np.nan}, inplace=True)
@@ -76,7 +76,7 @@ class DataIngestion:
         except (pymongo.errors.ServerSelectionTimeoutError, pymongo.errors.ConnectionFailure) as e:
             # MongoDB连接失败，使用本地CSV文件
             logging.warning(f"MongoDB连接失败: {e}，使用本地CSV文件")
-            csv_path = "Network_Data/phisingData.csv"
+            csv_path = "data/phisingData.csv"
             if os.path.exists(csv_path):
                 df = pd.read_csv(csv_path)
                 df.replace({"na": np.nan}, inplace=True)

@@ -20,7 +20,7 @@ database:
 
 # 数据管道配置
 data_pipeline:
-  artifact_dir: "Artifacts"
+  artifact_dir: "artifacts"
   pipeline_name: "NetworkSecurity"
 
   # 数据摄取

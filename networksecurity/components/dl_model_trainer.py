@@ -273,8 +273,8 @@ class DLModelTrainer:
                 os.makedirs(os.path.dirname(self.model_trainer_config.trained_model_file_path), exist_ok=True)
                 save_object(file_path=self.model_trainer_config.trained_model_file_path, obj=wrapped_model)
 
-                # 保存到final_models目录
-                final_model_dir = "final_models"
+                # 保存到models目录
+                final_model_dir = "models"
                 os.makedirs(final_model_dir, exist_ok=True)
 
                 # 保存Keras模型
