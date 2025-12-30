@@ -1,0 +1,46 @@
+# Network Security ML - Kubernetes ConfigMap & Secret
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: network-security-ml-config
+data:
+  LOG_LEVEL: "INFO"
+  TF_CPP_MIN_LOG_LEVEL: "2"
+  PYTHONUNBUFFERED: "1"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: network-security-ml-secret
+type: Opaque
+stringData:
+  # 在生产环境中替换为真实密钥
+  API_KEY: "your-api-key-here"
+  SECRET_KEY: "your-secret-key-here"
+---
+apiVersion: v1
+kind: NetworkPolicy
+metadata:
+  name: network-security-ml-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: network-security-ml
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8000
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: TCP
+      port: 443
