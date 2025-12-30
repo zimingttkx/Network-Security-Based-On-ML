@@ -28,5 +28,20 @@ tqdm>=4.66.0
 
 # 可视化
 matplotlib>=3.7.0
+shap>=0.43.0
+
+# URL特征提取
+python-whois>=0.9.0
+dnspython>=2.4.0
+beautifulsoup4>=4.12.0
+
+# NLP (BERT)
+transformers>=4.35.0
+torch>=2.0.0
+
+# 视觉检测
+faiss-cpu>=1.7.4
+playwright>=1.40.0
+Pillow>=10.0.0
 
 -e .
