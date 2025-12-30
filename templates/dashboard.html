@@ -3,458 +3,316 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>仪表盘 - CyberShield</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <title>统计仪表盘 - 网络安全威胁检测系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
     <link href="/static/css/main.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        :root { --bg:#0a0a0f; --bg-card:rgba(20,20,30,0.7); --border:rgba(255,255,255,0.08); --text:#fff; --text-secondary:#8b8b9e; --accent:#6366f1; --success:#22c55e; --danger:#ef4444; --warning:#f59e0b; }
-        * { margin:0; padding:0; box-sizing:border-box; }
-        body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; overflow-x:hidden; }
+        body { background: #0a0a0f; min-height: 100vh; overflow-x: hidden; }
+        .dashboard-container { padding: 20px; max-width: 1600px; margin: 0 auto; }
         
-        /* 全屏攻击地图背景 - 与首页相同 */
-        .cyber-bg { position:fixed; top:0; left:0; width:100%; height:100%; z-index:-2; background:#000; }
-        .cyber-bg canvas { width:100%; height:100%; }
-        .bg-overlay { position:fixed; top:0; left:0; width:100%; height:100%; z-index:-1; background:radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.7) 100%); pointer-events:none; }
-        .scanlines { position:fixed; top:0; left:0; width:100%; height:100%; z-index:-1; background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,255,255,0.01) 2px,rgba(0,255,255,0.01) 4px); pointer-events:none; animation:scanMove 8s linear infinite; }
-        @keyframes scanMove { 0%{background-position:0 0} 100%{background-position:0 100vh} }
+        .stat-card {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+            height: 100%;
+        }
+        .stat-card .stat-value { font-size: 2rem; font-weight: bold; color: #00d4ff; }
+        .stat-card .stat-label { color: #8892b0; font-size: 0.85rem; margin-bottom: 5px; }
+        .stat-card.danger .stat-value { color: #ff4757; }
+        .stat-card.success .stat-value { color: #2ed573; }
+        .stat-card.warning .stat-value { color: #ffa502; }
         
-        /* 地图图例 */
-        .map-legend { position:fixed; bottom:20px; left:20px; z-index:100; background:rgba(0,0,0,0.8); backdrop-filter:blur(10px); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:14px 18px; }
-        .map-legend h4 { font-size:0.7rem; color:var(--text-secondary); margin-bottom:10px; text-transform:uppercase; letter-spacing:1px; }
-        .legend-items { display:flex; flex-direction:column; gap:8px; }
-        .legend-item { display:flex; align-items:center; gap:10px; font-size:0.8rem; color:var(--text-secondary); }
-        .legend-line { width:30px; height:3px; border-radius:2px; }
-        .legend-line.safe { background:linear-gradient(90deg, transparent, #22c55e); box-shadow:0 0 10px #22c55e; }
-        .legend-line.challenge { background:linear-gradient(90deg, transparent, #f59e0b); box-shadow:0 0 10px #f59e0b; }
-        .legend-line.danger { background:linear-gradient(90deg, transparent, #ef4444); box-shadow:0 0 10px #ef4444; }
+        .chart-box {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            padding: 15px;
+            border: 1px solid rgba(255,255,255,0.1);
+            height: 100%;
+        }
+        .chart-box .chart-title { color: #fff; font-size: 0.95rem; margin-bottom: 10px; font-weight: 500; }
+        .chart-wrapper { position: relative; height: 220px; }
+        .chart-wrapper-pie { position: relative; height: 200px; }
         
-        /* 实时访问面板 */
-        .live-panel { position:fixed; top:80px; right:20px; z-index:100; width:300px; background:rgba(0,0,0,0.85); backdrop-filter:blur(15px); border:1px solid rgba(255,255,255,0.1); border-radius:12px; overflow:hidden; }
-        .live-panel-header { padding:14px 16px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; justify-content:space-between; }
-        .live-panel-header h3 { font-size:0.85rem; font-weight:600; display:flex; align-items:center; gap:8px; }
-        .live-panel-header h3 i { color:var(--accent); }
-        .live-dot { width:8px; height:8px; background:#22c55e; border-radius:50%; animation:pulse 2s infinite; }
-        @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,0.4)} 50%{box-shadow:0 0 0 6px rgba(34,197,94,0)} }
-        .access-stats { padding:12px 16px; display:grid; grid-template-columns:repeat(3,1fr); gap:8px; border-bottom:1px solid rgba(255,255,255,0.08); }
-        .access-stat { text-align:center; padding:8px; background:rgba(255,255,255,0.03); border-radius:6px; }
-        .access-stat .num { font-size:1.2rem; font-weight:700; }
-        .access-stat .num.safe { color:#22c55e; }
-        .access-stat .num.challenge { color:#f59e0b; }
-        .access-stat .num.danger { color:#ef4444; }
-        .access-stat .label { font-size:0.6rem; color:var(--text-secondary); margin-top:2px; }
-        .live-logs { max-height:300px; overflow-y:auto; }
-        .live-logs::-webkit-scrollbar { width:4px; }
-        .live-logs::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.2); border-radius:2px; }
-        .live-log-item { padding:10px 16px; border-bottom:1px solid rgba(255,255,255,0.04); font-size:0.75rem; animation:slideIn 0.3s ease; display:flex; align-items:center; gap:10px; }
-        @keyframes slideIn { from{opacity:0;transform:translateX(20px)} to{opacity:1;transform:translateX(0)} }
-        .log-indicator { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-        .log-indicator.safe { background:#22c55e; box-shadow:0 0 6px #22c55e; }
-        .log-indicator.challenge { background:#f59e0b; box-shadow:0 0 6px #f59e0b; }
-        .log-indicator.danger { background:#ef4444; box-shadow:0 0 6px #ef4444; }
-        .log-content { flex:1; min-width:0; }
-        .log-route { color:var(--text); font-weight:500; }
-        .log-meta { color:var(--text-secondary); font-size:0.65rem; margin-top:2px; }
-        .log-time { color:var(--text-secondary); font-size:0.6rem; }
+        .log-table { font-size: 0.85rem; }
+        .log-table th { color: #00d4ff; border-color: rgba(255,255,255,0.1); padding: 8px; }
+        .log-table td { color: #ccd6f6; border-color: rgba(255,255,255,0.1); padding: 8px; }
+        .badge-threat { background: #ff4757; font-size: 0.75rem; }
+        .badge-safe { background: #2ed573; }
+        .badge-warning { background: #ffa502; }
         
-        /* 导航栏 */
-        .navbar { position:fixed; top:0; left:0; right:0; height:64px; background:rgba(10,10,15,0.9); backdrop-filter:blur(20px); border-bottom:1px solid var(--border); z-index:1000; display:flex; align-items:center; justify-content:center; }
-        .navbar-inner { width:100%; max-width:1400px; padding:0 24px; display:flex; align-items:center; justify-content:space-between; }
-        .logo { display:flex; align-items:center; gap:12px; font-weight:700; font-size:1.25rem; color:var(--text); text-decoration:none; }
-        .logo-icon { width:36px; height:36px; background:linear-gradient(135deg,#6366f1,#8b5cf6); border-radius:10px; display:flex; align-items:center; justify-content:center; box-shadow:0 0 20px rgba(99,102,241,0.4); }
-        .nav-links { display:flex; gap:8px; }
-        .nav-link { padding:10px 16px; color:var(--text-secondary); text-decoration:none; font-size:0.9rem; font-weight:500; border-radius:8px; transition:all 0.2s; }
-        .nav-link:hover { color:var(--text); background:rgba(255,255,255,0.05); }
-        .nav-link.active { color:var(--text); background:rgba(255,255,255,0.08); }
+        .control-bar {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            padding: 15px 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 20px;
+        }
+        .refresh-btn {
+            background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 0.9rem;
+        }
+        .time-filter {
+            background: rgba(26, 26, 46, 0.9);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #fff;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 0.9rem;
+        }
+        .time-filter:focus { outline: none; border-color: #00d4ff; }
+        .time-filter option { background: #1a1a2e; }
         
-        /* 主内容区 */
-        .page-wrapper { padding-top:64px; min-height:100vh; }
-        .dashboard-header { padding:28px 24px 20px; max-width:1050px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; }
-        .dashboard-header h1 { font-size:1.5rem; font-weight:700; display:flex; align-items:center; gap:12px; text-shadow:0 0 30px rgba(99,102,241,0.5); }
-        .dashboard-header h1 i { color:var(--accent); }
-        .header-controls { display:flex; align-items:center; gap:12px; }
-        .time-select { padding:10px 16px; background:rgba(255,255,255,0.05); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:0.9rem; }
-        .live-indicator { display:flex; align-items:center; gap:8px; font-size:0.85rem; color:var(--success); }
-        .dashboard-content { max-width:1050px; margin:0 auto; padding:0 24px 60px; }
-        
-        /* 统计卡片 */
-        .stats-row { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:16px; }
-        @media(max-width:1100px) { .stats-row { grid-template-columns:repeat(3,1fr); } }
-        @media(max-width:700px) { .stats-row { grid-template-columns:repeat(2,1fr); } }
-        .stat-box { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:14px; transition:all 0.3s; }
-        .stat-box:hover { border-color:rgba(99,102,241,0.3); transform:translateY(-2px); }
-        .stat-box .label { font-size:0.7rem; color:var(--text-secondary); margin-bottom:4px; display:flex; align-items:center; gap:6px; }
-        .stat-box .value { font-size:1.5rem; font-weight:800; background:linear-gradient(135deg,#6366f1,#a855f7); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-        .stat-box.success .value { background:linear-gradient(135deg,#22c55e,#10b981); -webkit-background-clip:text; }
-        .stat-box.danger .value { background:linear-gradient(135deg,#ef4444,#f97316); -webkit-background-clip:text; }
-        .stat-box.warning .value { background:linear-gradient(135deg,#f59e0b,#eab308); -webkit-background-clip:text; }
-        .stat-box.info .value { background:linear-gradient(135deg,#3b82f6,#06b6d4); -webkit-background-clip:text; }
-        
-        /* 图表 */
-        .charts-grid { display:grid; grid-template-columns:2fr 1fr; gap:12px; margin-bottom:12px; }
-        @media(max-width:1024px) { .charts-grid { grid-template-columns:1fr; } }
-        .chart-card { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:14px; }
-        .chart-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
-        .chart-header h3 { font-size:0.8rem; font-weight:600; display:flex; align-items:center; gap:8px; }
-        .chart-header h3 i { color:var(--accent); }
-        .chart-wrap { position:relative; height:200px; }
-        .chart-wrap-lg { height:240px; }
-        .grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:12px; }
-        @media(max-width:900px) { .grid-3 { grid-template-columns:1fr; } }
-        .chart-wrap-sm { height:160px; }
-        
-        /* 日志 */
-        .logs-card { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
-        .logs-header { padding:12px 16px; border-bottom:1px solid rgba(255,255,255,0.04); display:flex; align-items:center; justify-content:space-between; }
-        .logs-header h3 { font-size:0.8rem; font-weight:600; display:flex; align-items:center; gap:8px; }
-        .logs-header h3 i { color:var(--danger); }
-        .logs-table { width:100%; border-collapse:collapse; }
-        .logs-table th,.logs-table td { padding:8px 12px; text-align:left; border-bottom:1px solid rgba(255,255,255,0.04); font-size:0.7rem; }
-        .logs-table th { color:var(--text-secondary); font-weight:500; background:rgba(255,255,255,0.02); }
-        .logs-table td { color:var(--text-secondary); }
-        .badge-sm { padding:2px 6px; border-radius:8px; font-size:0.6rem; font-weight:600; }
-        .badge-threat { background:rgba(239,68,68,0.15); color:#ef4444; }
-        .badge-block { background:rgba(239,68,68,0.15); color:#ef4444; }
-        .badge-warn { background:rgba(245,158,11,0.15); color:#f59e0b; }
-        
-        @media(max-width:768px) { .live-panel { display:none; } }
+        .section-title { color: #fff; font-size: 1.1rem; margin-bottom: 15px; }
+        .row-gap { margin-bottom: 20px; }
     </style>
 </head>
 <body>
-    <!-- 全屏攻击地图背景 -->
-    <div class="cyber-bg"><canvas id="cyberMapBg"></canvas></div>
-    <div class="bg-overlay"></div>
-    <div class="scanlines"></div>
-    
-    <!-- 地图图例 -->
-    <div class="map-legend">
-        <h4>访问类型</h4>
-        <div class="legend-items">
-            <div class="legend-item"><div class="legend-line safe"></div><span>正常访问</span></div>
-            <div class="legend-item"><div class="legend-line challenge"></div><span>人机验证</span></div>
-            <div class="legend-item"><div class="legend-line danger"></div><span>恶意攻击</span></div>
-        </div>
-    </div>
-    
-    <!-- 实时访问面板 -->
-    <div class="live-panel">
-        <div class="live-panel-header">
-            <h3><i class="fas fa-satellite-dish"></i> 实时访问监控</h3>
-            <div class="live-dot"></div>
-        </div>
-        <div class="access-stats">
-            <div class="access-stat"><div class="num safe" id="liveNormal">0</div><div class="label">正常</div></div>
-            <div class="access-stat"><div class="num challenge" id="liveChallenge">0</div><div class="label">验证</div></div>
-            <div class="access-stat"><div class="num danger" id="liveDanger">0</div><div class="label">攻击</div></div>
-        </div>
-        <div class="live-logs" id="liveLogs"></div>
-    </div>
-
-    <nav class="navbar">
-        <div class="navbar-inner">
-            <a href="/" class="logo"><div class="logo-icon"><i class="fas fa-shield-halved"></i></div><span>CyberShield</span></a>
-            <div class="nav-links">
-                <a href="/" class="nav-link">首页</a>
-                <a href="/dashboard" class="nav-link active">仪表盘</a>
-                <a href="/model-select" class="nav-link">模型选择</a>
-                <a href="/benchmark" class="nav-link">拦截测试</a>
-                <a href="/predict" class="nav-link">威胁检测</a>
-                <a href="/train" class="nav-link">模型训练</a>
+    <nav class="navbar navbar-expand-lg">
+        <div class="container">
+            <a class="navbar-brand" href="/"><i class="fas fa-shield-alt"></i><span>网络安全检测</span></a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item"><a class="nav-link" href="/"><i class="fas fa-home"></i> 首页</a></li>
+                    <li class="nav-item"><a class="nav-link active" href="/dashboard"><i class="fas fa-chart-pie"></i> 仪表盘</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/train"><i class="fas fa-brain"></i> 训练</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/docs" target="_blank"><i class="fas fa-code"></i> API</a></li>
+                </ul>
             </div>
         </div>
     </nav>
 
-    <div class="page-wrapper">
-        <div class="dashboard-header">
-            <h1><i class="fas fa-chart-pie"></i> 安全态势仪表盘</h1>
-            <div class="header-controls">
-                <select class="time-select" id="timeRange" onchange="loadAll()">
+    <div class="dashboard-container">
+        <div class="control-bar d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <h5 class="text-white mb-0"><i class="fas fa-chart-pie me-2"></i>流量统计仪表盘</h5>
+            <div class="d-flex gap-2 align-items-center">
+                <select id="timeRange" class="time-filter">
                     <option value="1">1小时</option>
                     <option value="6">6小时</option>
                     <option value="24" selected>24小时</option>
                     <option value="168">7天</option>
                 </select>
-                <div class="live-indicator"><span class="live-dot"></span> 实时</div>
+                <span class="text-success small"><i class="fas fa-circle me-1" style="font-size:8px;"></i>实时更新</span>
+                <span class="text-muted small" id="lastUpdate"></span>
             </div>
         </div>
-        
-        <div class="dashboard-content">
-            <div class="stats-row">
-                <div class="stat-box"><div class="label"><i class="fas fa-globe"></i> 总请求</div><div class="value" id="total">0</div></div>
-                <div class="stat-box success"><div class="label"><i class="fas fa-check"></i> 放行</div><div class="value" id="allowed">0</div></div>
-                <div class="stat-box danger"><div class="label"><i class="fas fa-ban"></i> 拦截</div><div class="value" id="blocked">0</div></div>
-                <div class="stat-box warning"><div class="label"><i class="fas fa-user-check"></i> 验证</div><div class="value" id="challenged">0</div></div>
-                <div class="stat-box info"><div class="label"><i class="fas fa-tachometer-alt"></i> 准确率</div><div class="value" id="accuracy">95.8%</div></div>
-            </div>
-            
-            <div class="charts-grid">
-                <div class="chart-card">
-                    <div class="chart-header"><h3><i class="fas fa-chart-area"></i> 流量趋势</h3></div>
-                    <div class="chart-wrap chart-wrap-lg"><canvas id="timelineChart"></canvas></div>
-                </div>
-                <div class="chart-card">
-                    <div class="chart-header"><h3><i class="fas fa-chart-pie"></i> 威胁分布</h3></div>
-                    <div class="chart-wrap"><canvas id="threatChart"></canvas></div>
+
+        <div class="row row-gap g-3">
+            <div class="col-6 col-md-3">
+                <div class="stat-card">
+                    <div class="stat-label"><i class="fas fa-globe me-1"></i>总请求</div>
+                    <div class="stat-value" id="totalRequests">-</div>
                 </div>
             </div>
-            
-            <div class="grid-3">
-                <div class="chart-card"><div class="chart-header"><h3><i class="fas fa-tasks"></i> 处理动作</h3></div><div class="chart-wrap chart-wrap-sm"><canvas id="actionChart"></canvas></div></div>
-                <div class="chart-card"><div class="chart-header"><h3><i class="fas fa-server"></i> TOP源IP</h3></div><div class="chart-wrap chart-wrap-sm"><canvas id="sourceChart"></canvas></div></div>
-                <div class="chart-card"><div class="chart-header"><h3><i class="fas fa-bullseye"></i> 风险分布</h3></div><div class="chart-wrap chart-wrap-sm"><canvas id="riskChart"></canvas></div></div>
+            <div class="col-6 col-md-3">
+                <div class="stat-card success">
+                    <div class="stat-label"><i class="fas fa-check me-1"></i>放行</div>
+                    <div class="stat-value" id="allowedRequests">-</div>
+                </div>
             </div>
-            
-            <div class="logs-card">
-                <div class="logs-header"><h3><i class="fas fa-exclamation-triangle"></i> 最近威胁日志</h3><span style="font-size:0.65rem;color:var(--text-secondary);" id="logCount">0 条</span></div>
-                <div style="overflow-x:auto;max-height:200px;">
-                    <table class="logs-table">
-                        <thead><tr><th>时间</th><th>源IP</th><th>目标</th><th>类型</th><th>风险</th><th>动作</th></tr></thead>
-                        <tbody id="logsBody"><tr><td colspan="6" style="text-align:center">加载中...</td></tr></tbody>
-                    </table>
+            <div class="col-6 col-md-3">
+                <div class="stat-card danger">
+                    <div class="stat-label"><i class="fas fa-ban me-1"></i>拦截</div>
+                    <div class="stat-value" id="blockedRequests">-</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="stat-card warning">
+                    <div class="stat-label"><i class="fas fa-user-check me-1"></i>验证</div>
+                    <div class="stat-value" id="challengedRequests">-</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row row-gap g-3">
+            <div class="col-lg-8">
+                <div class="chart-box">
+                    <div class="chart-title"><i class="fas fa-chart-line me-2"></i>流量趋势</div>
+                    <div class="chart-wrapper"><canvas id="timelineChart"></canvas></div>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="chart-box">
+                    <div class="chart-title"><i class="fas fa-chart-pie me-2"></i>威胁分布</div>
+                    <div class="chart-wrapper-pie"><canvas id="threatChart"></canvas></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row row-gap g-3">
+            <div class="col-lg-6">
+                <div class="chart-box">
+                    <div class="chart-title"><i class="fas fa-tasks me-2"></i>处理动作</div>
+                    <div class="chart-wrapper"><canvas id="actionChart"></canvas></div>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="chart-box">
+                    <div class="chart-title"><i class="fas fa-server me-2"></i>TOP 10 源IP</div>
+                    <div class="chart-wrapper"><canvas id="sourceChart"></canvas></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row g-3">
+            <div class="col-12">
+                <div class="chart-box">
+                    <div class="chart-title"><i class="fas fa-exclamation-triangle me-2"></i>最近威胁日志</div>
+                    <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                        <table class="table table-sm log-table mb-0">
+                            <thead style="position: sticky; top: 0; background: #1a1a2e;">
+                                <tr><th>时间</th><th>源IP</th><th>目标</th><th>威胁类型</th><th>风险</th><th>动作</th></tr>
+                            </thead>
+                            <tbody id="threatLogs"></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         let charts = {};
-        const colors = { primary:'#6366f1', success:'#22c55e', danger:'#ef4444', warning:'#f59e0b', purple:'#a855f7', cyan:'#06b6d4' };
-        const chartColors = [colors.primary, colors.danger, colors.warning, colors.success, colors.purple, colors.cyan, '#ec4899', '#14b8a6'];
-        const zoomOptions = { zoom:{wheel:{enabled:true},pinch:{enabled:true},mode:'xy'}, pan:{enabled:true,mode:'xy'} };
-        const autoScaleOpts = { x:{ticks:{color:'#71717a',font:{size:9}},grid:{color:'rgba(255,255,255,0.03)'}}, y:{ticks:{color:'#71717a',font:{size:9}},grid:{color:'rgba(255,255,255,0.03)'},beginAtZero:true,grace:'10%'} };
-        
+        let isLoading = false;
+
         function initCharts() {
-            const defaultOpts = {responsive:true,maintainAspectRatio:false,animation:{duration:500},plugins:{legend:{labels:{color:'#a1a1aa',font:{size:10}}}}};
+            const defaultOpts = {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 },
+                plugins: { legend: { labels: { color: '#ccd6f6', font: { size: 11 } } } }
+            };
+            const scaleOpts = {
+                x: { ticks: { color: '#8892b0', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                y: { ticks: { color: '#8892b0', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+            };
+
             charts.timeline = new Chart(document.getElementById('timelineChart'), {
-                type:'line', data:{labels:[],datasets:[
-                    {label:'总请求',data:[],borderColor:colors.primary,backgroundColor:'rgba(99,102,241,0.1)',borderWidth:2,tension:0.4,fill:true,pointRadius:0},
-                    {label:'拦截',data:[],borderColor:colors.danger,backgroundColor:'rgba(239,68,68,0.1)',borderWidth:2,tension:0.4,fill:true,pointRadius:0},
-                    {label:'放行',data:[],borderColor:colors.success,borderWidth:1.5,tension:0.4,fill:false,pointRadius:0,borderDash:[5,5]}
-                ]}, options:{...defaultOpts,scales:autoScaleOpts,plugins:{...defaultOpts.plugins,zoom:zoomOptions}}
+                type: 'line',
+                data: { labels: [], datasets: [
+                    { label: '总请求', data: [], borderColor: '#00d4ff', borderWidth: 2, tension: 0.3, fill: false, pointRadius: 0 },
+                    { label: '拦截', data: [], borderColor: '#ff4757', borderWidth: 2, tension: 0.3, fill: false, pointRadius: 0 }
+                ]},
+                options: { ...defaultOpts, scales: scaleOpts, plugins: { ...defaultOpts.plugins, legend: { position: 'top', align: 'end', labels: { color: '#ccd6f6', boxWidth: 12, padding: 8 } } } }
             });
+
             charts.threat = new Chart(document.getElementById('threatChart'), {
-                type:'doughnut', data:{labels:[],datasets:[{data:[],backgroundColor:chartColors,borderWidth:0}]},
-                options:{...defaultOpts,cutout:'60%',plugins:{legend:{position:'right',labels:{color:'#a1a1aa',boxWidth:10,padding:6,font:{size:9}}}}}
+                type: 'doughnut',
+                data: { labels: [], datasets: [{ data: [], backgroundColor: ['#2ed573','#ff4757','#ffa502','#00d4ff','#a55eea','#ff6b81','#70a1ff','#7bed9f','#eccc68','#ff7f50'] }] },
+                options: { ...defaultOpts, plugins: { legend: { position: 'right', labels: { color: '#ccd6f6', font: { size: 10 }, boxWidth: 10, padding: 6 } } } }
             });
+
             charts.action = new Chart(document.getElementById('actionChart'), {
-                type:'bar', data:{labels:[],datasets:[{data:[],backgroundColor:chartColors,borderRadius:4}]},
-                options:{...defaultOpts,indexAxis:'y',scales:autoScaleOpts,plugins:{legend:{display:false}}}
+                type: 'bar',
+                data: { labels: [], datasets: [{ label: '数量', data: [], backgroundColor: ['#2ed573','#ff4757','#ffa502','#00d4ff','#a55eea'] }] },
+                options: { ...defaultOpts, indexAxis: 'y', scales: scaleOpts, plugins: { legend: { display: false } } }
             });
+
             charts.source = new Chart(document.getElementById('sourceChart'), {
-                type:'bar', data:{labels:[],datasets:[{data:[],backgroundColor:colors.primary,borderRadius:4}]},
-                options:{...defaultOpts,scales:autoScaleOpts,plugins:{legend:{display:false}}}
-            });
-            charts.risk = new Chart(document.getElementById('riskChart'), {
-                type:'polarArea', data:{labels:['低','中','高','严重'],datasets:[{data:[],backgroundColor:['rgba(34,197,94,0.6)','rgba(245,158,11,0.6)','rgba(239,68,68,0.6)','rgba(139,92,246,0.6)']}]},
-                options:{...defaultOpts,scales:{r:{ticks:{display:false},grid:{color:'rgba(255,255,255,0.05)'},beginAtZero:true}},plugins:{legend:{position:'right',labels:{color:'#a1a1aa',boxWidth:8,font:{size:9}}}}}
+                type: 'bar',
+                data: { labels: [], datasets: [{ label: '请求数', data: [], backgroundColor: '#00d4ff' }] },
+                options: { ...defaultOpts, scales: scaleOpts, plugins: { legend: { display: false } } }
             });
         }
-        
-        async function loadAll() {
-            const h = document.getElementById('timeRange').value;
-            await Promise.all([loadOverview(h),loadTimeline(h),loadThreats(h),loadActions(h),loadSources(h),loadLogs(),loadRiskDistribution(h)]);
+
+        async function loadAllData() {
+            if (isLoading) return;
+            isLoading = true;
+            const hours = document.getElementById('timeRange').value;
+            try {
+                await Promise.all([loadOverview(hours), loadTimeline(hours), loadThreats(hours), loadActions(hours), loadSources(hours), loadRecentThreats()]);
+                document.getElementById('lastUpdate').textContent = '更新: ' + new Date().toLocaleTimeString();
+            } catch (e) { console.error(e); }
+            isLoading = false;
         }
-        async function loadOverview(h) { try { const r=await fetch(`/api/v1/stats/overview?hours=${h}`);const d=await r.json();animateValue('total',d.total_requests||0);animateValue('allowed',d.allowed_requests||0);animateValue('blocked',d.blocked_requests||0);animateValue('challenged',d.challenged_requests||0);} catch(e){} }
-        function animateValue(id,end) { const el=document.getElementById(id);const start=parseInt(el.textContent.replace(/,/g,''))||0;const duration=500;const startTime=performance.now();function update(now){const p=Math.min((now-startTime)/duration,1);el.textContent=Math.floor(start+(end-start)*p).toLocaleString();if(p<1)requestAnimationFrame(update);}requestAnimationFrame(update); }
-        async function loadTimeline(h) { try { const r=await fetch(`/api/v1/stats/timeline?hours=${h}&interval=60`);const d=await r.json();if(d.success&&d.data){charts.timeline.data.labels=d.data.map(x=>new Date(x.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}));charts.timeline.data.datasets[0].data=d.data.map(x=>x.total);charts.timeline.data.datasets[1].data=d.data.map(x=>x.blocked);charts.timeline.data.datasets[2].data=d.data.map(x=>x.total-x.blocked);charts.timeline.update();}} catch(e){} }
-        async function loadThreats(h) { try { const r=await fetch(`/api/v1/stats/threats?hours=${h}`);const d=await r.json();if(d.success&&d.data){const f=Object.entries(d.data).filter(([k,v])=>k!=='benign'&&v>0).slice(0,6);charts.threat.data.labels=f.map(([k])=>k.toUpperCase());charts.threat.data.datasets[0].data=f.map(([,v])=>v);charts.threat.update();}} catch(e){} }
-        async function loadActions(h) { try { const r=await fetch(`/api/v1/stats/actions?hours=${h}`);const d=await r.json();if(d.success&&d.data){const names={allow:'放行',block:'拦截',challenge:'验证',log:'记录',alert:'告警'};charts.action.data.labels=Object.keys(d.data).map(k=>names[k]||k);charts.action.data.datasets[0].data=Object.values(d.data);charts.action.update();}} catch(e){} }
-        async function loadSources(h) { try { const r=await fetch(`/api/v1/stats/sources?hours=${h}&limit=6`);const d=await r.json();if(d.success&&d.data){charts.source.data.labels=d.data.map(x=>x.ip.length>10?x.ip.slice(0,8)+'..':x.ip);charts.source.data.datasets[0].data=d.data.map(x=>x.count);charts.source.update();}} catch(e){} }
-        async function loadRiskDistribution(h) { try { const r=await fetch(`/api/v1/stats/risk-distribution?hours=${h}`);const d=await r.json();if(d.success&&d.data){let low=0,med=0,high=0,crit=0;d.data.forEach(i=>{if(i.high<=0.3)low+=i.count;else if(i.high<=0.6)med+=i.count;else if(i.high<=0.8)high+=i.count;else crit+=i.count;});charts.risk.data.datasets[0].data=[low,med,high,crit];charts.risk.update();}} catch(e){} }
-        async function loadLogs() { try { const r=await fetch('/api/v1/stats/recent-threats?limit=8');const d=await r.json();const tbody=document.getElementById('logsBody');if(d.success&&d.data?.length){document.getElementById('logCount').textContent=d.data.length+' 条';tbody.innerHTML=d.data.map(l=>`<tr><td>${new Date(l.timestamp).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</td><td>${l.source_ip}</td><td>${l.dest_ip}:${l.dest_port}</td><td><span class="badge-sm badge-threat">${l.threat_type}</span></td><td>${(l.risk_score*100).toFixed(0)}%</td><td><span class="badge-sm ${l.action==='block'?'badge-block':'badge-warn'}">${l.action}</span></td></tr>`).join('');}else{document.getElementById('logCount').textContent='0 条';tbody.innerHTML='<tr><td colspan="6" style="text-align:center">暂无数据</td></tr>';}} catch(e){document.getElementById('logsBody').innerHTML='<tr><td colspan="6" style="text-align:center">暂无数据</td></tr>';} }
-        
-        document.addEventListener('DOMContentLoaded',()=>{initCharts();initCyberMap();loadAll();setInterval(loadAll,5000);});
-        
-        // ========== 全球网络攻击地图 (与首页相同) ==========
-        const mapCanvas = document.getElementById('cyberMapBg');
-        const ctx = mapCanvas.getContext('2d');
-        let attacks = [];
-        let accessStats = {safe:0, challenge:0, danger:0};
-        
-        // 全球节点位置
-        const nodes = [
-            {x:0.12,y:0.38,name:'美国西部'},{x:0.20,y:0.35,name:'美国东部'},{x:0.25,y:0.35,name:'加拿大'},{x:0.23,y:0.33,name:'纽约'},{x:0.15,y:0.48,name:'墨西哥'},
-            {x:0.32,y:0.68,name:'巴西'},{x:0.47,y:0.30,name:'英国'},{x:0.48,y:0.33,name:'法国'},{x:0.51,y:0.30,name:'德国'},{x:0.55,y:0.42,name:'意大利'},
-            {x:0.58,y:0.28,name:'俄罗斯'},{x:0.60,y:0.43,name:'土耳其'},{x:0.66,y:0.45,name:'印度'},{x:0.73,y:0.48,name:'东南亚'},{x:0.74,y:0.55,name:'新加坡'},
-            {x:0.77,y:0.35,name:'北京'},{x:0.78,y:0.43,name:'上海'},{x:0.79,y:0.40,name:'服务器'},{x:0.80,y:0.42,name:'深圳'},{x:0.82,y:0.36,name:'韩国'},
-            {x:0.85,y:0.38,name:'日本'},{x:0.88,y:0.72,name:'澳大利亚'},{x:0.54,y:0.70,name:'南非'},{x:0.75,y:0.58,name:'印尼'}
-        ];
-        
-        // 服务器节点索引
-        const serverNodeIdx = 17;
-        
-        // 访问类型颜色: 绿色正常, 黄色验证, 红色攻击
-        const accessTypeColors = {
-            safe: '#22c55e',
-            challenge: '#f59e0b', 
-            danger: '#ef4444'
-        };
-        
-        function resizeCanvas() {
-            mapCanvas.width = window.innerWidth * window.devicePixelRatio;
-            mapCanvas.height = window.innerHeight * window.devicePixelRatio;
-            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+        async function loadOverview(hours) {
+            const res = await fetch(`/api/v1/stats/overview?hours=${hours}`);
+            const d = await res.json();
+            document.getElementById('totalRequests').textContent = d.total_requests.toLocaleString();
+            document.getElementById('allowedRequests').textContent = d.allowed_requests.toLocaleString();
+            document.getElementById('blockedRequests').textContent = d.blocked_requests.toLocaleString();
+            document.getElementById('challengedRequests').textContent = d.challenged_requests.toLocaleString();
         }
-        
-        function generateAttack() {
-            // 随机选择源节点(非服务器)
-            let srcIdx = Math.floor(Math.random() * nodes.length);
-            while(srcIdx === serverNodeIdx) srcIdx = Math.floor(Math.random() * nodes.length);
-            const src = nodes[srcIdx];
-            const dst = nodes[serverNodeIdx]; // 目标始终是服务器
-            
-            // 随机访问类型: 70%正常, 15%验证, 15%攻击
-            const rand = Math.random();
-            let type, color;
-            if(rand < 0.70) { type = 'safe'; color = accessTypeColors.safe; }
-            else if(rand < 0.85) { type = 'challenge'; color = accessTypeColors.challenge; }
-            else { type = 'danger'; color = accessTypeColors.danger; }
-            
-            attacks.push({ src, dst, progress: 0, color, type, speed: 0.008 + Math.random()*0.012 });
-            accessStats[type]++;
-            if(attacks.length > 30) attacks.shift();
-            
-            // 更新统计和日志
-            updateAccessStats();
-            addLiveLog(type, src.name);
+
+        async function loadTimeline(hours) {
+            const res = await fetch(`/api/v1/stats/timeline?hours=${hours}&interval=60`);
+            const d = await res.json();
+            if (d.success && d.data) {
+                charts.timeline.data.labels = d.data.map(x => new Date(x.timestamp).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit'}));
+                charts.timeline.data.datasets[0].data = d.data.map(x => x.total);
+                charts.timeline.data.datasets[1].data = d.data.map(x => x.blocked);
+                charts.timeline.update('none');
+            }
         }
-        
-        function updateAccessStats() {
-            document.getElementById('liveNormal').textContent = accessStats.safe;
-            document.getElementById('liveChallenge').textContent = accessStats.challenge;
-            document.getElementById('liveDanger').textContent = accessStats.danger;
+
+        async function loadThreats(hours) {
+            const res = await fetch(`/api/v1/stats/threats?hours=${hours}`);
+            const d = await res.json();
+            if (d.success && d.data) {
+                const filtered = Object.entries(d.data).filter(([k,v]) => k !== 'benign' && v > 0).slice(0, 8);
+                charts.threat.data.labels = filtered.map(([k]) => k.toUpperCase());
+                charts.threat.data.datasets[0].data = filtered.map(([,v]) => v);
+                charts.threat.update('none');
+            }
         }
-        
-        function addLiveLog(type, srcName) {
-            const list = document.getElementById('liveLogs');
-            const time = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-            const typeNames = {safe:'正常访问',challenge:'人机验证',danger:'恶意攻击'};
-            const item = document.createElement('div');
-            item.className = 'live-log-item';
-            item.innerHTML = `<div class="log-indicator ${type}"></div><div class="log-content"><div class="log-route">${srcName} → 服务器</div><div class="log-meta">${typeNames[type]}</div></div><div class="log-time">${time}</div>`;
-            list.insertBefore(item, list.firstChild);
-            while(list.children.length > 12) list.removeChild(list.lastChild);
+
+        async function loadActions(hours) {
+            const res = await fetch(`/api/v1/stats/actions?hours=${hours}`);
+            const d = await res.json();
+            if (d.success && d.data) {
+                const names = { allow:'放行', block:'拦截', challenge:'验证', log:'记录', alert:'告警' };
+                charts.action.data.labels = Object.keys(d.data).map(k => names[k] || k);
+                charts.action.data.datasets[0].data = Object.values(d.data);
+                charts.action.update('none');
+            }
         }
-        
-        function drawMap() {
-            const w = window.innerWidth, h = window.innerHeight;
-            ctx.fillStyle = 'rgba(0,0,0,0.15)';
-            ctx.fillRect(0,0,w,h);
-            
-            // 绘制网格
-            ctx.strokeStyle = 'rgba(99,102,241,0.06)';
-            ctx.lineWidth = 1;
-            for(let i=0;i<20;i++){ctx.beginPath();ctx.moveTo(0,h*i/20);ctx.lineTo(w,h*i/20);ctx.stroke();}
-            for(let i=0;i<30;i++){ctx.beginPath();ctx.moveTo(w*i/30,0);ctx.lineTo(w*i/30,h);ctx.stroke();}
-            
-            // 绘制大陆轮廓
-            ctx.fillStyle = 'rgba(99,102,241,0.04)';
-            const continents = [
-                [[0.05,0.22],[0.32,0.22],[0.35,0.58],[0.12,0.58],[0.05,0.38]],
-                [[0.22,0.60],[0.40,0.55],[0.38,0.88],[0.25,0.88]],
-                [[0.40,0.18],[0.72,0.18],[0.72,0.68],[0.40,0.68]],
-                [[0.62,0.28],[0.92,0.28],[0.92,0.62],[0.68,0.62],[0.62,0.42]],
-                [[0.80,0.64],[0.94,0.64],[0.94,0.82],[0.80,0.82]]
-            ];
-            continents.forEach(pts => {
-                ctx.beginPath();
-                ctx.moveTo(pts[0][0]*w, pts[0][1]*h);
-                pts.slice(1).forEach(p => ctx.lineTo(p[0]*w, p[1]*h));
-                ctx.closePath();
-                ctx.fill();
-            });
-            
-            // 绘制普通节点
-            nodes.forEach((n,i) => {
-                if(i === serverNodeIdx) return;
-                const x=n.x*w, y=n.y*h;
-                ctx.beginPath();
-                ctx.arc(x,y,2,0,Math.PI*2);
-                ctx.fillStyle = 'rgba(99,102,241,0.6)';
-                ctx.fill();
-                ctx.beginPath();
-                ctx.arc(x,y,5,0,Math.PI*2);
-                ctx.strokeStyle = 'rgba(99,102,241,0.2)';
-                ctx.stroke();
-            });
-            
-            // 绘制服务器节点(特殊标记)
-            const server = nodes[serverNodeIdx];
-            const sx = server.x*w, sy = server.y*h;
-            const pulse = 12 + Math.sin(Date.now()/300)*4;
-            ctx.beginPath();
-            ctx.arc(sx,sy,pulse,0,Math.PI*2);
-            ctx.strokeStyle = 'rgba(99,102,241,0.4)';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.arc(sx,sy,6,0,Math.PI*2);
-            ctx.fillStyle = '#6366f1';
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(sx,sy,3,0,Math.PI*2);
-            ctx.fillStyle = '#fff';
-            ctx.fill();
-            ctx.font = '10px Inter, sans-serif';
-            ctx.fillStyle = '#6366f1';
-            ctx.fillText('服务器', sx+12, sy+4);
-            
-            // 绘制攻击线
-            attacks.forEach((atk,i) => {
-                atk.progress += atk.speed;
-                if(atk.progress >= 1) { attacks.splice(i,1); return; }
-                
-                const srcX=atk.src.x*w, srcY=atk.src.y*h, dstX=atk.dst.x*w, dstY=atk.dst.y*h;
-                const cx=(srcX+dstX)/2, cy=Math.min(srcY,dstY)-80-Math.random()*40;
-                const t = atk.progress;
-                const px = (1-t)*(1-t)*srcX + 2*(1-t)*t*cx + t*t*dstX;
-                const py = (1-t)*(1-t)*srcY + 2*(1-t)*t*cy + t*t*dstY;
-                
-                // 渐变尾迹
-                const grad = ctx.createLinearGradient(srcX,srcY,px,py);
-                grad.addColorStop(0,'transparent');
-                grad.addColorStop(0.7,atk.color+'40');
-                grad.addColorStop(1,atk.color);
-                ctx.beginPath();
-                ctx.moveTo(srcX,srcY);
-                ctx.quadraticCurveTo(cx,cy,px,py);
-                ctx.strokeStyle = grad;
-                ctx.lineWidth = 2;
-                ctx.stroke();
-                
-                // 攻击头部光点
-                ctx.beginPath();
-                ctx.arc(px,py,4,0,Math.PI*2);
-                ctx.fillStyle = atk.color;
-                ctx.fill();
-                ctx.beginPath();
-                ctx.arc(px,py,8,0,Math.PI*2);
-                ctx.fillStyle = atk.color+'30';
-                ctx.fill();
-                
-                // 到达目标时的爆炸效果
-                if(t > 0.92) {
-                    const explodeSize = 15 * (1 - (t-0.92)/0.08);
-                    ctx.beginPath();
-                    ctx.arc(dstX,dstY,explodeSize,0,Math.PI*2);
-                    ctx.strokeStyle = atk.color+'80';
-                    ctx.lineWidth = 2;
-                    ctx.stroke();
-                }
-            });
-            
-            requestAnimationFrame(drawMap);
+
+        async function loadSources(hours) {
+            const res = await fetch(`/api/v1/stats/sources?hours=${hours}&limit=10`);
+            const d = await res.json();
+            if (d.success && d.data) {
+                charts.source.data.labels = d.data.map(x => x.ip.length > 15 ? x.ip.slice(0,12)+'...' : x.ip);
+                charts.source.data.datasets[0].data = d.data.map(x => x.count);
+                charts.source.update('none');
+            }
         }
-        
-        function initCyberMap() {
-            resizeCanvas();
-            window.addEventListener('resize', resizeCanvas);
-            setInterval(generateAttack, 350);
-            drawMap();
+
+        async function loadRecentThreats() {
+            const res = await fetch('/api/v1/stats/recent-threats?limit=10');
+            const d = await res.json();
+            const tbody = document.getElementById('threatLogs');
+            if (d.success && d.data && d.data.length > 0) {
+                tbody.innerHTML = d.data.map(log => `<tr>
+                    <td>${new Date(log.timestamp).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</td>
+                    <td>${log.source_ip}</td>
+                    <td>${log.dest_ip}:${log.dest_port}</td>
+                    <td><span class="badge badge-threat">${log.threat_type}</span></td>
+                    <td>${(log.risk_score*100).toFixed(0)}%</td>
+                    <td><span class="badge ${log.action==='block'?'badge-threat':'badge-warning'}">${log.action}</span></td>
+                </tr>`).join('');
+            } else {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">暂无威胁日志</td></tr>';
+            }
         }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initCharts();
+            loadAllData();
+            document.getElementById('timeRange').addEventListener('change', loadAllData);
+            // 每秒自动刷新
+            setInterval(loadAllData, 1000);
+        });
     </script>
 </body>
 </html>
