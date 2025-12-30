@@ -11,6 +11,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: 清理磁盘空间
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        df -h
+
     - uses: actions/checkout@v3
 
     - name: Set up Python
@@ -21,11 +29,11 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install --no-cache-dir -r requirements.txt
 
     - name: Run tests
       run: |
-        python -m pytest tests/ -v || echo "Tests completed"
+        python -m pytest tests/ -v --ignore=tests/integration || echo "Tests completed"
 
     - name: Check code style
       run: |

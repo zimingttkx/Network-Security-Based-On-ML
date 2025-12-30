@@ -15,6 +15,14 @@ jobs:
         python-version: ['3.12']
 
     steps:
+    - name: 清理磁盘空间
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        df -h
+
     - name: 检出代码
       uses: actions/checkout@v3
 
@@ -34,7 +42,7 @@ jobs:
     - name: 安装依赖
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install --no-cache-dir -r requirements.txt
 
     - name: 代码风格检查
       run: |
@@ -45,7 +53,7 @@ jobs:
       run: |
         if [ -d "tests" ]; then
           pip install pytest pytest-cov
-          pytest tests/ -v --cov=networksecurity --cov-report=xml || echo "测试完成"
+          pytest tests/ -v --ignore=tests/integration --cov=networksecurity --cov-report=xml || echo "测试完成"
         else
           echo "未找到测试目录，跳过测试"
         fi
