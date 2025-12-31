@@ -28,6 +28,7 @@ from networksecurity.utils.ml_utils.data_validator import DataValidator
 from networksecurity.stats.api import router as stats_router
 from networksecurity.firewall.api import firewall_router
 from networksecurity.models.api import model_router
+from networksecurity.protection.api import protection_router
 
 # --- 可视化库导入 ---
 import matplotlib
@@ -130,6 +131,7 @@ templates = Jinja2Templates(directory="templates")
 app.include_router(stats_router)
 app.include_router(firewall_router)
 app.include_router(model_router)
+app.include_router(protection_router)
 
 
 # --- WebSocket 端点 ---
@@ -242,6 +244,12 @@ async def serve_predict(request: Request):
 @app.get("/train", tags=["Frontend"], response_class=HTMLResponse)
 async def serve_train(request: Request):
     return templates.TemplateResponse("training.html", {"request": request, "page": "training"})
+
+
+@app.get("/protection", tags=["Frontend"], response_class=HTMLResponse)
+async def serve_protection(request: Request):
+    """一键保护页面"""
+    return templates.TemplateResponse("protection.html", {"request": request, "page": "protection"})
 
 
 @app.get("/model-select", tags=["Frontend"], response_class=HTMLResponse)
