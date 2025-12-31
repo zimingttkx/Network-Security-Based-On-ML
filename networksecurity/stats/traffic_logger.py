@@ -372,3 +372,76 @@ class TrafficLogger:
         if hasattr(self._local, 'connection') and self._local.connection:
             self._local.connection.close()
             self._local.connection = None
+    
+    def get_aggregated_stats(self, start_time: Optional[datetime] = None, end_time: Optional[datetime] = None) -> Dict[str, Any]:
+        """使用SQL直接聚合统计，避免加载大量数据到内存"""
+        conditions = []
+        params = []
+        
+        if start_time:
+            conditions.append("timestamp >= ?")
+            params.append(start_time.isoformat())
+        if end_time:
+            conditions.append("timestamp <= ?")
+            params.append(end_time.isoformat())
+        
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        
+        with self._get_cursor() as cursor:
+            # 总数和动作统计
+            cursor.execute(f'''
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN action='block' THEN 1 ELSE 0 END) as blocked,
+                    SUM(CASE WHEN action='allow' THEN 1 ELSE 0 END) as allowed,
+                    SUM(CASE WHEN action='challenge' THEN 1 ELSE 0 END) as challenged,
+                    AVG(risk_score) as avg_risk,
+                    AVG(processing_time_ms) as avg_time
+                FROM traffic_logs WHERE {where_clause}
+            ''', params)
+            row = cursor.fetchone()
+            
+            # 威胁类型统计
+            cursor.execute(f'''
+                SELECT threat_type, COUNT(*) as cnt 
+                FROM traffic_logs WHERE {where_clause} 
+                GROUP BY threat_type
+            ''', params)
+            threat_counts = {r[0]: r[1] for r in cursor.fetchall()}
+            
+            # 动作统计
+            cursor.execute(f'''
+                SELECT action, COUNT(*) as cnt 
+                FROM traffic_logs WHERE {where_clause} 
+                GROUP BY action
+            ''', params)
+            action_counts = {r[0]: r[1] for r in cursor.fetchall()}
+            
+            # 风险等级统计
+            cursor.execute(f'''
+                SELECT risk_level, COUNT(*) as cnt 
+                FROM traffic_logs WHERE {where_clause} 
+                GROUP BY risk_level
+            ''', params)
+            risk_counts = {r[0]: r[1] for r in cursor.fetchall()}
+            
+            # TOP源IP
+            cursor.execute(f'''
+                SELECT source_ip, COUNT(*) as cnt 
+                FROM traffic_logs WHERE {where_clause} 
+                GROUP BY source_ip ORDER BY cnt DESC LIMIT 10
+            ''', params)
+            top_ips = [(r[0], r[1]) for r in cursor.fetchall()]
+            
+            return {
+                'total_requests': row[0] or 0,
+                'blocked_requests': row[1] or 0,
+                'allowed_requests': row[2] or 0,
+                'challenged_requests': row[3] or 0,
+                'avg_risk_score': row[4] or 0.0,
+                'avg_processing_time_ms': row[5] or 0.0,
+                'threat_counts': threat_counts,
+                'action_counts': action_counts,
+                'risk_level_counts': risk_counts,
+                'top_source_ips': top_ips
+            }
