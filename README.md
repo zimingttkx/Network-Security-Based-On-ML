@@ -45,9 +45,11 @@
 | 🔎 **Slips行为分析** | 端口扫描、DDoS、C2通信行为检测 |
 | 🎮 **RL安全响应** | DQN/PPO智能安全响应决策 |
 | 📊 **统一管道** | 多算法级联融合检测 |
+| 🛡️ **一键防护** | VPN风格一键开启防护，支持多级别安全策略 |
 | 🌐 **Web界面** | 现代化响应式Web操作界面 |
 | 🔌 **RESTful API** | 完整的API接口，支持批量预测 |
 | 📈 **实时监控** | 系统统计与实时状态监控 |
+| 🚀 **流量模拟** | 高并发流量模拟器，支持百万级压测 |
 | 🐳 **容器化部署** | Docker + Kubernetes生产级部署 |
 
 ## 🔬 集成算法
@@ -131,6 +133,11 @@ Network-Security-Based-On-ML/
 │   │   ├── rules.py                # 规则定义
 │   │   └── api.py                  # 防火墙API
 │   │
+│   ├── protection/             # 一键防护模块
+│   │   ├── service.py              # 防护服务（单例模式）
+│   │   ├── api.py                  # 防护API
+│   │   └── __init__.py             # 模块导出
+│   │
 │   ├── components/             # 核心组件层
 │   ├── pipeline/               # 训练与预测管道
 │   ├── entity/                 # 配置与产物实体类
@@ -150,7 +157,11 @@ Network-Security-Based-On-ML/
 │   ├── predict.html                # 预测页面
 │   ├── model_select.html           # 模型选择
 │   ├── dashboard.html              # 统计仪表盘
+│   ├── protection.html             # 一键防护页面
 │   └── training.html               # 训练控制台
+│
+├── scripts/                    # 脚本工具
+│   └── traffic_simulator.py        # 高并发流量模拟器
 │
 ├── tests/                      # 测试文件 (298 passed)
 │   ├── test_github_algorithms.py   # GitHub算法测试
@@ -212,7 +223,9 @@ python app.py
 | 页面 | 地址 | 描述 |
 |------|------|------|
 | 首页 | `/` | 系统概览 |
+| 一键防护 | `/protection` | VPN风格一键开启防护 |
 | 威胁预测 | `/predict` | 实时威胁检测 |
+| 仪表盘 | `/dashboard` | 实时流量监控 |
 | 模型训练 | `/train` | 训练控制台 |
 | 模型解释 | `/explanation` | SHAP可解释性分析 |
 | 使用教程 | `/tutorial` | 操作指南 |
@@ -231,6 +244,11 @@ python app.py
 | `GET` | `/api/v1/stats/overview` | 流量统计概览 |
 | `GET` | `/api/v1/stats/threats` | 威胁分布统计 |
 | `POST` | `/api/v1/firewall/analyze` | 防火墙流量分析 |
+| `GET` | `/api/v1/protection/state` | 获取防护状态 |
+| `POST` | `/api/v1/protection/start` | 启动防护服务 |
+| `POST` | `/api/v1/protection/stop` | 停止防护服务 |
+| `POST` | `/api/v1/protection/toggle` | 切换防护状态 |
+| `POST` | `/api/v1/protection/level` | 设置防护级别 |
 
 ### 算法演示
 
@@ -238,6 +256,38 @@ python app.py
 # 运行算法演示脚本
 python demo_algorithms.py
 ```
+
+### 一键防护
+
+系统提供VPN风格的一键防护功能，支持四种防护级别：
+
+| 级别 | 描述 |
+|------|------|
+| **低级** | 仅监控记录，不拦截 |
+| **中级** | 拦截高风险威胁 |
+| **高级** | 拦截中高风险威胁 |
+| **严格** | 拦截所有可疑流量 |
+
+访问 `/protection` 页面，点击电源按钮即可一键开启防护。
+
+### 流量模拟器
+
+使用高并发流量模拟器进行压力测试：
+
+```bash
+# 模拟100万请求
+python scripts/traffic_simulator.py -n 1000000 -c 500
+
+# 低强度长时间测试
+python scripts/traffic_simulator.py -n 5000000 -c 50 -b 20
+
+# 参数说明
+# -n: 总请求数
+# -c: 并发数
+# -b: 批次大小
+```
+
+流量分布：70%正常用户、12%爬虫、8%机器人、10%攻击者
 
 输出示例：
 ```
