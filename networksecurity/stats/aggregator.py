@@ -34,79 +34,37 @@ class StatsAggregator:
         end_time: Optional[datetime] = None
     ) -> TrafficStats:
         """
-        获取流量统计概览
-        
-        Args:
-            start_time: 开始时间
-            end_time: 结束时间
-            
-        Returns:
-            TrafficStats对象
+        获取流量统计概览 - 使用SQL聚合提高性能
         """
         if end_time is None:
             end_time = datetime.now()
         if start_time is None:
             start_time = end_time - timedelta(hours=24)
         
-        logs = self.logger.query(
-            start_time=start_time,
-            end_time=end_time,
-            limit=100000
-        )
+        # 使用高效的SQL聚合查询
+        data = self.logger.get_aggregated_stats(start_time, end_time)
         
         stats = TrafficStats(
             time_range_start=start_time,
-            time_range_end=end_time
+            time_range_end=end_time,
+            total_requests=data['total_requests'],
+            blocked_requests=data['blocked_requests'],
+            allowed_requests=data['allowed_requests'],
+            challenged_requests=data['challenged_requests'],
+            threat_counts=data['threat_counts'],
+            action_counts=data['action_counts'],
+            risk_level_counts=data['risk_level_counts'],
+            top_source_ips=data['top_source_ips'],
+            avg_risk_score=data['avg_risk_score'],
+            avg_processing_time_ms=data['avg_processing_time_ms']
         )
         
-        if not logs:
-            return stats
-        
-        # 基础统计
-        stats.total_requests = len(logs)
-        
-        # 按动作统计
-        action_counts = defaultdict(int)
-        threat_counts = defaultdict(int)
-        risk_level_counts = defaultdict(int)
-        ip_counts = defaultdict(int)
-        
-        total_risk_score = 0.0
-        total_processing_time = 0.0
-        
-        for log in logs:
-            action_counts[log.action.value] += 1
-            threat_counts[log.threat_type.value] += 1
-            risk_level_counts[log.risk_level.value] += 1
-            ip_counts[log.source_ip] += 1
-            total_risk_score += log.risk_score
-            total_processing_time += log.processing_time_ms
-        
-        stats.blocked_requests = action_counts.get('block', 0)
-        stats.allowed_requests = action_counts.get('allow', 0)
-        stats.challenged_requests = action_counts.get('challenge', 0)
-        
-        stats.action_counts = dict(action_counts)
-        stats.threat_counts = dict(threat_counts)
-        stats.risk_level_counts = dict(risk_level_counts)
-        
-        # TOP IP
-        stats.top_source_ips = sorted(
-            ip_counts.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:10]
-        
-        # TOP 威胁类型
+        # TOP威胁类型
         stats.top_threat_types = sorted(
-            [(k, v) for k, v in threat_counts.items() if k != 'benign'],
+            [(k, v) for k, v in data['threat_counts'].items() if k != 'benign'],
             key=lambda x: x[1],
             reverse=True
-        )[:10]
-        
-        # 平均值
-        stats.avg_risk_score = total_risk_score / len(logs)
-        stats.avg_processing_time_ms = total_processing_time / len(logs)
+        )[:5]
         
         return stats
     
