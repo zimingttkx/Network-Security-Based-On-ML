@@ -3,216 +3,795 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="home.title">网络安全威胁检测系统</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <title>CyberShield - 智能网络安全威胁检测</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="/static/css/main.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --bg-card: rgba(20, 20, 30, 0.6);
+            --border: rgba(255,255,255,0.08);
+            --text: #ffffff;
+            --text-secondary: #8b8b9e;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.4);
+            --success: #22c55e;
+            --danger: #ef4444;
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        
+        /* 全屏攻击地图背景 */
+        .cyber-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -2;
+            background: #000;
+        }
+        
+        .cyber-bg canvas {
+            width: 100%;
+            height: 100%;
+        }
+        
+        /* 背景叠加层 */
+        .bg-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            background: radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.7) 100%);
+            pointer-events: none;
+        }
+        
+        /* 扫描线效果 */
+        .scanlines {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(0, 255, 255, 0.01) 2px,
+                rgba(0, 255, 255, 0.01) 4px
+            );
+            pointer-events: none;
+            animation: scanMove 8s linear infinite;
+        }
+        
+        @keyframes scanMove {
+            0% { background-position: 0 0; }
+            100% { background-position: 0 100vh; }
+        }
+        
+        /* 导航 */
+        .navbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 64px;
+            background: rgba(10, 10, 15, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .navbar-inner {
+            width: 100%;
+            max-width: 1200px;
+            padding: 0 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 700;
+            font-size: 1.25rem;
+            color: var(--text);
+            text-decoration: none;
+        }
+        
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+        
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .nav-link {
+            padding: 10px 16px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+        
+        .nav-link:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+        .nav-link.active { color: var(--text); background: rgba(255,255,255,0.08); }
+        
+        /* Hero */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 120px 24px 80px;
+        }
+        
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border);
+            border-radius: 100px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+            animation: fadeInUp 0.6s ease-out;
+        }
+        
+        .pulse {
+            width: 8px;
+            height: 8px;
+            background: var(--success);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+            50% { opacity: 0.8; box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+        }
+        
+        .hero h1 {
+            font-size: clamp(2rem, 6vw, 3.5rem);
+            font-weight: 800;
+            line-height: 1.2;
+            letter-spacing: -0.02em;
+            margin-bottom: 24px;
+            animation: fadeInUp 0.6s ease-out 0.1s both;
+            text-shadow: 0 0 40px rgba(99, 102, 241, 0.5);
+        }
+        
+        /* 打字机效果 */
+        .typing-text {
+            display: inline-block;
+            overflow: hidden;
+            white-space: nowrap;
+            border-right: 3px solid var(--accent);
+            animation: typing 3s steps(20) 0.5s forwards, blink 0.8s step-end infinite;
+        }
+        
+        @keyframes typing {
+            from { width: 0; }
+            to { width: 100%; }
+        }
+        
+        @keyframes blink {
+            50% { border-color: transparent; }
+        }
+        
+        /* 闪烁霓虹效果 */
+        .neon-text {
+            color: #fff;
+            text-shadow: 
+                0 0 5px #fff,
+                0 0 10px #fff,
+                0 0 20px var(--accent),
+                0 0 40px var(--accent),
+                0 0 80px var(--accent);
+            animation: neonPulse 2s ease-in-out infinite alternate;
+        }
+        
+        @keyframes neonPulse {
+            from { text-shadow: 0 0 5px #fff, 0 0 10px #fff, 0 0 20px var(--accent), 0 0 40px var(--accent); }
+            to { text-shadow: 0 0 10px #fff, 0 0 20px #fff, 0 0 40px var(--accent), 0 0 80px var(--accent), 0 0 120px var(--accent); }
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .hero-desc {
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin-bottom: 40px;
+            line-height: 1.7;
+            animation: fadeInUp 0.6s ease-out 0.2s both;
+        }
+        
+        .hero-actions {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            justify-content: center;
+            animation: fadeInUp 0.6s ease-out 0.3s both;
+        }
+        
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        /* 按钮 - Starfor.me风格 */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 14px 28px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            border-radius: 50px;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: left 0.5s;
+        }
+        
+        .btn:hover::before {
+            left: 100%;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+            color: white;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4), 0 0 30px rgba(99, 102, 241, 0.2);
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-3px) scale(1.02);
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.5), 0 0 50px rgba(99, 102, 241, 0.3);
+        }
+        
+        .btn-primary:active {
+            transform: translateY(-1px) scale(0.98);
+        }
+        
+        .btn-secondary {
+            background: rgba(255,255,255,0.08);
+            color: var(--text);
+            border: 1px solid rgba(255,255,255,0.15);
+            backdrop-filter: blur(10px);
+        }
+        
+        .btn-secondary:hover {
+            background: rgba(255,255,255,0.15);
+            border-color: rgba(255,255,255,0.3);
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+        }
+        
+        .btn-glow {
+            animation: btnGlow 2s ease-in-out infinite alternate;
+        }
+        
+        @keyframes btnGlow {
+            from { box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4), 0 0 30px rgba(99, 102, 241, 0.2); }
+            to { box-shadow: 0 4px 20px rgba(99, 102, 241, 0.6), 0 0 50px rgba(99, 102, 241, 0.4); }
+        }
+        
+        /* API端点列表 - 滚动效果 */
+        .endpoints-scroll {
+            width: 100%;
+            overflow: hidden;
+            padding: 40px 0;
+            margin-top: 60px;
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            background: rgba(255,255,255,0.02);
+        }
+        
+        .scroll-track {
+            display: flex;
+            gap: 24px;
+            animation: scroll 30s linear infinite;
+            width: max-content;
+        }
+        
+        @keyframes scroll {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+        }
+        
+        .endpoint-item {
+            padding: 12px 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        
+        /* 功能卡片 */
+        .features {
+            padding: 100px 24px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .section-title {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+        
+        .section-title h2 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 16px;
+        }
+        
+        .section-title p {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 24px;
+        }
+        
+        .feature-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 32px;
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, #6366f1, #a855f7);
+            transform: scaleX(0);
+            transition: transform 0.3s;
+        }
+        
+        .feature-card:hover {
+            border-color: rgba(99, 102, 241, 0.3);
+            transform: translateY(-4px);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+        }
+        
+        .feature-card:hover::before { transform: scaleX(1); }
+        
+        .feature-icon {
+            width: 56px;
+            height: 56px;
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            color: #6366f1;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+        }
+        
+        .feature-card:hover .feature-icon {
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: white;
+            border-color: transparent;
+            box-shadow: 0 0 30px var(--accent-glow);
+        }
+        
+        .feature-card h3 {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+        
+        .feature-card p {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+        
+        /* 统计 */
+        .stats {
+            padding: 80px 24px;
+            background: rgba(255,255,255,0.02);
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .stats-grid {
+            max-width: 1000px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 32px;
+        }
+        
+        .stat-item {
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 3rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #6366f1, #a855f7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
+        }
+        
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+        
+        /* Footer */
+        footer {
+            padding: 40px 24px;
+            text-align: center;
+            border-top: 1px solid var(--border);
+        }
+        
+        footer p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+        
+        footer a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        
+        footer a:hover { color: var(--accent); }
+        
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .hero h1 { font-size: 2.5rem; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .stat-value { font-size: 2rem; }
+        }
+    </style>
 </head>
 <body>
-    <!-- 导航栏 -->
-    <nav class="navbar navbar-expand-lg">
-        <div class="container">
-            <a class="navbar-brand" href="/">
-                <i class="fas fa-shield-alt"></i>
-                <span data-i18n="nav.home">网络安全检测</span>
+    <!-- 全屏攻击地图背景 -->
+    <div class="cyber-bg">
+        <canvas id="cyberMapBg"></canvas>
+    </div>
+    <div class="bg-overlay"></div>
+    <div class="scanlines"></div>
+    
+    <nav class="navbar">
+        <div class="navbar-inner">
+            <a href="/" class="logo">
+                <div class="logo-icon"><i class="fas fa-shield-halved"></i></div>
+                <span>CyberShield</span>
             </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item">
-                        <a class="nav-link active" href="/">
-                            <i class="fas fa-home"></i>
-                            <span data-i18n="nav.home">首页</span>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/dashboard">
-                            <i class="fas fa-chart-pie"></i>
-                            <span>仪表盘</span>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/model-select">
-                            <i class="fas fa-cubes"></i>
-                            <span>模型选择</span>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/train">
-                            <i class="fas fa-brain"></i>
-                            <span>模型训练</span>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/docs" target="_blank">
-                            <i class="fas fa-code"></i>
-                            <span data-i18n="nav.api">API文档</span>
-                        </a>
-                    </li>
-                </ul>
+            <div class="nav-links">
+                <a href="/" class="nav-link active">首页</a>
+                <a href="/protection" class="nav-link">一键防御</a>
+                <a href="/dashboard" class="nav-link">仪表盘</a>
+                <a href="/model-select" class="nav-link">模型选择</a>
+                <a href="/benchmark" class="nav-link">拦截测试</a>
+                <a href="/predict" class="nav-link">威胁检测</a>
+                <a href="/train" class="nav-link">模型训练</a>
+                <a href="/docs" class="nav-link" target="_blank">API</a>
             </div>
         </div>
     </nav>
 
-    <!-- Hero区域 -->
     <section class="hero">
-        <div class="container">
-            <div class="row">
-                <div class="col-lg-12 fade-in">
-                    <h1 data-i18n="home.title">网络安全威胁检测系统</h1>
-                    <p class="lead" data-i18n="home.subtitle">基于机器学习的实时网络流量异常检测与预警平台</p>
-                    <div class="mt-4">
-                        <a href="/model-select" class="btn btn-primary btn-lg me-3">
-                            <i class="fas fa-cubes"></i>
-                            <span>配置检测模型</span>
-                        </a>
-                        <a href="/dashboard" class="btn btn-outline-light btn-lg">
-                            <i class="fas fa-chart-pie"></i>
-                            <span>查看仪表盘</span>
-                        </a>
-                    </div>
-                </div>
+        <div class="hero-badge">
+            <span class="pulse"></span>
+            <span>系统运行中 · v2.0</span>
+        </div>
+        
+        <h1>
+            <span class="neon-text">智能网络安全</span> <span class="gradient-text">威胁检测平台</span>
+        </h1>
+        
+        <p class="hero-desc">
+            基于机器学习的下一代网络安全解决方案，实时分析流量数据，精准识别潜在威胁
+        </p>
+        
+        <div class="hero-actions">
+            <a href="/protection" class="btn btn-primary btn-glow">
+                <i class="fas fa-shield-halved"></i> 一键防御
+            </a>
+            <a href="/predict" class="btn btn-secondary">
+                <i class="fas fa-rocket"></i> 开始检测
+            </a>
+            <a href="/dashboard" class="btn btn-secondary">
+                <i class="fas fa-chart-line"></i> 查看态势
+            </a>
+            <a href="/docs" class="btn btn-secondary">
+                <i class="fas fa-book"></i> API文档
+            </a>
+        </div>
+    </section>
+
+    <div class="endpoints-scroll">
+        <div class="scroll-track">
+            <div class="endpoint-item">/predict_live</div>
+            <div class="endpoint-item">/api/train</div>
+            <div class="endpoint-item">/api/system-stats</div>
+            <div class="endpoint-item">/api/data/validate</div>
+            <div class="endpoint-item">/predict_on_test_data</div>
+            <div class="endpoint-item">/api/explanation/generate</div>
+            <div class="endpoint-item">/api/v1/stats/overview</div>
+            <div class="endpoint-item">/api/v1/firewall/rules</div>
+            <div class="endpoint-item">/predict_live</div>
+            <div class="endpoint-item">/api/train</div>
+            <div class="endpoint-item">/api/system-stats</div>
+            <div class="endpoint-item">/api/data/validate</div>
+            <div class="endpoint-item">/predict_on_test_data</div>
+            <div class="endpoint-item">/api/explanation/generate</div>
+            <div class="endpoint-item">/api/v1/stats/overview</div>
+            <div class="endpoint-item">/api/v1/firewall/rules</div>
+        </div>
+    </div>
+
+    <section class="features">
+        <div class="section-title">
+            <h2>核心能力</h2>
+            <p>强大的功能，简洁的体验</p>
+        </div>
+        
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon"><i class="fas fa-brain"></i></div>
+                <h3>智能检测</h3>
+                <p>采用深度学习与集成学习算法，支持DNN、CNN、LSTM等多种模型架构</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon"><i class="fas fa-bolt"></i></div>
+                <h3>实时分析</h3>
+                <p>毫秒级响应速度，WebSocket实时推送，支持大规模流量处理</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon"><i class="fas fa-chart-line"></i></div>
+                <h3>可视化报告</h3>
+                <p>直观的数据仪表盘，SHAP模型解释，一目了然掌握安全态势</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon"><i class="fas fa-shield-alt"></i></div>
+                <h3>智能防火墙</h3>
+                <p>内置规则引擎，自动拦截恶意流量，支持自定义安全策略</p>
             </div>
         </div>
     </section>
 
-    <!-- 特性展示 -->
-    <section class="py-5">
-        <div class="container">
-            <div class="row">
-                <div class="col-lg-3 col-md-6 mb-4">
-                    <div class="card feature-card fade-in">
-                        <div class="feature-icon">
-                            <i class="fas fa-brain"></i>
-                        </div>
-                        <h3 data-i18n="home.feature1.title">智能检测</h3>
-                        <p data-i18n="home.feature1.desc">使用先进的机器学习算法，准确识别网络威胁</p>
-                    </div>
-                </div>
-                <div class="col-lg-3 col-md-6 mb-4">
-                    <div class="card feature-card fade-in">
-                        <div class="feature-icon">
-                            <i class="fas fa-bolt"></i>
-                        </div>
-                        <h3 data-i18n="home.feature2.title">实时分析</h3>
-                        <p data-i18n="home.feature2.desc">毫秒级响应，实时分析网络流量数据</p>
-                    </div>
-                </div>
-                <div class="col-lg-3 col-md-6 mb-4">
-                    <div class="card feature-card fade-in">
-                        <div class="feature-icon">
-                            <i class="fas fa-user-check"></i>
-                        </div>
-                        <h3 data-i18n="home.feature3.title">易于使用</h3>
-                        <p data-i18n="home.feature3.desc">直观的界面，即使是新手也能快速上手</p>
-                    </div>
-                </div>
-                <div class="col-lg-3 col-md-6 mb-4">
-                    <div class="card feature-card fade-in">
-                        <div class="feature-icon">
-                            <i class="fas fa-server"></i>
-                        </div>
-                        <h3 data-i18n="home.feature4.title">高可用性</h3>
-                        <p data-i18n="home.feature4.desc">企业级架构，支持大规模部署</p>
-                    </div>
-                </div>
+    <section class="stats">
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-value" id="totalPredictions">0</div>
+                <div class="stat-label">总预测次数</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="accuracy">95.8%</div>
+                <div class="stat-label">模型准确率</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="threats">0</div>
+                <div class="stat-label">已拦截威胁</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">30+</div>
+                <div class="stat-label">特征维度</div>
             </div>
         </div>
     </section>
 
-    <!-- 系统状态 -->
-    <section class="py-5 stats-section">
-        <div class="container">
-            <h2 class="text-center mb-5 stats-title">
-                <i class="fas fa-chart-bar"></i>
-                <span data-i18n="common.status">系统状态</span>
-            </h2>
-            <div class="row">
-                <div class="col-lg-3 col-md-6 mb-4">
-                    <div class="stat-card">
-                        <div class="stat-value" id="totalPredictions">0</div>
-                        <div class="stat-label">总预测次数</div>
-                    </div>
-                </div>
-                <div class="col-lg-3 col-md-6 mb-4">
-                    <div class="stat-card">
-                        <div class="stat-value" id="modelAccuracy">95.8%</div>
-                        <div class="stat-label">模型准确率</div>
-                    </div>
-                </div>
-                <div class="col-lg-3 col-md-6 mb-4">
-                    <div class="stat-card">
-                        <div class="stat-value">
-                            <span class="badge badge-custom badge-success" data-i18n="common.healthy">健康</span>
-                        </div>
-                        <div class="stat-label" data-i18n="common.status">系统状态</div>
-                    </div>
-                </div>
-                <div class="col-lg-3 col-md-6 mb-4">
-                    <div class="stat-card">
-                        <div class="stat-value" id="apiVersion">v2.0.0</div>
-                        <div class="stat-label" data-i18n="common.version">版本</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Footer -->
-    <footer class="py-4 bg-dark text-white text-center">
-        <div class="container">
-            <p class="mb-0">&copy; 2025 网络安全威胁检测系统. All rights reserved.</p>
-            <p class="mb-0 mt-2">
-                <a href="https://github.com/zimingttkx/Network-Security-Based-On-ML" class="text-white" target="_blank">
-                    <i class="fab fa-github"></i> GitHub
-                </a>
-            </p>
-        </div>
+    <footer>
+        <p>&copy; 2025 CyberShield · <a href="https://github.com/zimingttkx/Network-Security-Based-On-ML" target="_blank"><i class="fab fa-github"></i> GitHub</a></p>
     </footer>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/i18n.js"></script>
     <script>
-        // 加载系统统计
         async function loadStats() {
             try {
-                const response = await fetch('/api/system-stats');
-                const data = await response.json();
-
-                if (data.status === 'healthy') {
-                    document.getElementById('totalPredictions').textContent = 
-                        data.total_predictions.toLocaleString();
-                    document.getElementById('modelAccuracy').textContent = 
-                        data.accuracy + '%';
-                    document.getElementById('apiVersion').textContent = 
-                        data.version;
-                }
-            } catch (error) {
-                console.error('Failed to load stats:', error);
-            }
+                const res = await fetch('/api/system-stats');
+                const data = await res.json();
+                document.getElementById('totalPredictions').textContent = data.total_predictions.toLocaleString();
+                document.getElementById('accuracy').textContent = data.accuracy + '%';
+                document.getElementById('threats').textContent = data.threat_detections.toLocaleString();
+            } catch(e) {}
         }
-
-        // 页面加载时获取统计
-        document.addEventListener('DOMContentLoaded', () => {
-            loadStats();
-            // 每10秒刷新一次
-            setInterval(loadStats, 10000);
-
-            // 动画效果
-            const observer = new IntersectionObserver((entries) => {
-                entries.forEach(entry => {
-                    if (entry.isIntersecting) {
-                        entry.target.classList.add('fade-in');
-                    }
-                });
+        loadStats();
+        setInterval(loadStats, 10000);
+        
+        // ========== 全屏网络攻击地图背景 ==========
+        const mapCanvas = document.getElementById('cyberMapBg');
+        const ctx = mapCanvas.getContext('2d');
+        let attacks = [];
+        
+        const nodes = [
+            {x:0.12,y:0.38},{x:0.20,y:0.35},{x:0.25,y:0.35},{x:0.23,y:0.33},{x:0.15,y:0.48},
+            {x:0.32,y:0.68},{x:0.47,y:0.30},{x:0.48,y:0.33},{x:0.51,y:0.30},{x:0.55,y:0.42},
+            {x:0.58,y:0.28},{x:0.60,y:0.43},{x:0.66,y:0.45},{x:0.73,y:0.48},{x:0.74,y:0.55},
+            {x:0.77,y:0.35},{x:0.78,y:0.43},{x:0.79,y:0.40},{x:0.80,y:0.42},{x:0.82,y:0.36},
+            {x:0.85,y:0.38},{x:0.88,y:0.72},{x:0.54,y:0.70},{x:0.75,y:0.58}
+        ];
+        
+        const attackColors = ['#ef4444','#f59e0b','#22c55e','#3b82f6','#a855f7','#ec4899','#06b6d4'];
+        
+        function resizeCanvas() {
+            mapCanvas.width = window.innerWidth * window.devicePixelRatio;
+            mapCanvas.height = window.innerHeight * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+        
+        function generateAttack() {
+            const src = nodes[Math.floor(Math.random()*nodes.length)];
+            let dst = nodes[Math.floor(Math.random()*nodes.length)];
+            while(dst === src) dst = nodes[Math.floor(Math.random()*nodes.length)];
+            const color = attackColors[Math.floor(Math.random()*attackColors.length)];
+            attacks.push({ src, dst, progress: 0, color, speed: 0.008 + Math.random()*0.012 });
+            if(attacks.length > 25) attacks.shift();
+        }
+        
+        function drawMap() {
+            const w = window.innerWidth, h = window.innerHeight;
+            ctx.fillStyle = 'rgba(0,0,0,0.15)';
+            ctx.fillRect(0,0,w,h);
+            
+            // 绘制网格
+            ctx.strokeStyle = 'rgba(99,102,241,0.06)';
+            ctx.lineWidth = 1;
+            for(let i=0;i<20;i++){ctx.beginPath();ctx.moveTo(0,h*i/20);ctx.lineTo(w,h*i/20);ctx.stroke();}
+            for(let i=0;i<30;i++){ctx.beginPath();ctx.moveTo(w*i/30,0);ctx.lineTo(w*i/30,h);ctx.stroke();}
+            
+            // 绘制大陆轮廓
+            ctx.fillStyle = 'rgba(99,102,241,0.04)';
+            const continents = [
+                [[0.05,0.22],[0.32,0.22],[0.35,0.58],[0.12,0.58],[0.05,0.38]],
+                [[0.22,0.60],[0.40,0.55],[0.38,0.88],[0.25,0.88]],
+                [[0.40,0.18],[0.72,0.18],[0.72,0.68],[0.40,0.68]],
+                [[0.62,0.28],[0.92,0.28],[0.92,0.62],[0.68,0.62],[0.62,0.42]],
+                [[0.80,0.64],[0.94,0.64],[0.94,0.82],[0.80,0.82]]
+            ];
+            continents.forEach(pts => {
+                ctx.beginPath();
+                ctx.moveTo(pts[0][0]*w, pts[0][1]*h);
+                pts.slice(1).forEach(p => ctx.lineTo(p[0]*w, p[1]*h));
+                ctx.closePath();
+                ctx.fill();
             });
-
-            document.querySelectorAll('.feature-card').forEach(card => {
-                observer.observe(card);
+            
+            // 绘制节点
+            nodes.forEach(n => {
+                const x=n.x*w, y=n.y*h;
+                ctx.beginPath();
+                ctx.arc(x,y,2,0,Math.PI*2);
+                ctx.fillStyle = 'rgba(99,102,241,0.6)';
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(x,y,5,0,Math.PI*2);
+                ctx.strokeStyle = 'rgba(99,102,241,0.2)';
+                ctx.stroke();
             });
-        });
+            
+            // 绘制攻击线
+            attacks.forEach((atk,i) => {
+                atk.progress += atk.speed;
+                if(atk.progress >= 1) { attacks.splice(i,1); return; }
+                
+                const sx=atk.src.x*w, sy=atk.src.y*h, dx=atk.dst.x*w, dy=atk.dst.y*h;
+                const cx=(sx+dx)/2, cy=Math.min(sy,dy)-80-Math.random()*40;
+                const t = atk.progress;
+                const px = (1-t)*(1-t)*sx + 2*(1-t)*t*cx + t*t*dx;
+                const py = (1-t)*(1-t)*sy + 2*(1-t)*t*cy + t*t*dy;
+                
+                // 渐变尾迹
+                const grad = ctx.createLinearGradient(sx,sy,px,py);
+                grad.addColorStop(0,'transparent');
+                grad.addColorStop(0.7,atk.color+'40');
+                grad.addColorStop(1,atk.color);
+                ctx.beginPath();
+                ctx.moveTo(sx,sy);
+                ctx.quadraticCurveTo(cx,cy,px,py);
+                ctx.strokeStyle = grad;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+                
+                // 攻击头部光点
+                ctx.beginPath();
+                ctx.arc(px,py,3,0,Math.PI*2);
+                ctx.fillStyle = atk.color;
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(px,py,6,0,Math.PI*2);
+                ctx.fillStyle = atk.color+'30';
+                ctx.fill();
+                
+                // 到达目标时的爆炸效果
+                if(t > 0.92) {
+                    const explodeSize = 15 * (1 - (t-0.92)/0.08);
+                    ctx.beginPath();
+                    ctx.arc(dx,dy,explodeSize,0,Math.PI*2);
+                    ctx.strokeStyle = atk.color+'80';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+            });
+            
+            requestAnimationFrame(drawMap);
+        }
+        
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+        setInterval(generateAttack, 400);
+        drawMap();
     </script>
 </body>
 </html>
