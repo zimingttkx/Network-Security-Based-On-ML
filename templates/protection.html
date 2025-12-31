@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>一键保护 - CyberShield</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --bg-card: rgba(20, 20, 30, 0.6);
+            --border: rgba(255,255,255,0.08);
+            --text: #ffffff;
+            --text-secondary: #8b8b9e;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.4);
+            --success: #22c55e;
+            --danger: #ef4444;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .cyber-bg { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -2; background: #000; }
+        .cyber-bg canvas { width: 100%; height: 100%; }
+        .bg-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; background: radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.7) 100%); pointer-events: none; }
+        
+        .navbar { position: fixed; top: 0; left: 0; right: 0; height: 64px; background: rgba(10, 10, 15, 0.9); backdrop-filter: blur(20px); border-bottom: 1px solid var(--border); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+        .navbar-inner { width: 100%; max-width: 1200px; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; }
+        .logo { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 1.25rem; color: var(--text); text-decoration: none; }
+        .logo-icon { width: 36px; height: 36px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 10px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 20px var(--accent-glow); }
+        .nav-links { display: flex; align-items: center; gap: 8px; }
+        .nav-link { padding: 10px 16px; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; font-weight: 500; border-radius: 8px; transition: all 0.2s; }
+        .nav-link:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+        .nav-link.active { color: var(--text); background: rgba(255,255,255,0.08); }
+
+        .protection-section {
+            padding: 100px 24px 60px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .protection-container { text-align: center; max-width: 500px; }
+        .protection-title { font-size: 1.5rem; font-weight: 600; margin-bottom: 40px; color: var(--text-secondary); }
+        
+        .power-button-wrapper { position: relative; width: 220px; height: 220px; margin: 0 auto 40px; }
+        .power-button-ring {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            border-radius: 50%; border: 3px solid rgba(255,255,255,0.1); transition: all 0.5s ease;
+        }
+        .power-button-ring.active { border-color: var(--success); box-shadow: 0 0 40px rgba(34, 197, 94, 0.4), inset 0 0 40px rgba(34, 197, 94, 0.1); }
+        .power-button-ring.starting { border-color: #f59e0b; animation: pulseRing 1s ease-in-out infinite; }
+        @keyframes pulseRing { 0%, 100% { box-shadow: 0 0 20px rgba(245, 158, 11, 0.3); } 50% { box-shadow: 0 0 50px rgba(245, 158, 11, 0.6); } }
+        
+        .power-button {
+            position: absolute; top: 15px; left: 15px; right: 15px; bottom: 15px;
+            border-radius: 50%; background: linear-gradient(145deg, #1a1a2e, #0f0f1a); border: none; cursor: pointer;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; transition: all 0.3s ease;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5), inset 0 -5px 20px rgba(0,0,0,0.3);
+        }
+        .power-button:hover { transform: scale(1.02); }
+        .power-button:active { transform: scale(0.98); }
+        .power-button .power-icon { font-size: 48px; color: rgba(255,255,255,0.3); transition: all 0.5s ease; margin-bottom: 8px; }
+        .power-button.active .power-icon { color: var(--success); filter: drop-shadow(0 0 20px rgba(34, 197, 94, 0.8)); }
+        .power-button.starting .power-icon { color: #f59e0b; animation: iconPulse 1s ease-in-out infinite; }
+        @keyframes iconPulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+        .power-button .power-text { font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 2px; }
+        .power-button.active .power-text { color: var(--success); }
+        
+        .protection-status { font-size: 1.8rem; font-weight: 700; margin-bottom: 12px; transition: all 0.3s; }
+        .protection-status.off { color: var(--text-secondary); }
+        .protection-status.on { color: var(--success); text-shadow: 0 0 30px rgba(34, 197, 94, 0.5); }
+        .protection-status.starting { color: #f59e0b; }
+        .protection-desc { color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 30px; }
+        
+        .level-selector { display: flex; gap: 10px; justify-content: center; margin-bottom: 30px; flex-wrap: wrap; }
+        .level-btn {
+            padding: 10px 20px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 25px; color: var(--text-secondary); font-size: 0.85rem; font-weight: 500; cursor: pointer; transition: all 0.3s;
+        }
+        .level-btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); }
+        .level-btn.active { background: linear-gradient(135deg, #6366f1, #8b5cf6); border-color: transparent; color: white; box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4); }
+        
+        .live-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 20px; opacity: 0; transform: translateY(20px); transition: all 0.5s ease; }
+        .live-stats.visible { opacity: 1; transform: translateY(0); }
+        .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; }
+        .stat-card .stat-value { font-size: 1.5rem; font-weight: 700; background: linear-gradient(135deg, #6366f1, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .stat-card .stat-label { font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px; }
+        .stat-card.danger .stat-value { background: linear-gradient(135deg, #ef4444, #f97316); -webkit-background-clip: text; }
+        .stat-card.success .stat-value { background: linear-gradient(135deg, #22c55e, #10b981); -webkit-background-clip: text; }
+        
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .live-stats { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+    <div class="cyber-bg"><canvas id="cyberMapBg"></canvas></div>
+    <div class="bg-overlay"></div>
+    
+    <nav class="navbar">
+        <div class="navbar-inner">
+            <a href="/" class="logo"><div class="logo-icon"><i class="fas fa-shield-halved"></i></div><span>CyberShield</span></a>
+            <div class="nav-links">
+                <a href="/" class="nav-link">首页</a>
+                <a href="/protection" class="nav-link active">一键保护</a>
+                <a href="/dashboard" class="nav-link">仪表盘</a>
+                <a href="/predict" class="nav-link">威胁检测</a>
+                <a href="/train" class="nav-link">模型训练</a>
+                <a href="/docs" class="nav-link" target="_blank">API</a>
+            </div>
+        </div>
+    </nav>
+
+    <section class="protection-section">
+        <div class="protection-container">
+            <div class="protection-title">网络安全防护</div>
+            <div class="power-button-wrapper">
+                <div class="power-button-ring" id="powerRing"></div>
+                <button class="power-button" id="powerButton" onclick="toggleProtection()">
+                    <i class="fas fa-power-off power-icon"></i>
+                    <span class="power-text" id="powerText">启动</span>
+                </button>
+            </div>
+            <div class="protection-status off" id="protectionStatus">保护未开启</div>
+            <div class="protection-desc" id="protectionDesc">点击上方按钮一键开启服务器防护</div>
+            <div class="level-selector">
+                <button class="level-btn" data-level="low">低级监控</button>
+                <button class="level-btn active" data-level="medium">中级防护</button>
+                <button class="level-btn" data-level="high">高级防护</button>
+                <button class="level-btn" data-level="strict">严格模式</button>
+            </div>
+            <div class="live-stats" id="liveStats">
+                <div class="stat-card"><div class="stat-value" id="statRequests">0</div><div class="stat-label">总请求</div></div>
+                <div class="stat-card danger"><div class="stat-value" id="statBlocked">0</div><div class="stat-label">已拦截</div></div>
+                <div class="stat-card"><div class="stat-value" id="statThreats">0</div><div class="stat-label">威胁数</div></div>
+                <div class="stat-card success"><div class="stat-value" id="statUptime">0s</div><div class="stat-label">运行时间</div></div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        let protectionState = { status: 'off', level: 'medium' };
+        let statsInterval = null;
+        
+        async function toggleProtection() {
+            const btn = document.getElementById('powerButton');
+            const ring = document.getElementById('powerRing');
+            const status = document.getElementById('protectionStatus');
+            const desc = document.getElementById('protectionDesc');
+            const stats = document.getElementById('liveStats');
+            
+            if (protectionState.status === 'off') {
+                btn.classList.add('starting'); ring.classList.add('starting');
+                status.className = 'protection-status starting';
+                status.textContent = '正在启动...';
+                desc.textContent = '正在加载检测模型和初始化防护服务';
+                document.getElementById('powerText').textContent = '启动中';
+                
+                try {
+                    const res = await fetch('/api/v1/protection/start', {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({level: protectionState.level})
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        protectionState.status = 'on';
+                        updateUI(true, data.message);
+                        startStatsUpdate();
+                    } else { throw new Error(data.message); }
+                } catch(e) {
+                    updateUI(false, e.message || '启动失败，请重试');
+                }
+            } else {
+                try {
+                    await fetch('/api/v1/protection/stop', {method: 'POST'});
+                    protectionState.status = 'off';
+                    updateUI(false, '点击上方按钮一键开启服务器防护');
+                    stopStatsUpdate();
+                } catch(e) { console.error('Stop failed:', e); }
+            }
+        }
+        
+        function updateUI(isActive, message) {
+            const btn = document.getElementById('powerButton');
+            const ring = document.getElementById('powerRing');
+            const status = document.getElementById('protectionStatus');
+            const desc = document.getElementById('protectionDesc');
+            const stats = document.getElementById('liveStats');
+            
+            btn.classList.remove('starting', 'active');
+            ring.classList.remove('starting', 'active');
+            
+            if (isActive) {
+                btn.classList.add('active'); ring.classList.add('active');
+                status.className = 'protection-status on';
+                status.textContent = '保护已开启';
+                document.getElementById('powerText').textContent = '运行中';
+                stats.classList.add('visible');
+            } else {
+                status.className = 'protection-status off';
+                status.textContent = '保护未开启';
+                document.getElementById('powerText').textContent = '启动';
+                stats.classList.remove('visible');
+            }
+            desc.textContent = message;
+        }
+        
+        document.querySelectorAll('.level-btn').forEach(btn => {
+            btn.addEventListener('click', async function() {
+                document.querySelectorAll('.level-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                protectionState.level = this.dataset.level;
+                if (protectionState.status === 'on') {
+                    await fetch('/api/v1/protection/level', {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({level: protectionState.level})
+                    });
+                }
+            });
+        });
+        
+        function startStatsUpdate() { updateStats(); statsInterval = setInterval(updateStats, 2000); }
+        function stopStatsUpdate() { if (statsInterval) { clearInterval(statsInterval); statsInterval = null; } }
+        
+        async function updateStats() {
+            try {
+                // 从stats API获取真实数据
+                const [stateRes, statsRes] = await Promise.all([
+                    fetch('/api/v1/protection/state'),
+                    fetch('/api/v1/stats/overview?hours=24')
+                ]);
+                const stateData = await stateRes.json();
+                const statsData = await statsRes.json();
+                
+                // 更新统计数据
+                document.getElementById('statRequests').textContent = (statsData.total_requests || 0).toLocaleString();
+                document.getElementById('statBlocked').textContent = (statsData.blocked_requests || 0).toLocaleString();
+                document.getElementById('statThreats').textContent = (
+                    (statsData.threat_counts ? Object.values(statsData.threat_counts).reduce((a,b) => a + (b||0), 0) : 0) -
+                    (statsData.threat_counts?.benign || 0)
+                ).toLocaleString();
+                
+                if (stateData.stats && stateData.stats.uptime_seconds) {
+                    const uptime = Math.floor(stateData.stats.uptime_seconds);
+                    if (uptime < 60) document.getElementById('statUptime').textContent = uptime + 's';
+                    else if (uptime < 3600) document.getElementById('statUptime').textContent = Math.floor(uptime/60) + 'm';
+                    else document.getElementById('statUptime').textContent = Math.floor(uptime/3600) + 'h';
+                }
+            } catch(e) { console.error('Stats update error:', e); }
+        }
+        
+        async function initState() {
+            try {
+                const res = await fetch('/api/v1/protection/state');
+                const data = await res.json();
+                protectionState.status = data.is_active ? 'on' : 'off';
+                protectionState.level = data.level || 'medium';
+                
+                document.querySelectorAll('.level-btn').forEach(b => {
+                    b.classList.toggle('active', b.dataset.level === protectionState.level);
+                });
+                
+                if (data.is_active) {
+                    updateUI(true, data.level_description || '防护运行中');
+                    startStatsUpdate();
+                }
+            } catch(e) { console.error('Init error:', e); }
+        }
+        initState();
+        
+        // 背景动画
+        const mapCanvas = document.getElementById('cyberMapBg');
+        const ctx = mapCanvas.getContext('2d');
+        let attacks = [];
+        const nodes = [{x:0.12,y:0.38},{x:0.20,y:0.35},{x:0.47,y:0.30},{x:0.55,y:0.42},{x:0.77,y:0.35},{x:0.88,y:0.72}];
+        const colors = ['#ef4444','#f59e0b','#22c55e','#3b82f6','#a855f7'];
+        function resizeCanvas() { mapCanvas.width = window.innerWidth; mapCanvas.height = window.innerHeight; }
+        function genAttack() {
+            const s = nodes[Math.floor(Math.random()*nodes.length)];
+            let d = nodes[Math.floor(Math.random()*nodes.length)];
+            while(d===s) d = nodes[Math.floor(Math.random()*nodes.length)];
+            attacks.push({s,d,p:0,c:colors[Math.floor(Math.random()*colors.length)],sp:0.01+Math.random()*0.015});
+            if(attacks.length>12) attacks.shift();
+        }
+        function draw() {
+            const w=mapCanvas.width, h=mapCanvas.height;
+            ctx.fillStyle='rgba(0,0,0,0.15)'; ctx.fillRect(0,0,w,h);
+            nodes.forEach(n=>{ctx.beginPath();ctx.arc(n.x*w,n.y*h,3,0,Math.PI*2);ctx.fillStyle='rgba(99,102,241,0.5)';ctx.fill();});
+            attacks.forEach((a,i)=>{
+                a.p+=a.sp; if(a.p>=1){attacks.splice(i,1);return;}
+                const sx=a.s.x*w,sy=a.s.y*h,dx=a.d.x*w,dy=a.d.y*h,cx=(sx+dx)/2,cy=Math.min(sy,dy)-60,t=a.p;
+                const px=(1-t)*(1-t)*sx+2*(1-t)*t*cx+t*t*dx, py=(1-t)*(1-t)*sy+2*(1-t)*t*cy+t*t*dy;
+                ctx.beginPath();ctx.arc(px,py,3,0,Math.PI*2);ctx.fillStyle=a.c;ctx.fill();
+            });
+            requestAnimationFrame(draw);
+        }
+        resizeCanvas(); window.addEventListener('resize',resizeCanvas); setInterval(genAttack,600); draw();
+    </script>
+</body>
+</html>
