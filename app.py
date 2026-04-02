@@ -202,71 +202,67 @@ async def run_training_pipeline(use_deep_learning=False, dl_model_type='dnn', dl
 
 # --- 页面路由 ---
 @app.get("/", tags=["Frontend"], response_class=HTMLResponse)
-async def serve_home(request: Request): return templates.TemplateResponse("index.html",
-                                                                          {"request": request, "page": "home"})
+async def serve_home(request: Request): return templates.TemplateResponse(request, "index.html",
+                                                                          {"page": "home"})
 
 
 @app.get("/dashboard", tags=["Frontend"], response_class=HTMLResponse)
 async def serve_dashboard(request: Request):
     """统计仪表盘页面"""
-    return templates.TemplateResponse("dashboard.html", {"request": request, "page": "dashboard"})
+    return templates.TemplateResponse(request, "dashboard.html", {"page": "dashboard"})
 
 
 @app.get("/training-console", tags=["Frontend"], response_class=HTMLResponse)
-async def serve_training_console(request: Request): return templates.TemplateResponse("training.html",
-                                                                                      {"request": request,
-                                                                                       "page": "training"})
+async def serve_training_console(request: Request): return templates.TemplateResponse(request, "training.html",
+                                                                                      {"page": "training"})
 
 
 @app.get("/pipeline-explorer", tags=["Frontend"], response_class=HTMLResponse)
-async def serve_pipeline_explorer(request: Request): return templates.TemplateResponse("pipeline.html",
-                                                                                       {"request": request,
-                                                                                        "page": "pipeline"})
+async def serve_pipeline_explorer(request: Request): return templates.TemplateResponse(request, "pipeline.html",
+                                                                                       {"page": "pipeline"})
 
 
 @app.get("/evaluation-report", tags=["Frontend"], response_class=HTMLResponse)
-async def serve_evaluation_report(request: Request): return templates.TemplateResponse("evaluation.html",
-                                                                                       {"request": request,
-                                                                                        "page": "evaluation"})
+async def serve_evaluation_report(request: Request): return templates.TemplateResponse(request, "evaluation.html",
+                                                                                       {"page": "evaluation"})
 
 
 @app.get("/live-inference", tags=["Frontend"], response_class=HTMLResponse)
-async def serve_live_inference(request: Request): return templates.TemplateResponse("predict.html", {"request": request,
-                                                                                                     "page": "predict"})
+async def serve_live_inference(request: Request): return templates.TemplateResponse(request, "predict.html", {"page": "predict"})
 
 
 # --- 新增的现代化页面路由 ---
 @app.get("/predict", tags=["Frontend"], response_class=HTMLResponse)
 async def serve_predict(request: Request):
-    return templates.TemplateResponse("predict.html", {"request": request, "page": "predict"})
+    return templates.TemplateResponse(request, "predict.html", {"page": "predict"})
 
 
 @app.get("/train", tags=["Frontend"], response_class=HTMLResponse)
 async def serve_train(request: Request):
-    return templates.TemplateResponse("training.html", {"request": request, "page": "training"})
+    return templates.TemplateResponse(request, "training.html", {"page": "training"})
 
 
 @app.get("/protection", tags=["Frontend"], response_class=HTMLResponse)
 async def serve_protection(request: Request):
     """一键保护页面"""
-    return templates.TemplateResponse("protection.html", {"request": request, "page": "protection"})
+    return templates.TemplateResponse(request, "protection.html", {"page": "protection"})
 
 
 @app.get("/model-select", tags=["Frontend"], response_class=HTMLResponse)
 async def serve_model_select(request: Request):
     """模型选择页面"""
-    return templates.TemplateResponse("model_select.html", {"request": request, "page": "model-select"})
+    return templates.TemplateResponse(request, "model_select.html", {"page": "model-select"})
 
 
 @app.get("/tutorial", tags=["Frontend"], response_class=HTMLResponse)
 async def serve_tutorial(request: Request):
-    return templates.TemplateResponse("tutorial.html", {"request": request, "page": "tutorial"})
+    return templates.TemplateResponse(request, "tutorial.html", {"page": "tutorial"})
 
 
 @app.get("/explanation", tags=["Frontend"], response_class=HTMLResponse)
 async def serve_explanation(request: Request):
     """模型解释页面"""
-    return templates.TemplateResponse("explanation.html", {"request": request, "page": "explanation"})
+    return templates.TemplateResponse(request, "explanation.html", {"page": "explanation"})
 
 
 # --- Pydantic 模型 ---
