@@ -23,6 +23,13 @@ class TrafficLogger:
     流量日志记录器
     使用SQLite存储日志，支持高并发写入和查询
     """
+
+    # Allowlist of permitted column names for ORDER BY clause (prevents SQL injection)
+    ALLOWED_ORDER_COLUMNS = frozenset([
+        'id', 'timestamp', 'source_ip', 'dest_ip', 'dest_port', 'protocol',
+        'method', 'threat_type', 'risk_level', 'risk_score', 'action',
+        'processing_time_ms'
+    ])
     
     def __init__(self, db_path: str = None):
         """
@@ -307,6 +314,10 @@ class TrafficLogger:
         
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         order_direction = "DESC" if order_desc else "ASC"
+
+        # Validate order_by against allowlist to prevent SQL injection
+        if order_by not in self.ALLOWED_ORDER_COLUMNS:
+            order_by = "timestamp"
         
         query = f'''
             SELECT * FROM traffic_logs 
