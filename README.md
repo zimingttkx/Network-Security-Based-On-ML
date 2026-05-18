@@ -404,7 +404,7 @@ pytest tests/ -v --cov=networksecurity
 
 模型使用30个网络流量特征进行预测，特征值通常为 `-1`、`0` 或 `1`：
 
-<details>
+<细节>
 <summary>点击展开完整特征列表</summary>
 
 | 序号 | 特征名 | 描述 |
@@ -440,7 +440,7 @@ pytest tests/ -v --cov=networksecurity
 | 29 | Links_pointing_to_page | 外部链接数 |
 | 30 | Statistical_report | 统计报告 |
 
-</details>
+</细节>
 
 ## 🔧 技术栈
 
@@ -483,7 +483,7 @@ pytest tests/ -v --cov=networksecurity
 
 - **作者**: 梓铭
 - **邮箱**: 2147514473@qq.com
-- **Issues**: [GitHub Issues](https://github.com/zimingttkx/Network-Security-Based-On-ML/issues)
+- **议题**: [GitHub Issues](https://github.com/zimingttkx/Network-Security-Based-On-ML/issues)
 
 ---
 
@@ -614,6 +614,17 @@ back                326       1.6%  █                     DoS攻击
 - **框架**: FastAPI + Uvicorn
 
 ---
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=zimingttkx%2FNetwork-Security-Based-On-ML&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=zimingttkx/Network-Security-Based-On-ML&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=zimingttkx/Network-Security-Based-On-ML&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=zimingttkx/Network-Security-Based-On-ML&type=date&legend=top-left" />
+ </picture>
+</a>
+
 
 <p align="center">
   如果这个项目对你有帮助，请给个 ⭐ Star 支持一下！
