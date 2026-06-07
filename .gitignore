@@ -116,3 +116,9 @@ prometheus_data/
 # Build artifacts
 *.tar.gz
 *.zip
+
+# Auto-generated Agent workspace artifacts (not part of the project)
+Auto Run Docs/
+*Wizard*/
+LOOP_*.md
+SECURITY_LOG_*.md
