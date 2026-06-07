@@ -457,13 +457,17 @@ pytest tests/ -v --cov=networksecurity
 
 ## 📁 相关文档
 
-- [项目架构文档](ARCHITECTURE.md)
-- [API详细文档](docs/API文档.md)
-- [安装指南](docs/安装指南.md)
-- [快速入门](docs/快速入门.md)
-- [模型训练指南](docs/模型训练.md)
-- [威胁预测指南](docs/威胁预测.md)
-- [常见问题](docs/常见问题.md)
+- [English Documentation](docs/en/README.md)
+- [中文文档索引](docs/zh/README.md)
+- [项目架构文档 (English)](docs/en/architecture/ARCHITECTURE.md)
+- [API 详细文档 (English)](docs/en/api/API_REFERENCE.md)
+- [API 详细文档 (中文)](docs/zh/api/API文档.md)
+- [部署指南 (English)](docs/en/deployment/DEPLOYMENT_GUIDE.md)
+- [安装指南 (中文)](docs/zh/guides/安装指南.md)
+- [快速入门 (中文)](docs/zh/guides/快速入门.md)
+- [模型训练指南 (中文)](docs/zh/guides/模型训练.md)
+- [威胁预测指南 (中文)](docs/zh/guides/威胁预测.md)
+- [常见问题 (中文)](docs/zh/guides/常见问题.md)
 
 ## 🤝 贡献指南
 
