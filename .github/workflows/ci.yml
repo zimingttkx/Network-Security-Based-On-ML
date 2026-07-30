@@ -36,6 +36,11 @@ jobs:
           fi
           echo "No forbidden keywords found."
 
+      - name: Install dependencies
+        run: |
+          pip install numpy fastapi uvicorn jinja2 python-multipart scikit-learn pandas pyyaml
+          pip install -e . --no-deps 2>/dev/null || true
+
       - name: Import check — all modules must import
         run: |
           python -c "
