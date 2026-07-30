@@ -82,16 +82,17 @@ def _download_nslkdd(data_dir: Path) -> tuple[Path, Path]:
 
     dl_path = Path(kagglehub.dataset_download("hassan06/nslkdd"))
 
-    # Find the CSV/TXT files
+    # Find the ARFF/CSV/TXT files (exclude .jpg, .png, .pdf, .md, .ipynb)
+    data_exts = {".arff", ".csv", ".txt", ".data"}
     all_files = list(dl_path.rglob("*")) if dl_path.is_dir() else [dl_path]
-    train_csv = [f for f in all_files if f.is_file() and ("Train" in f.name or "train" in f.name)]
-    test_csv  = [f for f in all_files if f.is_file() and ("Test" in f.name or "test" in f.name)]
+    data_files = [f for f in all_files if f.is_file() and f.suffix.lower() in data_exts]
+    train_csv = [f for f in data_files if "train" in f.name.lower()]
+    test_csv  = [f for f in data_files if "test" in f.name.lower()]
 
-    # Fallback: look for ARFF files
-    if not train_csv:
-        train_csv = [f for f in all_files if f.is_file() and f.suffix in (".arff", ".csv", ".txt") and "train" in f.name.lower()]
-    if not test_csv:
-        test_csv  = [f for f in all_files if f.is_file() and f.suffix in (".arff", ".csv", ".txt") and "test" in f.name.lower()]
+    if not train_csv or not test_csv:
+        # Broader: any file with Train/Test in name
+        train_csv = [f for f in all_files if f.is_file() and "train" in f.name.lower()]
+        test_csv  = [f for f in all_files if f.is_file() and "test" in f.name.lower()]
 
     if not train_csv or not test_csv:
         raise FileNotFoundError(
@@ -106,7 +107,7 @@ def load_nslkdd(path: Path) -> list[tuple[dict, str]]:
     records = []
 
     # Detect format: CSV or ARFF
-    first = path.read_text(1024).strip()
+    first = path.read_text()[:1024].strip()
     if first.startswith("@relation") or first.startswith("%"):
         # ARFF format — parse @data section
         data_section = False
@@ -258,11 +259,14 @@ async def run_benchmark() -> dict:
     print(f"  Train: {len(train_records)} records")
     print(f"  Test:  {len(test_records)}  records")
 
-    # Separate normal vs attack
-    train_normal = [(f, l) for f, l in train_records if l == "normal"]
-    train_attack = [(f, l) for f, l in train_records if l != "normal"]
-    test_normal  = [(f, l) for f, l in test_records  if l == "normal"]
-    test_attack  = [(f, l) for f, l in test_records  if l != "normal"]
+    # Separate normal vs attack (handle both "normal"/"anomaly" and attack-name labels)
+    def is_normal(label: str) -> bool:
+        return label.strip().lower() in ("normal",)
+
+    train_normal = [(f, l) for f, l in train_records if is_normal(l)]
+    train_attack = [(f, l) for f, l in train_records if not is_normal(l)]
+    test_normal  = [(f, l) for f, l in test_records  if is_normal(l)]
+    test_attack  = [(f, l) for f, l in test_records  if not is_normal(l)]
     print(f"  Train normal: {len(train_normal)}  attack: {len(train_attack)}")
     print(f"  Test  normal: {len(test_normal)}   attack: {len(test_attack)}")
 
