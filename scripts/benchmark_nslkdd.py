@@ -80,16 +80,23 @@ def _download_nslkdd(data_dir: Path) -> tuple[Path, Path]:
     """Download NSL-KDD from Kaggle via kagglehub.  Returns (train_csv, test_csv)."""
     import kagglehub  # type: ignore
 
-    dl_path = kagglehub.dataset_download("hassan06/nslkdd", path=data_dir)
-    dl_base = Path(dl_path)
+    dl_path = Path(kagglehub.dataset_download("hassan06/nslkdd"))
 
-    # Find the CSV files
-    train_csv = list(dl_base.glob("*Train*.*")) or list(dl_base.glob("*train*.*"))
-    test_csv  = list(dl_base.glob("*Test*.*"))  or list(dl_base.glob("*test*.*"))
+    # Find the CSV/TXT files
+    all_files = list(dl_path.rglob("*")) if dl_path.is_dir() else [dl_path]
+    train_csv = [f for f in all_files if f.is_file() and ("Train" in f.name or "train" in f.name)]
+    test_csv  = [f for f in all_files if f.is_file() and ("Test" in f.name or "test" in f.name)]
+
+    # Fallback: look for ARFF files
+    if not train_csv:
+        train_csv = [f for f in all_files if f.is_file() and f.suffix in (".arff", ".csv", ".txt") and "train" in f.name.lower()]
+    if not test_csv:
+        test_csv  = [f for f in all_files if f.is_file() and f.suffix in (".arff", ".csv", ".txt") and "test" in f.name.lower()]
 
     if not train_csv or not test_csv:
         raise FileNotFoundError(
-            f"Could not find KDDTrain/KDDTest in {dl_base}.  Files: {list(dl_base.iterdir())}"
+            f"Could not find KDDTrain/KDDTest in {dl_path}.  Found: "
+            f"{[f.name for f in all_files if f.is_file()]}"
         )
     return train_csv[0], test_csv[0]
 
