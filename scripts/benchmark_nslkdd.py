@@ -21,10 +21,9 @@ import asyncio
 import random
 import sys
 import time
-import urllib.request
-import zipfile
-import io
 from pathlib import Path
+from typing import Optional
+
 from typing import Optional
 
 sys.path.insert(0, ".")
@@ -73,35 +72,85 @@ ATTACK_TYPES = {
 }
 
 # ---------------------------------------------------------------------------
-# Dataset download & load
+# Dataset download & load (via kagglehub — no API key needed)
 # ---------------------------------------------------------------------------
 
-NSLKDD_URLS = {
-    "train": "https://archive.ics.uci.edu/ml/machine-learning-databases/cup99-mld/KDDTrain+.arff",
-    "test":  "https://archive.ics.uci.edu/ml/machine-learning-databases/cup99-mld/KDDTest+.arff",
-}
+
+def _download_nslkdd(data_dir: Path) -> tuple[Path, Path]:
+    """Download NSL-KDD from Kaggle via kagglehub.  Returns (train_csv, test_csv)."""
+    import kagglehub  # type: ignore
+
+    dl_path = kagglehub.dataset_download("hassan06/nslkdd", path=data_dir)
+    dl_base = Path(dl_path)
+
+    # Find the CSV files
+    train_csv = list(dl_base.glob("*Train*.*")) or list(dl_base.glob("*train*.*"))
+    test_csv  = list(dl_base.glob("*Test*.*"))  or list(dl_base.glob("*test*.*"))
+
+    if not train_csv or not test_csv:
+        raise FileNotFoundError(
+            f"Could not find KDDTrain/KDDTest in {dl_base}.  Files: {list(dl_base.iterdir())}"
+        )
+    return train_csv[0], test_csv[0]
 
 
 def load_nslkdd(path: Path) -> list[tuple[dict, str]]:
-    """Load NSL-KDD ARFF file.  Returns list of (features_dict, label)."""
+    """Load NSL-KDD CSV or ARFF.  Returns list of (features_dict, label)."""
     records = []
-    data_section = False
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("%"):
-            continue
-        if line.startswith("@data"):
-            data_section = True
-            continue
-        if not data_section or line.startswith("@"):
-            continue
-        parts = line.split(",")
-        if len(parts) < 42:
-            continue
-        features = dict(zip(FEATURE_NAMES, parts[:41]))
-        label = parts[41]
-        records.append((features, label))
+
+    # Detect format: CSV or ARFF
+    first = path.read_text(1024).strip()
+    if first.startswith("@relation") or first.startswith("%"):
+        # ARFF format — parse @data section
+        data_section = False
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("%"):
+                continue
+            if line.startswith("@data"):
+                data_section = True
+                continue
+            if not data_section or line.startswith("@"):
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 42:
+                continue
+            label = parts[41]
+            records.append((_parse_csv_row(parts[:41]), label))
+    else:
+        # CSV format — first row may be a header.  Skip if it looks text-like.
+        lines = path.read_text().splitlines()
+        start = 0
+        # Detect header: if columns 1-3 contain text labels rather than numeric/attack labels
+        first = lines[0].strip().split(",")
+        if len(first) >= 42 and first[1] in ("protocol_type", "tcp"):
+            # First col is "duration" or "0" → check [1] for protocol column name
+            try:
+                float(first[1])
+            except ValueError:
+                start = 1  # skip header
+        for line in lines[start:]:
+            line = line.strip()
+            if not line or line.startswith("%"):
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 42:
+                continue
+            label = parts[41]
+            records.append((_parse_csv_row(parts[:41]), label))
+
     return records
+
+
+def _parse_csv_row(parts: list[str]) -> dict:
+    """Map a CSV row (41 columns) to feature names."""
+    result = {}
+    for i, name in enumerate(FEATURE_NAMES):
+        if i < len(parts):
+            result[name] = parts[i]
+        else:
+            result[name] = "0"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -186,21 +235,19 @@ async def run_benchmark() -> dict:
     data_dir = Path("/tmp/nips_nslkdd")
     data_dir.mkdir(exist_ok=True)
 
-    for name, url in NSLKDD_URLS.items():
-        fpath = data_dir / f"KDD{name.capitalize()}+.arff"
-        if not fpath.exists():
-            print(f"Downloading {name} set ({url}) ...")
-            try:
-                urllib.request.urlretrieve(url, fpath)
-                print(f"  -> {fpath.stat().st_size / 1024 / 1024:.1f} MB")
-            except Exception as e:
-                print(f"  FAILED: {e}")
-                sys.exit(1)
+    print(f"Downloading NSL-KDD via kagglehub ...")
+    try:
+        train_path, test_path = _download_nslkdd(data_dir)
+        print(f"  Train: {train_path.name} ({train_path.stat().st_size / 1024 / 1024:.1f} MB)")
+        print(f"  Test:  {test_path.name} ({test_path.stat().st_size / 1024 / 1024:.1f} MB)")
+    except Exception as e:
+        print(f"  Kaggle download failed: {e}")
+        sys.exit(1)
 
     # --- Load ---
     print("\nLoading NSL-KDD ...")
-    train_records = load_nslkdd(data_dir / "KDDTrain+.arff")
-    test_records  = load_nslkdd(data_dir / "KDDTest+.arff")
+    train_records = load_nslkdd(train_path)
+    test_records  = load_nslkdd(test_path)
     print(f"  Train: {len(train_records)} records")
     print(f"  Test:  {len(test_records)}  records")
 
