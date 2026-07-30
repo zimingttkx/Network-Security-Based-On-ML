@@ -22,7 +22,7 @@ class IptablesManager:
     CHAIN = "NIPS"
 
     def __init__(self, safe_ips: Optional[list[str]] = None) -> None:
-        self._safe_ips: list[str] = safe_ips or ["127.0.0.1", "::1"]
+        self._safe_ips: list[str] = safe_ips or ["127.0.0.1"]
         self._blocked: set[str] = set()
         self._nfqueue_rules_added: bool = False
 
@@ -33,9 +33,12 @@ class IptablesManager:
         self._run("iptables", "-N", self.CHAIN)
         self._run("iptables", "-I", "INPUT", "-j", self.CHAIN)
 
-        # Protect SSH and loopback
+        # Protect SSH and loopback.  Skip safe IPs that fail (e.g. IPv6 on legacy iptables).
         for ip in self._safe_ips:
-            self._run("iptables", "-I", self.CHAIN, "-s", ip, "-j", "ACCEPT")
+            try:
+                self._run("iptables", "-I", self.CHAIN, "-s", ip, "-j", "ACCEPT")
+            except subprocess.CalledProcessError:
+                logger.warning("Could not add safe IP %s — skipping (likely unsupported on this system)", ip)
         self._run("iptables", "-A", self.CHAIN, "-p", "tcp", "--dport", "22",
                   "-j", "ACCEPT")
 
