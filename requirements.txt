@@ -1,47 +1,25 @@
-# 核心依赖
-python-dotenv>=1.0.0
+# NIPS — Network Intrusion Prevention System
+
+# Core
 pandas>=2.0.0
 numpy>=1.24.0
-pymongo[srv]>=4.5.0
-certifi>=2023.0.0
+pyyaml>=6.0
 
-# 机器学习
+# Machine Learning
 scikit-learn>=1.3.0
 xgboost>=2.0.0
-imbalanced-learn>=0.11.0
 
-# 深度学习
+# Deep Learning (optional — for LUCID CNN DDoS detection)
 tensorflow>=2.17.0
 
-# 数据处理
-pyyaml>=6.0
-dill>=0.3.7
-
-# Web框架
+# Web API
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
-python-multipart>=0.0.6
 jinja2>=3.1.0
+python-multipart>=0.0.6
 
-# 工具
-tqdm>=4.66.0
+# Live interception (Linux only — install manually)
+# pip install NetfilterQueue
 
-# 可视化
-matplotlib>=3.7.0
-shap>=0.43.0
-
-# URL特征提取
-python-whois>=0.9.0
-dnspython>=2.4.0
-beautifulsoup4>=4.12.0
-
-# NLP (BERT)
-transformers>=4.35.0
-torch>=2.0.0
-
-# 视觉检测
-faiss-cpu>=1.7.4
-playwright>=1.40.0
-Pillow>=10.0.0
-
--e .
+# Offline testing / development (install manually)
+# pip install scapy  # for pcap file loading: cli.py test --pcap
