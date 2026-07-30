@@ -1,50 +1,31 @@
 # Changelog
 
-所有重要的项目变更都会记录在此文件中。
+Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
-版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+## [1.0.0] — 2026-07-30
 
-## [1.0.0] - 2025-12-20
+### Rewrite
 
-### 新增
-- 完整的机器学习训练流程
-- Web界面支持威胁预测和模型训练
-- 数据验证和补全功能
-- 实时训练日志推送（WebSocket）
-- 多语言支持（中文/English/日本語）
-- API文档（FastAPI自动生成）
-- 功能测试脚本
+Complete project restructure from phishing URL classification demo to a real Network Intrusion Prevention System.
 
-### 优化
-- 简化项目结构，更适合初学者学习
-- 精简依赖包，从63个减少到核心依赖
-- 优化README文档，更加简洁易懂
-- 数据摄取支持本地CSV文件，无需MongoDB
+- Four-layer architecture: interception → features → engine → management
+- NFQUEUE + iptables real-time traffic interception (Linux)
+- AfterImage 115-dim incremental statistics + KitNET anomaly detection (Kitsune, NDSS'18)
+- LUCID CNN-based DDoS flow detection (IEEE TNSM 2020)
+- Rule engine: IP blacklist/whitelist, protocol filter, rate limiting
+- DetectionPipeline with short-circuit semantics
+- REST API + CLI + lightweight status page
+- CI: keyword scan for simulation code, import check, smoke test
 
-### 修复
-- 修复数据摄取组件MongoDB连接超时问题
-- 优化模型训练流程
+### Removed
 
-### 移除
-- 移除复杂的Docker和Kubernetes配置
-- 移除MLflow、Optuna等高级工具
-- 移除LightGBM和CatBoost算法
-
-## [未发布]
-
-### 计划新增
-- 更多机器学习算法支持
-- 模型性能对比功能
-- 批量预测功能
-- 用户认证系统
-
----
-
-## 版本说明
-
-- **新增**: 新功能
-- **优化**: 对现有功能的改进
-- **修复**: Bug修复
-- **移除**: 移除的功能
-- **安全**: 安全相关的修复
+All old simulation/demo code:
+- Protection service (memory-only state machine with no OS blocking)
+- Firewall module (in-memory classifier, no iptables integration)
+- URL feature extractor (phishing detection, 30 fixed features)
+- Traffic simulator (synthetic HTTP log generator)
+- Demo algorithms script (random data generators)
+- Benchmarks directory (attack simulation scripts)
+- RL/DL/ML engine dead code (not wired to NIPS pipeline)
+- Old stats module, training pipeline, data ingestion components
+- Old templates (predict, protection, dashboard, training, model select)

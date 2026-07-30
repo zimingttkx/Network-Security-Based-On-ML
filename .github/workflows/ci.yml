@@ -2,40 +2,114 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
-  test:
+  scan:
     runs-on: ubuntu-latest
-
     steps:
-    - name: 清理磁盘空间
-      run: |
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /opt/ghc
-        sudo rm -rf /usr/local/share/boost
-        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-        df -h
+      - uses: actions/checkout@v4
 
-    - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.12'
+      - name: Keyword scan — detect simulation code in production modules
+        run: |
+          echo "Scanning networksecurity/ for forbidden keywords..."
+          FORBIDDEN="mock simulate fake demo_data generate_packet test_traffic"
+          VIOLATIONS=0
+          for kw in $FORBIDDEN; do
+            HITS=$(grep -rn "$kw" networksecurity/ --include="*.py" 2>/dev/null | grep -v __pycache__ || true)
+            if [ -n "$HITS" ]; then
+              echo "::error::Forbidden keyword '$kw' found in production code:"
+              echo "$HITS"
+              VIOLATIONS=$((VIOLATIONS + 1))
+            fi
+          done
+          if [ $VIOLATIONS -gt 0 ]; then
+            echo "::error::$VIOLATIONS simulation keywords found. Remove them before merging."
+            exit 1
+          fi
+          echo "No forbidden keywords found."
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install --no-cache-dir -r requirements.txt
+      - name: Import check — all modules must import
+        run: |
+          python -c "
+          import networksecurity
+          import networksecurity.engine
+          import networksecurity.engine.detector
+          import networksecurity.engine.verdict
+          import networksecurity.engine.rule_engine
+          import networksecurity.engine.pipeline
+          import networksecurity.engine.kitsune
+          import networksecurity.engine.lucid
+          import networksecurity.features
+          import networksecurity.interception
+          import networksecurity.data
+          print('All modules import successfully')
+          "
 
-    - name: Run tests
-      run: |
-        python -m pytest tests/ -v --ignore=tests/integration || echo "Tests completed"
+      - name: Smoke test — pipeline and parser
+        run: |
+          python -c "
+          import asyncio
+          from networksecurity.engine import DetectionPipeline, PacketInfo, Action
+          from networksecurity.interception import PacketParser
 
-    - name: Check code style
-      run: |
-        pip install flake8
-        flake8 networksecurity --count --select=E9,F63,F7,F82 --show-source --statistics || true
+          # Pipeline blacklist test
+          async def test():
+              p = DetectionPipeline()
+              p.rule_engine.add_blacklist('10.0.0.99')
+              pkt = PacketInfo(src_ip='10.0.0.99', dst_ip='1.1.1.1',
+                               src_port=80, dst_port=80, protocol=6,
+                               packet_size=100, timestamp=1.0)
+              v = await p.process_packet(pkt)
+              assert v.action.value == 'block', f'Expected block, got {v.action.value}'
+          asyncio.run(test())
+
+          # Packet parser
+          raw = bytes([
+              0x45,0x00,0x00,0x28,0x00,0x00,0x00,0x00,0x40,0x06,0x00,0x00,
+              0xC0,0xA8,0x01,0x64,0x0A,0x00,0x00,0x01,
+              0x00,0x50,0x00,0x50,0x00,0x00,0x00,0x00,
+              0x00,0x00,0x00,0x00,0x50,0x02,0xFF,0xFF,0x00,0x00,0x00,0x00,
+          ])
+          pkt = PacketParser.from_raw(raw, 3.0)
+          assert pkt is not None and pkt.src_ip == '192.168.1.100'
+          assert pkt.protocol == 6 and pkt.tcp_flags == 0x02
+
+          print('Smoke tests passed')
+          "
+
+      - name: Dead code scan — orphan functions
+        run: |
+          echo "Checking for common dead code patterns..."
+          # Check for empty function bodies in engine/
+          EMPTY_FUNCS=$(grep -rn "def .*):\s*$" networksecurity/engine/ --include="*.py" 2>/dev/null | grep -v "__init__" | grep -v "abstractmethod" || true)
+          if [ -n "$EMPTY_FUNCS" ]; then
+            echo "::warning::Potentially empty functions found:"
+            echo "$EMPTY_FUNCS"
+          fi
+          echo "Dead code scan complete."
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lint tools
+        run: pip install ruff
+
+      - name: Lint
+        run: |
+          ruff check networksecurity/ --select=E9,F63,F7,F82 --statistics || true
+          ruff check app.py cli.py --select=E9,F63,F7,F82 --statistics || true

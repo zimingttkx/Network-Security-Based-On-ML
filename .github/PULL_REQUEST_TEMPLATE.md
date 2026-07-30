@@ -1,29 +1,52 @@
-# Pull Request
+## Summary
 
-## 变更说明
-简要描述本次PR的主要变更内容
+Briefly describe the change.
 
-## 变更类型
-- [ ] Bug修复
-- [ ] 新功能
-- [ ] 代码重构
-- [ ] 文档更新
-- [ ] 性能优化
-- [ ] 其他
+## Type
 
-## 测试
-- [ ] 已在本地测试
-- [ ] 已添加单元测试
-- [ ] 所有测试通过
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Refactor (no behavior change)
+- [ ] Documentation
 
-## 相关Issue
-关联的Issue编号: #
+## Pre-Submission Checklist
 
-## 截图（如适用）
-添加截图帮助说明变更
+All items must be checked. Unchecked items will result in rejection.
 
-## 检查清单
-- [ ] 代码遵循项目规范
-- [ ] 已更新相关文档
-- [ ] 无新的警告产生
-- [ ] 已自测所有变更
+### Architecture
+
+- [ ] No new module violates the layer dependency rules in [ARCHITECTURE.md](ARCHITECTURE.md)
+- [ ] Engine code does not import from `interception/`
+- [ ] OS calls use `subprocess.run` with `check=True` (no silent failures)
+
+### No Simulation Code
+
+- [ ] Searched new code for `mock`, `simulate`, `fake`, `demo_data`, `generate_packet` — zero hits in `networksecurity/`
+- [ ] No `np.random.randn()` or `random.randint()` in feature extraction or detection logic
+- [ ] All test mocks live in `tests/`, not in `networksecurity/`
+
+### Real Blocking
+
+- [ ] Blocking logic calls `nf_packet.drop()` or `iptables -j DROP` via `IptablesManager`
+- [ ] No in-memory flag (`is_blocked = True`) used as the sole blocking mechanism
+- [ ] System call errors are logged at ERROR level, not silently ignored
+
+### No Dead Code
+
+- [ ] Every new function has at least one caller in the production path
+- [ ] No `while True: sleep(N)` loops without real packet processing
+- [ ] No `if False:` or permanently unreachable branches
+
+### Platform Compatibility
+
+- [ ] Import succeeds on macOS (Linux-only modules use lazy imports)
+- [ ] `python -c "import networksecurity"` completes without error
+
+## Testing
+
+- [ ] Verified on macOS (import + pipeline + API endpoints)
+- [ ] If modifying interception/: verified on Linux with real traffic
+
+## Related Issues
+
+Closes #

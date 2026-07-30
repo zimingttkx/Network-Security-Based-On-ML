@@ -1,47 +1,52 @@
-# 安全政策
+# Security Policy
 
-## 支持的版本
+## Project Scope
 
-当前支持以下版本的安全更新：
+NIPS is a server-side Network Intrusion Prevention System. It intercepts and filters **inbound traffic** on Linux hosts using kernel-level netfilter hooks and iptables rules.
 
-| 版本 | 支持状态 |
-| --- | --- |
-| 1.0.x | :white_check_mark: |
+**In scope:**
+- Inbound traffic interception via NFQUEUE
+- Packet-level anomaly detection (Kitsune, LUCID)
+- IP-level blocking (iptables DROP rules)
+- API for rule management and status monitoring
 
-## 报告漏洞
+**Out of scope:**
+- Outbound traffic filtering
+- Application-layer WAF
+- TLS interception / MITM
+- Endpoint agent for workstations
 
-如果你发现了安全漏洞，请通过以下方式报告：
+## Supported Versions
 
-1. **不要**在公开的Issue中报告安全漏洞
-2. 发送邮件至：2147514473@qq.com
-3. 邮件标题：[安全漏洞] 简要描述
-4. 邮件内容应包含：
-   - 漏洞的详细描述
-   - 复现步骤
-   - 可能的影响范围
-   - 建议的修复方案（如有）
+| Version | Supported          |
+| ------- | ------------------ |
+| 1.0.x   | Active development |
 
-## 响应时间
+## Reporting a Vulnerability
 
-- 我们会在**48小时内**确认收到你的报告
-- 在**7天内**评估漏洞的严重程度
-- 根据严重程度，在**30天内**发布修复
+Report vulnerabilities privately to: **2147514473@qq.com**
 
-## 安全最佳实践
+Do not open a public Issue for security vulnerabilities.
 
-使用本项目时，请注意：
+Include:
+- Description and steps to reproduce
+- Affected versions
+- Potential impact
 
-1. **不要**在代码中硬编码敏感信息
-2. 使用`.env`文件管理环境变量
-3. 定期更新依赖包
-4. 在生产环境中使用强密码
-5. 启用HTTPS
-6. 限制API访问权限
+Response: acknowledgment within 72 hours, status update within 7 days.
 
-## 已知安全问题
+## Security Design
 
-目前没有已知的安全问题。
+1. **Fail secure**: detection failures accept packets (preserve connectivity)
+2. **Graceful shutdown**: iptables rules cleaned on exit
+3. **SSH protection**: port 22 whitelisted to prevent lockout
+4. **Root required**: interceptor needs root; API server runs unprivileged
+5. **No test-mode bypass**: production and test follow identical code paths
 
-## 致谢
+## Deployment Best Practices
 
-感谢所有负责任地报告安全问题的研究人员。
+1. Run the API as non-root, interceptor as root
+2. Whitelist your management IP before starting interception
+3. Test in monitor-only mode first
+4. Keep dependencies updated
+5. Monitor blocked IP logs
