@@ -1,62 +1,62 @@
+# 网络安全威胁检测系统
+
+基于机器学习、深度学习与开源安全算法的网络安全威胁检测平台
+
 <p align="center">
-  <h1 align="center">🛡️ 网络安全威胁检测系统</h1>
-  <p align="center">
-    <strong>基于机器学习、深度学习与开源安全算法的智能网络安全威胁检测平台</strong>
-  </p>
-  <p align="center">
-    <a href="#快速开始">快速开始</a> •
-    <a href="#功能特性">功能特性</a> •
-    <a href="#系统架构">系统架构</a> •
-    <a href="#集成算法">集成算法</a> •
-    <a href="#api文档">API文档</a> •
-    <a href="#贡献指南">贡献指南</a>
-  </p>
-  <p align="center">
-    <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
-    <img src="https://img.shields.io/badge/FastAPI-0.104+-green.svg" alt="FastAPI">
-    <img src="https://img.shields.io/badge/TensorFlow-2.17+-orange.svg" alt="TensorFlow">
-    <img src="https://img.shields.io/badge/Tests-298%20passed-brightgreen.svg" alt="Tests">
-    <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
-  </p>
+  <a href="#快速开始">快速开始</a> •
+  <a href="#功能特性">功能特性</a> •
+  <a href="#系统架构">系统架构</a> •
+  <a href="#集成算法">集成算法</a> •
+  <a href="#api文档">API文档</a> •
+  <a href="#贡献指南">贡献指南</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
+  <img src="https://img.shields.io/badge/FastAPI-0.104+-green.svg" alt="FastAPI">
+  <img src="https://img.shields.io/badge/TensorFlow-2.17+-orange.svg" alt="TensorFlow">
+  <img src="https://img.shields.io/badge/Tests-298%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
 </p>
 
 ---
 
-## 📖 项目简介
+## 项目简介
 
-本项目是一个**企业级网络安全威胁检测系统**，集成了多种开源网络安全算法，能够识别钓鱼网站、恶意URL、DDoS攻击、端口扫描等多种网络威胁。系统采用模块化设计，支持多种检测方法的集成，包括：
+本项目是一个网络安全威胁检测系统，集成了多种开源网络安全算法，能够识别钓鱼网站、恶意URL、DDoS攻击、端口扫描等多种网络威胁。系统采用模块化设计，支持多种检测方法的集成：
 
 - **传统机器学习**：支持8种ML算法自动选优（RandomForest、XGBoost、SVM等）
 - **深度学习**：支持DNN/CNN/LSTM神经网络模型
 - **Kitsune (NDSS'18)**：基于自编码器集成的在线网络入侵检测
 - **LUCID (IEEE TNSM 2020)**：基于CNN的轻量级DDoS检测
 - **Slips风格行为分析**：基于行为模式的威胁检测
-- **强化学习安全响应**：DQN/PPO智能安全响应决策
+- **强化学习安全响应**：DQN/PPO安全响应决策
 - **统一检测管道**：多算法级联融合检测
 
-## ✨ 功能特性
+## 功能特性
 
 | 功能模块 | 描述 |
 |---------|------|
-| 🔍 **URL特征提取** | 自动从URL提取30个安全特征 |
-| 🤖 **智能检测** | 支持ML/DL多种算法自动选优 |
-| 🌊 **Kitsune检测** | 基于AfterImage增量统计的在线异常检测 |
-| ⚡ **LUCID DDoS检测** | 基于CNN的轻量级实时DDoS攻击检测 |
-| 🔎 **Slips行为分析** | 端口扫描、DDoS、C2通信行为检测 |
-| 🎮 **RL安全响应** | DQN/PPO智能安全响应决策 |
-| 📊 **统一管道** | 多算法级联融合检测 |
-| 🛡️ **一键防护** | VPN风格一键开启防护，支持多级别安全策略 |
-| 🌐 **Web界面** | 现代化响应式Web操作界面 |
-| 🔌 **RESTful API** | 完整的API接口，支持批量预测 |
-| 📈 **实时监控** | 系统统计与实时状态监控 |
-| 🚀 **流量模拟** | 高并发流量模拟器，支持百万级压测 |
-| 🐳 **容器化部署** | Docker + Kubernetes生产级部署 |
+| URL特征提取 | 自动从URL提取30个安全特征 |
+| 智能检测 | 支持ML/DL多种算法自动选优 |
+| Kitsune检测 | 基于AfterImage增量统计的在线异常检测 |
+| LUCID DDoS检测 | 基于CNN的轻量级实时DDoS攻击检测 |
+| Slips行为分析 | 端口扫描、DDoS、C2通信行为检测 |
+| RL安全响应 | DQN/PPO安全响应决策 |
+| 统一管道 | 多算法级联融合检测 |
+| 一键防护 | 一键开启防护，支持多级别安全策略 |
+| Web界面 | 响应式Web操作界面 |
+| RESTful API | 完整的API接口，支持批量预测 |
+| 实时监控 | 系统统计与实时状态监控 |
+| 流量模拟 | 高并发流量模拟器，支持压力测试 |
+| 容器化部署 | Docker + Kubernetes 部署 |
 
-## 🔬 集成算法
+## 集成算法
 
 本项目集成了以下开源网络安全算法：
 
 ### Kitsune (NDSS 2018)
+
 > 论文: *Kitsune: An Ensemble of Autoencoders for Online Network Intrusion Detection*
 
 - **AfterImage**: 115维增量统计特征提取
@@ -64,12 +64,14 @@
 - **特点**: 在线学习、无监督、低延迟
 
 ### LUCID (IEEE TNSM 2020)
+
 > 论文: *LUCID: A Practical, Lightweight Deep Learning Solution for DDoS Attack Detection*
 
 - **LucidCNN**: 1D卷积神经网络
 - **特点**: 轻量级、实时检测、高准确率
 
 ### Slips风格行为分析
+
 > 参考: Stratosphere Linux IPS
 
 - **行为分析**: 端口扫描、DDoS、C2通信检测
@@ -77,13 +79,14 @@
 - **特点**: 基于行为模式的多维度分析
 
 ### 强化学习安全响应
+
 > 参考: gym-network_intrusion
 
 - **DQN/DoubleDQN**: 深度Q网络
 - **PPO**: 近端策略优化
 - **动作空间**: 允许/阻止/限流/隔离/告警等7种响应
 
-## 🏗️ 系统架构
+## 系统架构
 
 ```
 Network-Security-Based-On-ML/
@@ -93,7 +96,7 @@ Network-Security-Based-On-ML/
 ├── demo_algorithms.py          # 算法演示脚本
 │
 ├── networksecurity/            # 核心代码包
-│   ├── models/                 # 检测模型层 ⭐ 新增
+│   ├── models/                 # 检测模型层
 │   │   ├── ml/                     # 传统机器学习模型
 │   │   │   └── classifiers.py      # RF, XGBoost, SVM等
 │   │   ├── dl/                     # 深度学习模型
@@ -144,7 +147,7 @@ Network-Security-Based-On-ML/
 │   ├── utils/                  # 工具函数
 │   └── logging/                # 日志配置
 │
-├── deploy/                     # 部署配置 ⭐ 新增
+├── deploy/                     # 部署配置
 │   ├── kubernetes/                 # K8s配置
 │   │   ├── deployment.yaml
 │   │   ├── service.yaml
@@ -175,7 +178,7 @@ Network-Security-Based-On-ML/
 └── deploy.sh                   # 部署脚本
 ```
 
-## 🚀 快速开始
+## 快速开始
 
 ### 环境要求
 
@@ -223,7 +226,7 @@ python app.py
 | 页面 | 地址 | 描述 |
 |------|------|------|
 | 首页 | `/` | 系统概览 |
-| 一键防护 | `/protection` | VPN风格一键开启防护 |
+| 一键防护 | `/protection` | 一键开启防护 |
 | 威胁预测 | `/predict` | 实时威胁检测 |
 | 仪表盘 | `/dashboard` | 实时流量监控 |
 | 模型训练 | `/train` | 训练控制台 |
@@ -231,7 +234,7 @@ python app.py
 | 使用教程 | `/tutorial` | 操作指南 |
 | API文档 | `/docs` | Swagger交互式文档 |
 
-## 📡 API文档
+## API文档
 
 ### 核心端点
 
@@ -259,7 +262,7 @@ python demo_algorithms.py
 
 ### 一键防护
 
-系统提供VPN风格的一键防护功能，支持四种防护级别：
+系统提供一键防护功能，支持四种防护级别：
 
 | 级别 | 描述 |
 |------|------|
@@ -288,40 +291,6 @@ python scripts/traffic_simulator.py -n 5000000 -c 50 -b 20
 ```
 
 流量分布：70%正常用户、12%爬虫、8%机器人、10%攻击者
-
-输出示例：
-```
-============================================================
-         Network Security Algorithms Demo
-============================================================
-
-[1/5] Testing Kitsune (AfterImage + KitNET)...
-  ✓ Kitsune initialized
-  ✓ Processed 100 packets
-  ✓ Anomaly detection rate: 100.0%
-
-[2/5] Testing LUCID (CNN DDoS Detection)...
-  ✓ LUCID detector initialized
-  ✓ Processed 50 flows
-  ✓ DDoS detection working
-
-[3/5] Testing Slips Behavior Analysis...
-  ✓ Slips detector initialized
-  ✓ Detected threats: ['port_scan']
-
-[4/5] Testing RL Security Agent...
-  ✓ Environment initialized
-  ✓ DQN agent created
-  ✓ Ran 100 steps, final reward: 85.5
-
-[5/5] Testing Unified Pipeline...
-  ✓ Pipeline initialized with 3 stages
-  ✓ Cascade detection working
-
-============================================================
-                    All Tests Passed!
-============================================================
-```
 
 ### 预测请求示例
 
@@ -387,7 +356,7 @@ response = requests.post("http://localhost:8000/api/train", json={
 })
 ```
 
-## 🧪 测试
+## 测试
 
 ```bash
 # 运行所有测试
@@ -400,11 +369,11 @@ pytest tests/test_api_functionality.py -v
 pytest tests/ -v --cov=networksecurity
 ```
 
-## 📊 数据特征说明
+## 数据特征说明
 
 模型使用30个网络流量特征进行预测，特征值通常为 `-1`、`0` 或 `1`：
 
-<细节>
+<details>
 <summary>点击展开完整特征列表</summary>
 
 | 序号 | 特征名 | 描述 |
@@ -440,22 +409,22 @@ pytest tests/ -v --cov=networksecurity
 | 29 | Links_pointing_to_page | 外部链接数 |
 | 30 | Statistical_report | 统计报告 |
 
-</细节>
+</details>
 
-## 🔧 技术栈
+## 技术栈
 
 | 类别 | 技术 |
 |------|------|
-| **Web框架** | FastAPI + Uvicorn |
-| **机器学习** | Scikit-learn, XGBoost |
-| **深度学习** | TensorFlow/Keras |
-| **NLP** | Transformers (BERT), PyTorch |
-| **视觉检测** | MobileNetV2, FAISS, Playwright |
-| **数据处理** | Pandas, NumPy |
-| **可视化** | Matplotlib, SHAP |
-| **数据库** | MongoDB (可选) |
+| Web框架 | FastAPI + Uvicorn |
+| 机器学习 | Scikit-learn, XGBoost |
+| 深度学习 | TensorFlow/Keras |
+| NLP | Transformers (BERT), PyTorch |
+| 视觉检测 | MobileNetV2, FAISS, Playwright |
+| 数据处理 | Pandas, NumPy |
+| 可视化 | Matplotlib, SHAP |
+| 数据库 | MongoDB (可选) |
 
-## 📁 相关文档
+## 相关文档
 
 - [English Documentation](docs/en/README.md)
 - [中文文档索引](docs/zh/README.md)
@@ -469,7 +438,7 @@ pytest tests/ -v --cov=networksecurity
 - [威胁预测指南 (中文)](docs/zh/guides/威胁预测.md)
 - [常见问题 (中文)](docs/zh/guides/常见问题.md)
 
-## 🤝 贡献指南
+## 贡献指南
 
 欢迎贡献代码！请查看 [CONTRIBUTING.md](CONTRIBUTING.md) 了解详情。
 
@@ -479,11 +448,11 @@ pytest tests/ -v --cov=networksecurity
 4. 推送到分支 (`git push origin feature/AmazingFeature`)
 5. 提交 Pull Request
 
-## 📄 许可证
+## 许可证
 
 本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
 
-## 📧 联系方式
+## 联系方式
 
 - **作者**: 梓铭
 - **邮箱**: 2147514473@qq.com
@@ -491,113 +460,73 @@ pytest tests/ -v --cov=networksecurity
 
 ---
 
-## 🔬 Benchmark 测试报告
+## 性能测试
 
-本系统使用多个权威网络安全数据集进行了严格的性能测试。
+使用多个网络安全数据集进行的性能测试。
 
 ### 测试数据集
 
 | 数据集 | 来源 | 样本数 | 描述 |
 |--------|------|--------|------|
-| **NSL-KDD** | Canadian Institute for Cybersecurity | 148,517 | KDD Cup 99改进版，消除冗余，业界标准基准 |
-| **CICIDS2017** | Canadian Institute for Cybersecurity | 2,830,743 | 真实网络流量，包含最新攻击类型 |
-| **UNSW-NB15** | UNSW Sydney | 2,540,044 | 现代网络攻击数据集，9种攻击类型 |
-| **CSE-CIC-IDS2018** | CIC | 16,233,002 | 大规模入侵检测数据集 |
-| **Phishing Dataset** | UCI ML Repository | 11,055 | 钓鱼网站特征数据集 |
+| NSL-KDD | Canadian Institute for Cybersecurity | 148,517 | KDD Cup 99改进版，消除冗余 |
+| CICIDS2017 | Canadian Institute for Cybersecurity | 2,830,743 | 真实网络流量，包含最新攻击类型 |
+| UNSW-NB15 | UNSW Sydney | 2,540,044 | 现代网络攻击数据集，9种攻击类型 |
+| CSE-CIC-IDS2018 | CIC | 16,233,002 | 大规模入侵检测数据集 |
+| Phishing Dataset | UCI ML Repository | 11,055 | 钓鱼网站特征数据集 |
 
-### 网络攻击防御压力测试 (NSL-KDD)
+### NSL-KDD 检测结果
 
-使用NSL-KDD权威数据集训练的网络攻击检测模型，进行大规模压力测试：
+- 测试样本: 20,000 条
+- 攻击类型: DoS, Probe, R2L, U2R
+- 吞吐量: 19,913 QPS
+- 平均延迟: 0.050ms/条
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│              网络攻击防御压力测试报告                           │
-├────────────────────────────────────────────────────────────────┤
-│  测试样本: 20,000 条真实网络流量                                │
-│  攻击类型: DoS, Probe, R2L, U2R                                │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│  [性能指标]                                                     │
-│  ├─ 总请求数: 20,000                                           │
-│  ├─ 总耗时: 1.00秒                                             │
-│  └─ 吞吐量 (QPS): 19,913                                       │
-│                                                                │
-│  [检测性能]                                                     │
-│  ├─ 准确率 (Accuracy):     99.58%                              │
-│  ├─ 精确率 (Precision):    99.65%                              │
-│  ├─ 召回率 (Recall):       99.60%                              │
-│  ├─ F1分数:                99.63%                              │
-│  ├─ 误报率 (FPR):          0.46%                               │
-│  └─ 漏报率 (FNR):          0.40%                               │
-│                                                                │
-│  [混淆矩阵]                                                     │
-│  ├─ 真阳性 (TP): 11,342 - 正确检测的攻击                       │
-│  ├─ 真阴性 (TN): 8,573  - 正确放行的正常流量                   │
-│  ├─ 假阳性 (FP): 40     - 误报                                 │
-│  └─ 假阴性 (FN): 45     - 漏报                                 │
-│                                                                │
-│  [延迟统计]                                                     │
-│  └─ 平均每条: 0.050ms                                          │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
+| 指标 | 数值 |
+|------|------|
+| 准确率 (Accuracy) | 99.58% |
+| 精确率 (Precision) | 99.65% |
+| 召回率 (Recall) | 99.60% |
+| F1分数 | 99.63% |
+| 误报率 (FPR) | 0.46% |
+| 漏报率 (FNR) | 0.40% |
 
-### 攻击类型检测统计
+| 类别 | 数量 |
+|------|------|
+| 真阳性 (TP) | 11,342 |
+| 真阴性 (TN) | 8,573 |
+| 假阳性 (FP) | 40 |
+| 假阴性 (FN) | 45 |
 
-```
-攻击类型          样本数      占比        检测能力
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-normal            8,613      43.1%  ████████████████████  正常流量
-neptune           4,133      20.7%  ██████████            DoS攻击
-guess_passwd      1,111       5.6%  ███                   暴力破解
-mscan               886       4.4%  ██                    端口扫描
-warezmaster         836       4.2%  ██                    R2L攻击
-apache2             661       3.3%  ██                    DoS攻击
-satan               642       3.2%  ██                    端口扫描
-processtable        588       2.9%  █                     DoS攻击
-smurf               585       2.9%  █                     DoS攻击
-back                326       1.6%  █                     DoS攻击
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
+### 钓鱼网站检测结果
 
-### 钓鱼网站检测测试
+- 测试样本: 1,000 条（从11,055条数据集采样）
+- 数据来源: UCI ML Repository Phishing Dataset
+- 吞吐量: 160.8 QPS
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│              钓鱼网站检测API测试报告                            │
-├────────────────────────────────────────────────────────────────┤
-│  测试样本: 1,000 条 (从11,055条数据集采样)                      │
-│  数据来源: UCI ML Repository Phishing Dataset                  │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│  [检测性能]                                                     │
-│  ├─ 准确率 (Accuracy):     96.50%                              │
-│  ├─ 精确率 (Precision):    96.36%                              │
-│  ├─ 召回率 (Recall):       97.54%                              │
-│  ├─ F1分数:                96.95%                              │
-│  └─ 误报率 (FPR):          4.88%                               │
-│                                                                │
-│  [混淆矩阵]                                                     │
-│  ├─ 真阳性 (TP): 556                                           │
-│  ├─ 真阴性 (TN): 409                                           │
-│  ├─ 假阳性 (FP): 21                                            │
-│  └─ 假阴性 (FN): 14                                            │
-│                                                                │
-│  [系统性能]                                                     │
-│  └─ 吞吐量: 160.8 QPS                                          │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
+| 指标 | 数值 |
+|------|------|
+| 准确率 (Accuracy) | 96.50% |
+| 精确率 (Precision) | 96.36% |
+| 召回率 (Recall) | 97.54% |
+| F1分数 | 96.95% |
+| 误报率 (FPR) | 4.88% |
 
-### 压力测试结果
+| 类别 | 数量 |
+|------|------|
+| 真阳性 (TP) | 556 |
+| 真阴性 (TN) | 409 |
+| 假阳性 (FP) | 21 |
+| 假阴性 (FN) | 14 |
 
-| 测试场景 | 并发数 | 持续时间 | 总请求 | 成功率 | QPS |
-|---------|--------|----------|--------|--------|-----|
-| 健康检查 | 100 | - | 1,000 | 100% | 1,222 |
-| ML推理 | 50 | - | 500 | 100% | 210 |
-| 混合负载 | 200 | - | 800 | 100% | 464 |
-| 持续高压 | 100 | 30s | 11,877 | 100% | 393 |
-| DDoS模拟 | 200 | 60s | 5,264 | 100% | 86 |
+### 压力测试
+
+| 测试场景 | 并发数 | 总请求 | 成功率 | QPS |
+|---------|--------|--------|--------|-----|
+| 健康检查 | 100 | 1,000 | 100% | 1,222 |
+| ML推理 | 50 | 500 | 100% | 210 |
+| 混合负载 | 200 | 800 | 100% | 464 |
+| 持续高压 | 100 | 11,877 | 100% | 393 |
+| DDoS模拟 | 200 | 5,264 | 100% | 86 |
 
 ### 与其他方案对比
 
@@ -608,11 +537,11 @@ back                326       1.6%  █                     DoS攻击
 | Suricata | ~65% | ~60% | <10ms | 高 |
 | 商业WAF | 70-85% | 65-80% | 50-200ms | 中 |
 
-> **注**: 本系统侧重于ML检测能力，可与传统IDS/IPS配合使用以获得更好效果。
+> 本系统侧重于ML检测能力，可与传统IDS/IPS配合使用。
 
 ### 测试环境
 
-- **CPU**: Intel Core (测试机)
+- **CPU**: Intel Core
 - **内存**: 8GB
 - **Python**: 3.12+
 - **框架**: FastAPI + Uvicorn
@@ -628,8 +557,3 @@ back                326       1.6%  █                     DoS攻击
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=zimingttkx/Network-Security-Based-On-ML&type=date&legend=top-left" />
  </picture>
 </a>
-
-
-<p align="center">
-  如果这个项目对你有帮助，请给个 ⭐ Star 支持一下！
-</p>
