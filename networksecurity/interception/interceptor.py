@@ -17,7 +17,7 @@ from typing import Callable, Optional
 
 from networksecurity.engine.detector import PacketInfo
 from networksecurity.engine.pipeline import DetectionPipeline
-from networksecurity.engine.verdict import Action
+from networksecurity.engine.verdict import Action, Verdict
 from networksecurity.interception.iptables import IptablesManager
 from networksecurity.interception.nfqueue_handler import NFQueueHandler
 

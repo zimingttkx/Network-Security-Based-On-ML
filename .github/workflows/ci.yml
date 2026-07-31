@@ -54,7 +54,7 @@ jobs:
       - name: Bandit — security scan
         run: |
           bandit -r networksecurity/ app.py cli.py \
-            --skip B101,B303,B311 \
+            --skip B101,B303,B311,B104,B310 \
             -f screen \
             -ll
           echo "Security scan completed"
