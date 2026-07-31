@@ -78,6 +78,14 @@ class DetectionPipeline:
 
     # -- lifecycle ----------------------------------------------------------
 
+    def start(self) -> None:
+        """Mark the pipeline as running (called by Interceptor on start)."""
+        self._running = True
+
+    def stop(self) -> None:
+        """Mark the pipeline as stopped (called by Interceptor on stop)."""
+        self._running = False
+
     @property
     def running(self) -> bool:
         return self._running
