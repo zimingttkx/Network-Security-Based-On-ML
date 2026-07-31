@@ -24,8 +24,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from typing import Optional
-
 sys.path.insert(0, ".")
 
 from networksecurity.engine import DetectionPipeline, PacketInfo, Action
