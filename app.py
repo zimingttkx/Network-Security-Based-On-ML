@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -30,7 +31,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -45,6 +46,8 @@ templates = Jinja2Templates(directory="templates")
 # --- Engine state -----------------------------------------------------------
 
 RULES_FILE = Path("rules.json")
+
+logger = logging.getLogger(__name__)
 
 pipeline: DetectionPipeline = DetectionPipeline()
 pipeline.add_detector(KitsuneDetector())
@@ -63,27 +66,6 @@ alerts: list[dict] = []
 start_time: datetime = datetime.now()
 
 
-def _load_rules() -> None:
-    if not RULES_FILE.exists():
-        return
-    try:
-        data = json.loads(RULES_FILE.read_text())
-        for ip in data.get("blacklist", []):
-            pipeline.rule_engine.add_blacklist(ip)
-        for ip in data.get("whitelist", []):
-            pipeline.rule_engine.add_whitelist(ip)
-    except Exception:
-        pass
-
-
-def _save_rules() -> None:
-    data = {
-        "blacklist": pipeline.rule_engine.get_blacklist(),
-        "whitelist": pipeline.rule_engine.get_whitelist(),
-    }
-    RULES_FILE.write_text(json.dumps(data, indent=2))
-
-
 def _record_alert(source_ip: str, reason: str, action: str, detector: str) -> None:
     alerts.insert(0, {
         "timestamp": datetime.now().isoformat(),
@@ -96,7 +78,7 @@ def _record_alert(source_ip: str, reason: str, action: str, detector: str) -> No
         alerts.pop()
 
 
-_load_rules()
+pipeline.rule_engine.load_rules(RULES_FILE)
 
 # --- Pydantic models -------------------------------------------------------
 
@@ -180,7 +162,7 @@ async def get_rules():
 @app.post("/api/v1/rules/blacklist")
 async def add_blacklist(entry: BlacklistEntry):
     pipeline.rule_engine.add_blacklist(entry.ip)
-    _save_rules()
+    pipeline.rule_engine.save_rules(RULES_FILE)
     _record_alert(entry.ip, entry.reason, "block", "rule_engine")
     return {"status": "ok", "blacklist": pipeline.rule_engine.get_blacklist()}
 
@@ -188,21 +170,21 @@ async def add_blacklist(entry: BlacklistEntry):
 @app.delete("/api/v1/rules/blacklist/{ip}")
 async def remove_blacklist(ip: str):
     pipeline.rule_engine.remove_blacklist(ip)
-    _save_rules()
+    pipeline.rule_engine.save_rules(RULES_FILE)
     return {"status": "ok", "blacklist": pipeline.rule_engine.get_blacklist()}
 
 
 @app.post("/api/v1/rules/whitelist")
 async def add_whitelist(entry: WhitelistEntry):
     pipeline.rule_engine.add_whitelist(entry.ip)
-    _save_rules()
+    pipeline.rule_engine.save_rules(RULES_FILE)
     return {"status": "ok", "whitelist": pipeline.rule_engine.get_whitelist()}
 
 
 @app.delete("/api/v1/rules/whitelist/{ip}")
 async def remove_whitelist(ip: str):
     pipeline.rule_engine.remove_whitelist(ip)
-    _save_rules()
+    pipeline.rule_engine.save_rules(RULES_FILE)
     return {"status": "ok", "whitelist": pipeline.rule_engine.get_whitelist()}
 
 
@@ -238,20 +220,37 @@ async def engine_start():
             detail="Interceptor unavailable — install NetfilterQueue on Linux",
         )
 
-    _interceptor = Interceptor(pipeline)
+    started = threading.Event()
+
+    _interceptor = Interceptor(
+        pipeline,
+        on_verdict=lambda pkt, v: _record_alert(
+            pkt.src_ip, v.reason, v.action.value, v.detector
+        ),
+    )
+
+    # Patch start() to signal the event once running
+    _original_start = _interceptor.start
+    def _patched_start():
+        _original_start()
+        started.set()
+    _interceptor.start = _patched_start
 
     def _run():
         try:
             _interceptor.start()
         except Exception:
-            pass
+            logger.exception("Interceptor thread crashed")
+            started.set()  # unblock caller even on error
 
     _interceptor_thread = threading.Thread(target=_run, daemon=True)
     _interceptor_thread.start()
 
-    # Wait briefly to confirm startup
-    await asyncio.sleep(0.5)
-    running = getattr(_interceptor, "running", False)
+    # Wait up to 3s for the interceptor thread to confirm startup
+    try:
+        running = await asyncio.to_thread(started.wait, 3.0)
+    except Exception:
+        running = False
     return {
         "status": "started" if running else "start_pending",
         "pipeline": pipeline.status(),
@@ -269,8 +268,8 @@ async def engine_stop():
     try:
         _interceptor.stop()
     except Exception:
-        pass
-    _save_rules()
+        logger.exception("Error stopping interceptor")
+    pipeline.rule_engine.save_rules(RULES_FILE)
     _interceptor = None
     return {"status": "stopped"}
 
