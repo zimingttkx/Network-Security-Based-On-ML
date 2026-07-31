@@ -204,4 +204,9 @@ class LucidCNN:
         """Load the model."""
         tf = self._check_tensorflow()
         self.model = tf.keras.models.load_model(path)
+        # Restore params from the loaded model for correct reshape later
+        input_shape = self.model.input_shape  # (None, time_steps, n_features)
+        if input_shape is not None and len(input_shape) == 3:
+            self.params["time_steps"] = input_shape[1]
+            self.params["n_features"] = input_shape[2]
         self.is_fitted = True

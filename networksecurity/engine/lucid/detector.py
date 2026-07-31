@@ -147,10 +147,12 @@ class LucidDetector:
         self.total_detections += 1
         
         if not self.is_trained:
-            logger.warning(
-                "LUCID detector called but model is not trained. "
-                "Run detector.train() or detector.load() first."
-            )
+            if not getattr(self, "_warned_untrained", False):
+                logger.warning(
+                    "LUCID detector called but model is not trained. "
+                    "Run detector.train() or detector.load() first."
+                )
+                self._warned_untrained = True
             return LucidResult(
                 is_ddos=False,
                 confidence=0.0,
