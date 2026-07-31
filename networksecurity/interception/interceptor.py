@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from networksecurity.engine.detector import PacketInfo
 from networksecurity.engine.pipeline import DetectionPipeline
@@ -42,12 +42,14 @@ class Interceptor:
         pipeline: DetectionPipeline,
         queue_num: int = 0,
         safe_ips: Optional[list[str]] = None,
+        on_verdict: Optional[Callable[[PacketInfo, Verdict], None]] = None,
     ) -> None:
         self._pipeline = pipeline
         self._nfqueue = NFQueueHandler(queue_num=queue_num)
         self._iptables = IptablesManager(safe_ips=safe_ips)
         self._running: bool = False
         self._blocked: set[str] = set()
+        self._on_verdict: Optional[Callable[[PacketInfo, Verdict], None]] = on_verdict
 
     # -- public -------------------------------------------------------------
 
@@ -89,6 +91,7 @@ class Interceptor:
         self._iptables.setup_nfqueue()
         self._nfqueue.set_callback(self._on_packet)
         self._running = True
+        self._pipeline.start()
         logger.info("Interceptor started — NFQUEUE + iptables active")
         try:
             self._nfqueue.start()
@@ -101,6 +104,7 @@ class Interceptor:
         self._running = False
         self._nfqueue.stop()
         self._iptables.cleanup_all()
+        self._pipeline.stop()
         logger.info("Interceptor stopped.  %d IPs permanently blocked.", len(self._blocked))
 
     def status(self) -> dict:
@@ -128,6 +132,12 @@ class Interceptor:
 
     async def _handle(self, packet: PacketInfo) -> bool:
         verdict = await self._pipeline.process_packet(packet)
+
+        if self._on_verdict is not None:
+            try:
+                self._on_verdict(packet, verdict)
+            except Exception:
+                logger.exception("on_verdict callback failed")
 
         if verdict.action == Action.BLOCK:
             # Permanent block: add iptables rule so future packets
