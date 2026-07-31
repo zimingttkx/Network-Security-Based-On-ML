@@ -42,6 +42,79 @@ refactor: extract verdict types to separate module
 
 ---
 
+## Code Style
+
+All code must pass our [Ruff](https://docs.astral.sh/ruff/) configuration. CI enforces this on every PR.
+
+### Quick Setup
+
+```bash
+pip install ruff
+```
+
+### Lint (required — CI blocks on failure)
+
+Covers syntax errors, undefined names, and other fatal issues:
+
+```bash
+ruff check networksecurity/ app.py cli.py scripts/ \
+  --select=E9,F63,F7,F82 \
+  --output-format=full
+```
+
+### Auto-format (recommended)
+
+```bash
+ruff check networksecurity/ app.py cli.py --fix
+```
+
+### Style Rules (in effect via CI)
+
+| Rule | Description |
+|------|-------------|
+| `E9` / `F63` / `F7` / `F82` | Syntax errors, undefined names (blocking) |
+| `F` / `E` / `W` | Pyflakes / pycodestyle / warnings |
+| `I` | `isort` import ordering |
+| `N` | PEP 8 naming conventions |
+| `UP` | Modern Python syntax (`Optional[X]` → `X \| None`) |
+| `B` | Bug-prone patterns |
+| `SIM` / `PL` / `RET` / `PERF` | Simplifications / pylint / return / performance |
+
+### Import Sorting
+
+Standard library → third-party → first-party, with a blank line between each group:
+
+```python
+import logging
+from pathlib import Path
+
+import numpy as np
+from fastapi import FastAPI
+
+from networksecurity.engine import DetectionPipeline
+```
+
+### Type Annotations
+
+Use Python 3.12+ syntax consistently:
+
+```python
+# Correct
+def process(packet: PacketInfo) -> Verdict | None: ...
+
+# Avoid
+def process(packet: PacketInfo) -> Optional[Verdict]: ...
+```
+
+### Naming
+
+- Classes: `PascalCase`
+- Functions/methods/variables: `snake_case`
+- Module-level constants: `UPPER_CASE`
+- Private members: prefix with `_`
+
+---
+
 ## Pre-Submission Checklist
 
 Every PR author must verify these items before submitting. Reviewers will reject PRs that fail any of them.

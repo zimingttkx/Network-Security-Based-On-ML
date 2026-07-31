@@ -5,11 +5,8 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
-import re
-import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional, Set
 
 from networksecurity.engine.detector import BaseDetector, PacketInfo
 from networksecurity.engine.verdict import Action, ThreatLevel, Verdict
@@ -50,16 +47,16 @@ class RuleEngine(BaseDetector):
 
     def __init__(self) -> None:
         super().__init__(name="RuleEngine")
-        self._whitelist: Set[str] = set()
-        self._blacklist: Set[str] = set()
-        self._protocol_allow: Set[int] = {6, 17}  # TCP, UDP
+        self._whitelist: set[str] = set()
+        self._blacklist: set[str] = set()
+        self._protocol_allow: set[int] = {6, 17}  # TCP, UDP
         self._rate_limiter = RateLimiter()
         self._rules: list[dict] = []
         self._blocked_count: int = 0
 
     # -- public API ---------------------------------------------------------
 
-    async def process_packet(self, packet: PacketInfo) -> Optional[Verdict]:
+    async def process_packet(self, packet: PacketInfo) -> Verdict | None:
         self._packet_count += 1
 
         # 1. Whitelist check

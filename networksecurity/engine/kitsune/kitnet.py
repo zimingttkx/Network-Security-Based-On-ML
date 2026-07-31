@@ -6,9 +6,9 @@ Uses an ensemble of small autoencoders, each learning normal
 patterns for a subset of features.
 """
 
-import numpy as np
-from typing import List, Optional, Tuple, Dict
 import logging
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ class AutoEncoder:
         """Decode."""
         return self._sigmoid(np.dot(h, self.W_decode) + self.b_decode)
     
-    def forward(self, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def forward(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Forward pass. Returns (reconstruction, hidden, normalized_input)."""
         x_norm = self._normalize(x)
         h = self.encode(x_norm)
@@ -141,23 +141,23 @@ class KitNET:
         self.hidden_ratio = hidden_ratio
 
         # Feature map
-        self.feature_map: List[List[int]] = []
+        self.feature_map: list[list[int]] = []
 
         # Ensemble autoencoders
-        self.ensemble: List[AutoEncoder] = []
+        self.ensemble: list[AutoEncoder] = []
 
         # Output autoencoder
-        self.output_ae: Optional[AutoEncoder] = None
+        self.output_ae: AutoEncoder | None = None
 
         # Training state
         self.n_trained = 0
-        self.fm_data: List[np.ndarray] = []
+        self.fm_data: list[np.ndarray] = []
         self.is_fm_done = False
         self.is_ad_done = False
 
         # Anomaly threshold
         self.threshold = None
-        self.rmse_history: List[float] = []
+        self.rmse_history: list[float] = []
     
     def _build_feature_map(self, X: np.ndarray):
         """Build feature map via correlation clustering."""
@@ -296,7 +296,7 @@ class KitNET:
             return False
         return rmse > self.threshold
     
-    def get_state(self) -> Dict:
+    def get_state(self) -> dict:
         """Get model state."""
         return {
             'n_trained': self.n_trained,

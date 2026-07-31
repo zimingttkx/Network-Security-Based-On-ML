@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from networksecurity.engine.detector import BaseDetector, PacketInfo
 from networksecurity.engine.kitsune.kitsune import Kitsune
@@ -33,7 +32,7 @@ class KitsuneDetector(BaseDetector):
 
     # -- BaseDetector interface ---------------------------------------------
 
-    async def process_packet(self, packet: PacketInfo) -> Optional[Verdict]:
+    async def process_packet(self, packet: PacketInfo) -> Verdict | None:
         self._packet_count += 1
 
         result = self._kitsune.process_packet(packet.to_dict())

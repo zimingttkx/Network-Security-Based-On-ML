@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import time
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Optional
 
 from networksecurity.engine.detector import PacketInfo
 
@@ -59,7 +56,7 @@ class FlowTracker:
         self._flows: dict[tuple, FlowFeatures] = {}
         self._last_seen: dict[tuple, float] = {}
 
-    def ingest(self, packet: PacketInfo) -> Optional[FlowFeatures]:
+    def ingest(self, packet: PacketInfo) -> FlowFeatures | None:
         """Feed a packet. Returns a completed FlowFeatures or None."""
         key = (packet.src_ip, packet.dst_ip,
                packet.src_port, packet.dst_port, packet.protocol)

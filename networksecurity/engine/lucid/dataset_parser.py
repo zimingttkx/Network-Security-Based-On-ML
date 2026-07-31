@@ -5,11 +5,11 @@ Based on doriguzzi/lucid-ddos (IEEE TNSM 2020).
 Converts raw network traffic into the input format required by the LUCID CNN.
 """
 
-import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, field
 import logging
-from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import ClassVar
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 class FlowSample:
     """Flow sample."""
     flow_id: str
-    packets: List[Dict] = field(default_factory=list)
+    packets: list[dict] = field(default_factory=list)
     label: int = 0  # 0=normal, 1=DDoS
     timestamp_start: float = 0.0
     timestamp_end: float = 0.0
     
-    def add_packet(self, packet: Dict):
+    def add_packet(self, packet: dict):
         """Add a packet to this flow."""
         self.packets.append(packet)
         if not self.timestamp_start:
@@ -50,7 +50,7 @@ class LucidDatasetParser:
     """
     
     # Per-packet feature names
-    PACKET_FEATURES = [
+    PACKET_FEATURES: ClassVar[list] = [
         'packet_size',      # packet size
         'iat',              # inter-arrival time
         'protocol',         # protocol (TCP=6, UDP=17)
@@ -75,18 +75,18 @@ class LucidDatasetParser:
         self.n_features = len(self.PACKET_FEATURES)
         
         # Flow buffer
-        self.flows: Dict[str, FlowSample] = {}
+        self.flows: dict[str, FlowSample] = {}
         
         # Attacker/victim IPs (for labeling)
         self.attacker_ips: set = set()
         self.victim_ips: set = set()
     
-    def set_attack_info(self, attackers: List[str], victims: List[str]):
+    def set_attack_info(self, attackers: list[str], victims: list[str]):
         """Set attacker and victim IPs."""
         self.attacker_ips = set(attackers)
         self.victim_ips = set(victims)
     
-    def _get_flow_id(self, packet: Dict) -> str:
+    def _get_flow_id(self, packet: dict) -> str:
         """Generate flow ID (5-tuple)."""
         src_ip = packet.get('src_ip', '0.0.0.0')
         dst_ip = packet.get('dst_ip', '0.0.0.0')
@@ -99,13 +99,13 @@ class LucidDatasetParser:
             return f"{dst_ip}:{dst_port}-{src_ip}:{src_port}-{protocol}"
         return f"{src_ip}:{src_port}-{dst_ip}:{dst_port}-{protocol}"
     
-    def _is_attack(self, packet: Dict) -> bool:
+    def _is_attack(self, packet: dict) -> bool:
         """Check whether traffic is from an attacker."""
         src_ip = packet.get('src_ip', '')
         dst_ip = packet.get('dst_ip', '')
         return src_ip in self.attacker_ips or dst_ip in self.victim_ips
     
-    def _extract_packet_features(self, packet: Dict, prev_timestamp: float = 0) -> np.ndarray:
+    def _extract_packet_features(self, packet: dict, prev_timestamp: float = 0) -> np.ndarray:
         """Extract per-packet features."""
         features = np.zeros(self.n_features, dtype=np.float32)
         
@@ -143,7 +143,7 @@ class LucidDatasetParser:
         
         return features
     
-    def process_packet(self, packet: Dict) -> Optional[Tuple[np.ndarray, int]]:
+    def process_packet(self, packet: dict) -> tuple[np.ndarray, int] | None:
         """
         Process a single packet.
 
@@ -187,7 +187,7 @@ class LucidDatasetParser:
         
         return sample
     
-    def flush_flows(self) -> List[Tuple[np.ndarray, int]]:
+    def flush_flows(self) -> list[tuple[np.ndarray, int]]:
         """Flush all incomplete flows."""
         samples = []
         for flow in self.flows.values():
@@ -197,7 +197,7 @@ class LucidDatasetParser:
         self.flows.clear()
         return samples
     
-    def parse_batch(self, packets: List[Dict]) -> Tuple[np.ndarray, np.ndarray]:
+    def parse_batch(self, packets: list[dict]) -> tuple[np.ndarray, np.ndarray]:
         """
         Parse a batch of packets.
 
@@ -223,6 +223,6 @@ class LucidDatasetParser:
         
         return np.array(samples), np.array(labels)
     
-    def get_input_shape(self) -> Tuple[int, int]:
+    def get_input_shape(self) -> tuple[int, int]:
         """Get input shape."""
         return (self.packets_per_flow, self.n_features)

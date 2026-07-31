@@ -2,7 +2,6 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
 from networksecurity.engine.verdict import Verdict
 
@@ -53,10 +52,10 @@ class BaseDetector(ABC):
         self._packet_count: int = 0
 
     @abstractmethod
-    async def process_packet(self, packet: PacketInfo) -> Optional[Verdict]:
+    async def process_packet(self, packet: PacketInfo) -> Verdict | None:
         """Process a single packet.  Return a Verdict or None."""
 
-    async def process_batch(self, packets: list[PacketInfo]) -> list[Optional[Verdict]]:
+    async def process_batch(self, packets: list[PacketInfo]) -> list[Verdict | None]:
         return [await self.process_packet(p) for p in packets]
 
     @property

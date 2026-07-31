@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from networksecurity.engine.detector import BaseDetector, PacketInfo
 from networksecurity.engine.lucid.detector import LucidDetector
@@ -32,7 +31,7 @@ class LucidDetectorAdapter(BaseDetector):
 
     # -- BaseDetector interface ---------------------------------------------
 
-    async def process_packet(self, packet: PacketInfo) -> Optional[Verdict]:
+    async def process_packet(self, packet: PacketInfo) -> Verdict | None:
         self._packet_count += 1
 
         # LucidDetector.process_packet expects a dict

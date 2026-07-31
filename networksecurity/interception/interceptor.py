@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from networksecurity.engine.detector import PacketInfo
 from networksecurity.engine.pipeline import DetectionPipeline
@@ -41,15 +41,15 @@ class Interceptor:
         self,
         pipeline: DetectionPipeline,
         queue_num: int = 0,
-        safe_ips: Optional[list[str]] = None,
-        on_verdict: Optional[Callable[[PacketInfo, Verdict], None]] = None,
+        safe_ips: list[str] | None = None,
+        on_verdict: Callable[[PacketInfo, Verdict], None] | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._nfqueue = NFQueueHandler(queue_num=queue_num)
         self._iptables = IptablesManager(safe_ips=safe_ips)
         self._running: bool = False
         self._blocked: set[str] = set()
-        self._on_verdict: Optional[Callable[[PacketInfo, Verdict], None]] = on_verdict
+        self._on_verdict: Callable[[PacketInfo, Verdict], None] | None = on_verdict
 
     # -- public -------------------------------------------------------------
 

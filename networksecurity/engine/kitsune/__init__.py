@@ -8,14 +8,14 @@ Core components:
 """
 
 from networksecurity.engine.kitsune.afterimage import AfterImage, IncStat, IncStatDB
-from networksecurity.engine.kitsune.kitnet import KitNET, AutoEncoder
+from networksecurity.engine.kitsune.kitnet import AutoEncoder, KitNET
 from networksecurity.engine.kitsune.kitsune import Kitsune
 
 __all__ = [
     'AfterImage',
+    'AutoEncoder',
     'IncStat',
     'IncStatDB',
     'KitNET',
-    'AutoEncoder',
     'Kitsune',
 ]

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from networksecurity.engine.detector import PacketInfo
 from networksecurity.interception.packet_parser import PacketParser

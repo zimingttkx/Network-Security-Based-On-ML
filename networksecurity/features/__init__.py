@@ -9,8 +9,8 @@ from networksecurity.features.flow_extractor import FlowFeatures, FlowTracker
 
 __all__ = [
     "FEATURE_REGISTRY",
-    "get_feature_dim",
-    "list_features",
     "FlowFeatures",
     "FlowTracker",
+    "get_feature_dim",
+    "list_features",
 ]

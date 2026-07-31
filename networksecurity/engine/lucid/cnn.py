@@ -6,9 +6,10 @@ Based on doriguzzi/lucid-ddos (IEEE TNSM 2020).
 for DDoS detection.
 """
 
-import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
 import logging
+from typing import ClassVar
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class LucidCNN:
     """
     
     # Default hyperparameters
-    DEFAULT_PARAMS = {
+    DEFAULT_PARAMS: ClassVar[dict] = {
         'time_steps': 10,      # packets per time window
         'n_features': 11,      # features per packet
         'kernels': 64,         # convolution kernels
@@ -104,7 +105,7 @@ class LucidCNN:
     
     def fit(self, X: np.ndarray, y: np.ndarray, 
             X_val: np.ndarray = None, y_val: np.ndarray = None,
-            epochs: int = None, batch_size: int = None, verbose: int = 0) -> Dict:
+            epochs: int | None = None, batch_size: int | None = None, verbose: int = 0) -> dict:
         """
         Train the model.
         
@@ -179,7 +180,7 @@ class LucidCNN:
         proba = self.model.predict(X, verbose=0).flatten()
         return np.column_stack([1 - proba, proba])
     
-    def evaluate(self, X: np.ndarray, y: np.ndarray) -> Dict:
+    def evaluate(self, X: np.ndarray, y: np.ndarray) -> dict:
         """Evaluate the model."""
         if not self.is_fitted:
             raise ValueError("Model not trained")

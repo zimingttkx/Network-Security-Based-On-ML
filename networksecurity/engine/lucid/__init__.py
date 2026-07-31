@@ -7,12 +7,12 @@ delivering low-overhead, real-time DDoS detection.
 """
 
 from networksecurity.engine.lucid.cnn import LucidCNN
-from networksecurity.engine.lucid.dataset_parser import LucidDatasetParser, FlowSample
+from networksecurity.engine.lucid.dataset_parser import FlowSample, LucidDatasetParser
 from networksecurity.engine.lucid.detector import LucidDetector
 
 __all__ = [
-    'LucidCNN',
-    'LucidDatasetParser', 
     'FlowSample',
+    'LucidCNN',
+    'LucidDatasetParser',
     'LucidDetector'
 ]

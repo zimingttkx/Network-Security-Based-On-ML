@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
+import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-import uvicorn
 
 from networksecurity.engine import DetectionPipeline
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
@@ -59,16 +57,16 @@ try:
 except ImportError:
     pass
 
-_interceptor: Optional[object] = None  # Interceptor | None
-_interceptor_thread: Optional[threading.Thread] = None
+_interceptor: object | None = None  # Interceptor | None
+_interceptor_thread: threading.Thread | None = None
 
 alerts: list[dict] = []
-start_time: datetime = datetime.now()
+start_time: datetime = datetime.now(tz=timezone.utc)
 
 
 def _record_alert(source_ip: str, reason: str, action: str, detector: str) -> None:
     alerts.insert(0, {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
         "source_ip": source_ip,
         "reason": reason,
         "action": action,
@@ -100,7 +98,7 @@ async def index(request: Request):
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    return {"status": "healthy", "timestamp": datetime.now(tz=timezone.utc).isoformat()}
 
 
 # --- Status & stats --------------------------------------------------------
@@ -113,7 +111,7 @@ async def engine_status():
     status = {
         "running": interceptor_running or pipeline.running,
         "interception_active": interceptor_running,
-        "uptime_seconds": (datetime.now() - start_time).total_seconds(),
+        "uptime_seconds": (datetime.now(tz=timezone.utc) - start_time).total_seconds(),
         "detectors": pipeline.status()["detectors"],
         "kitsune_trained": bool(
             hasattr(pipeline, "_detectors")
@@ -135,7 +133,7 @@ async def stats_overview():
         "total_processed": pipeline.total_processed,
         "total_blocked": pipeline.total_blocked,
         "rule_engine": pipeline.rule_engine.stats(),
-        "uptime_seconds": (datetime.now() - start_time).total_seconds(),
+        "uptime_seconds": (datetime.now(tz=timezone.utc) - start_time).total_seconds(),
     }
 
 
@@ -199,7 +197,8 @@ async def engine_start():
         return {"status": "already_running"}
 
     # Validate environment synchronously before spawning background thread.
-    import os as _os, shutil as _shutil
+    import os as _os
+    import shutil as _shutil
 
     if _os.geteuid() != 0:
         raise HTTPException(
@@ -249,7 +248,7 @@ async def engine_start():
     # Wait up to 3s for the interceptor thread to confirm startup
     try:
         running = await asyncio.to_thread(started.wait, 3.0)
-    except Exception:
+    except Exception:  # noqa: BLE001
         running = False
     return {
         "status": "started" if running else "start_pending",

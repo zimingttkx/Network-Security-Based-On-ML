@@ -6,11 +6,12 @@ Uses AfterImage for incremental statistical feature extraction
 and KitNET autoencoder ensemble for anomaly detection.
 """
 
-import numpy as np
-from typing import Dict, List, Optional, Tuple, Any, Union
-from dataclasses import dataclass
 import logging
 import time
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
 
 from networksecurity.engine.kitsune.afterimage import AfterImage
 from networksecurity.engine.kitsune.kitnet import KitNET
@@ -25,9 +26,9 @@ class KitsuneResult:
     is_anomaly: bool
     packet_count: int
     is_training: bool
-    threshold: Optional[float] = None
+    threshold: float | None = None
     
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             'rmse': self.rmse,
             'is_anomaly': self.is_anomaly,
@@ -69,7 +70,7 @@ class Kitsune:
 
         # Components
         self.afterimage = AfterImage()
-        self.kitnet: Optional[KitNET] = None
+        self.kitnet: KitNET | None = None
 
         # State
         self.packet_count = 0
@@ -88,7 +89,7 @@ class Kitsune:
         self.is_initialized = True
         logger.info("Kitsune: KitNET initialized, feature_dim=%d", feature_dim)
     
-    def process_packet(self, packet_info: Dict) -> KitsuneResult:
+    def process_packet(self, packet_info: dict) -> KitsuneResult:
         """Process a single packet.  Accepts a dict with:
         src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port,
         packet_size, timestamp.
@@ -138,7 +139,7 @@ class Kitsune:
             threshold=self.kitnet.threshold
         )
     
-    def batch_process(self, data_list: List[Any]) -> List[KitsuneResult]:
+    def batch_process(self, data_list: list[Any]) -> list[KitsuneResult]:
         """Batch process."""
         return [self.process(d) for d in data_list]
     
@@ -165,7 +166,7 @@ class Kitsune:
             probas.append([1 - prob, prob])
         return np.array(probas)
     
-    def get_state(self) -> Dict:
+    def get_state(self) -> dict:
         """Get model state."""
         state = {
             'packet_count': self.packet_count,

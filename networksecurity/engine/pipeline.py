@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from networksecurity.engine.detector import BaseDetector, PacketInfo
 from networksecurity.engine.rule_engine import RuleEngine
@@ -24,7 +23,7 @@ class DetectionPipeline:
 
     def __init__(
         self,
-        rule_engine: Optional[RuleEngine] = None,
+        rule_engine: RuleEngine | None = None,
         short_circuit_on_block: bool = True,
     ) -> None:
         self._rule_engine = rule_engine or RuleEngine()

@@ -7,9 +7,10 @@ Tracks temporal patterns across 5 exponentially-decaying time windows
 IP pair, socket src, socket pair), producing 115 features per packet.
 """
 
-import numpy as np
-from typing import Dict, List, Optional, Tuple
 import logging
+from typing import ClassVar
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class IncStat:
         self.src_sum_sq = 0.0
         self.cov_sum = 0.0
     
-    def insert(self, value: float, timestamp: float = 0.0, src_value: float = None):
+    def insert(self, value: float, timestamp: float = 0.0, src_value: float | None = None):
         """Insert a new value and update statistics with time decay."""
         # Apply time decay
         if timestamp > self.last_timestamp:
@@ -101,15 +102,15 @@ class IncStat:
 
         return self.cov() / (np.sqrt(var_x) * np.sqrt(var_y))
 
-    def get_stats(self) -> Tuple[float, float, float]:
+    def get_stats(self) -> tuple[float, float, float]:
         """Return (weight, mean, std)."""
         return self.weight, self.mean(), self.std()
 
-    def get_stats_1d(self) -> List[float]:
+    def get_stats_1d(self) -> list[float]:
         """Return 1-d stats: [weight, mean, std]."""
         return [self.weight, self.mean(), self.std()]
 
-    def get_stats_2d(self) -> List[float]:
+    def get_stats_2d(self) -> list[float]:
         """Return 2-d stats: [weight, mean, std, cov, pcc]."""
         return [self.weight, self.mean(), self.std(), self.cov(), self.pcc()]
 
@@ -119,7 +120,7 @@ class IncStatDB:
 
     def __init__(self, lambda_: float = 1.0):
         self.lambda_ = lambda_
-        self.stats: Dict[str, IncStat] = {}
+        self.stats: dict[str, IncStat] = {}
 
     def get_stat(self, key: str, init_time: float = 0.0) -> IncStat:
         """Get or create an IncStat for `key`."""
@@ -132,7 +133,7 @@ class IncStatDB:
         stat = self.get_stat(key, timestamp)
         stat.insert(value, timestamp)
 
-    def get_stats(self, key: str) -> Tuple[float, float, float]:
+    def get_stats(self, key: str) -> tuple[float, float, float]:
         """Return (weight, mean, std) for `key`."""
         if key in self.stats:
             return self.stats[key].get_stats()
@@ -153,7 +154,7 @@ class AfterImage:
     Each channel is tracked across 5 decay windows (5s, 3s, 1s, 0.1s, 0.01s).
     """
 
-    LAMBDAS = [5, 3, 1, 0.1, 0.01]
+    LAMBDAS: ClassVar[list] = [5, 3, 1, 0.1, 0.01]
 
     def __init__(self, max_hosts: int = 100000):
         """
@@ -218,8 +219,8 @@ class AfterImage:
 
         return np.array(features, dtype=np.float32)
 
-    def _extract_channel_features(self, stat_dbs: List[IncStatDB], key: str,
-                                   value: float, timestamp: float) -> List[float]:
+    def _extract_channel_features(self, stat_dbs: list[IncStatDB], key: str,
+                                   value: float, timestamp: float) -> list[float]:
         """Extract features for a single channel across all time windows."""
         features = []
 
@@ -247,7 +248,7 @@ class AfterImage:
 
         return features
 
-    def extract_features_from_packet(self, packet_info: Dict) -> np.ndarray:
+    def extract_features_from_packet(self, packet_info: dict) -> np.ndarray:
         """Extract features from a packet info dict.
 
         Args:

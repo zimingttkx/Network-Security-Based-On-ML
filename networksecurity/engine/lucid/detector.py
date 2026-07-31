@@ -2,14 +2,14 @@
 LUCID detector — integrates CNN model and dataset parser.
 """
 
-import numpy as np
-from typing import Dict, List, Optional, Tuple, Any, Union
-from dataclasses import dataclass
 import logging
 import time
+from dataclasses import dataclass
+
+import numpy as np
 
 from networksecurity.engine.lucid.cnn import LucidCNN
-from networksecurity.engine.lucid.dataset_parser import LucidDatasetParser, FlowSample
+from networksecurity.engine.lucid.dataset_parser import LucidDatasetParser
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class LucidResult:
     packets_analyzed: int = 0
     detection_time_ms: float = 0.0
     
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             'is_ddos': self.is_ddos,
             'confidence': self.confidence,
@@ -78,13 +78,13 @@ class LucidDetector:
         self.total_detections = 0
         self.ddos_detections = 0
     
-    def set_attack_info(self, attackers: List[str], victims: List[str]):
+    def set_attack_info(self, attackers: list[str], victims: list[str]):
         """Set attacker and victim IPs (for training labels)."""
         self.parser.set_attack_info(attackers, victims)
     
     def train(self, X: np.ndarray, y: np.ndarray, 
               X_val: np.ndarray = None, y_val: np.ndarray = None,
-              epochs: int = 100, verbose: int = 0) -> Dict:
+              epochs: int = 100, verbose: int = 0) -> dict:
         """
         Train the detector.
         
@@ -96,8 +96,8 @@ class LucidDetector:
         self.is_trained = True
         return result
     
-    def train_from_packets(self, packets: List[Dict], epochs: int = 100, 
-                           validation_split: float = 0.2, verbose: int = 0) -> Dict:
+    def train_from_packets(self, packets: list[dict], epochs: int = 100, 
+                           validation_split: float = 0.2, verbose: int = 0) -> dict:
         """
         Train from raw packets.
         
@@ -125,7 +125,7 @@ class LucidDetector:
         
         return self.train(X_train, y_train, X_val, y_val, epochs, verbose)
     
-    def process_packet(self, packet: Dict) -> Optional[LucidResult]:
+    def process_packet(self, packet: dict) -> LucidResult | None:
         """
         Process a single packet.
 
@@ -189,11 +189,11 @@ class LucidDetector:
             raise ValueError("Model not trained")
         return self.cnn.predict_proba(X)
     
-    def evaluate(self, X: np.ndarray, y: np.ndarray) -> Dict:
+    def evaluate(self, X: np.ndarray, y: np.ndarray) -> dict:
         """Evaluate the model."""
         return self.cnn.evaluate(X, y)
     
-    def get_stats(self) -> Dict:
+    def get_stats(self) -> dict:
         """Get detector statistics."""
         return {
             'total_packets': self.total_packets,

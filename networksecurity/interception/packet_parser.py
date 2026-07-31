@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import socket
 import struct
-from typing import Optional
 
 from networksecurity.engine.detector import PacketInfo
 
@@ -16,7 +15,7 @@ class PacketParser:
     """
 
     @staticmethod
-    def from_raw(data: bytes, timestamp: float = 0.0) -> Optional[PacketInfo]:
+    def from_raw(data: bytes, timestamp: float = 0.0) -> PacketInfo | None:
         """Parse a raw IPv4 packet. Returns None on parse failure."""
         if len(data) < 20:
             return None

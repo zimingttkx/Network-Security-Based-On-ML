@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,7 @@ class IptablesManager:
 
     CHAIN = "NIPS"
 
-    def __init__(self, safe_ips: Optional[list[str]] = None) -> None:
+    def __init__(self, safe_ips: list[str] | None = None) -> None:
         self._safe_ips: list[str] = safe_ips or ["127.0.0.1"]
         self._blocked: set[str] = set()
         self._nfqueue_rules_added: bool = False

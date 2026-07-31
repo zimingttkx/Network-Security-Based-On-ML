@@ -79,7 +79,7 @@ def cmd_stop(args) -> None:
     try:
         urllib.request.urlopen("http://127.0.0.1:8000/api/v1/engine/stop")
         print("Stop signal sent.")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Could not reach API: {e}")
 
 
@@ -92,7 +92,7 @@ def cmd_status(args) -> None:
         print("=== NIPS Status ===")
         for k, v in resp.items():
             print(f"  {k}: {v}")
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Fallback: local pipeline status
         print("=== NIPS Engine (local) ===")
         print(f"  detectors:    {pipeline.status()['detectors']}")
@@ -139,7 +139,7 @@ def cmd_alerts(args) -> None:
         )
         for a in resp.get("items", []):
             print(f"{a['timestamp']}  {a['source_ip']}  [{a['detector']}]  {a['reason']}")
-    except Exception:
+    except Exception:  # noqa: BLE001
         print("No alerts available (API not running).")
 
 
@@ -150,7 +150,6 @@ async def _run_test(args) -> None:
     loader = PcapLoader()
     count = 0
     blocked = 0
-    dropped_inline = 0
 
     async for pkt_dict in loader.load(args.pcap):
         packet = PacketParser.from_dict(pkt_dict)
