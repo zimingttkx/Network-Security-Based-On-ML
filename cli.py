@@ -21,6 +21,7 @@ import json
 import os
 import signal
 import sys
+import urllib.request
 from pathlib import Path
 
 from networksecurity.engine import DetectionPipeline
@@ -42,31 +43,8 @@ def _build_pipeline() -> DetectionPipeline:
     except ImportError:
         pass
 
-    _load_rules(pipeline)
+    pipeline.rule_engine.load_rules(RULES_FILE)
     return pipeline
-
-
-def _load_rules(pipeline: DetectionPipeline) -> None:
-    """Restore blacklist/whitelist from disk."""
-    if not RULES_FILE.exists():
-        return
-    try:
-        data = json.loads(RULES_FILE.read_text())
-        for ip in data.get("blacklist", []):
-            pipeline.rule_engine.add_blacklist(ip)
-        for ip in data.get("whitelist", []):
-            pipeline.rule_engine.add_whitelist(ip)
-    except Exception:
-        pass
-
-
-def _save_rules(pipeline: DetectionPipeline) -> None:
-    """Persist blacklist/whitelist to disk."""
-    data = {
-        "blacklist": pipeline.rule_engine.get_blacklist(),
-        "whitelist": pipeline.rule_engine.get_whitelist(),
-    }
-    RULES_FILE.write_text(json.dumps(data, indent=2))
 
 
 # --- Commands ---------------------------------------------------------------
@@ -85,7 +63,7 @@ def cmd_start(args) -> None:
     def _shutdown(signum, frame):
         print("\nShutting down...")
         interceptor.stop()
-        _save_rules(pipeline)
+        pipeline.rule_engine.save_rules(RULES_FILE)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -98,7 +76,6 @@ def cmd_start(args) -> None:
 
 def cmd_stop(args) -> None:
     """Stop a running interceptor via the API."""
-    import urllib.request
     try:
         urllib.request.urlopen("http://127.0.0.1:8000/api/v1/engine/stop")
         print("Stop signal sent.")
@@ -109,7 +86,6 @@ def cmd_stop(args) -> None:
 def cmd_status(args) -> None:
     """Print pipeline and (if available) interceptor status."""
     try:
-        import urllib.request
         resp = json.loads(
             urllib.request.urlopen("http://127.0.0.1:8000/api/v1/status").read()
         )
@@ -128,19 +104,19 @@ def cmd_status(args) -> None:
 
 def cmd_block(args) -> None:
     pipeline.rule_engine.add_blacklist(args.ip)
-    _save_rules(pipeline)
+    pipeline.rule_engine.save_rules(RULES_FILE)
     print(f"Blocked: {args.ip}")
 
 
 def cmd_unblock(args) -> None:
     pipeline.rule_engine.remove_blacklist(args.ip)
-    _save_rules(pipeline)
+    pipeline.rule_engine.save_rules(RULES_FILE)
     print(f"Unblocked: {args.ip}")
 
 
 def cmd_whitelist(args) -> None:
     pipeline.rule_engine.add_whitelist(args.ip)
-    _save_rules(pipeline)
+    pipeline.rule_engine.save_rules(RULES_FILE)
     print(f"Whitelisted: {args.ip}")
 
 
@@ -154,7 +130,6 @@ def cmd_rules(args) -> None:
 
 
 def cmd_alerts(args) -> None:
-    import urllib.request
     limit = args.last or 20
     try:
         resp = json.loads(
