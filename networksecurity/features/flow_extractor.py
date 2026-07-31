@@ -20,6 +20,7 @@ class FlowFeatures:
     dst_port: int
     protocol: int
     duration: float = 0.0
+    start_time: float = 0.0
     packet_count: int = 0
     byte_count: int = 0
     pkt_rate: float = 0.0
@@ -83,7 +84,9 @@ class FlowTracker:
         self._last_seen[key] = now
         flow.packet_count += 1
         flow.byte_count += packet.packet_size
-        flow.duration = now - flow.duration if flow.duration else 0.0
+        if flow.start_time == 0.0:
+            flow.start_time = now
+        flow.duration = now - flow.start_time
         flow.pkt_rate = (flow.packet_count / max(0.001, flow.duration)
                          if flow.duration else 0.0)
         flow.mean_pkt_size = flow.byte_count / max(1, flow.packet_count)
