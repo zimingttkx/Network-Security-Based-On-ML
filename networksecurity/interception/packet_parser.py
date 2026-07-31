@@ -28,20 +28,24 @@ class PacketParser:
         ihl = (version_ihl & 0x0F) * 4
         total_len = struct.unpack("!H", data[2:4])[0]
         protocol = data[9]
+        ttl = data[8]
         src_ip = socket.inet_ntoa(data[12:16])
         dst_ip = socket.inet_ntoa(data[16:20])
 
         src_port = dst_port = tcp_flags = 0
 
-        if protocol == 6 and len(data) >= ihl + 20:  # TCP
-            tcp_off = ihl
-            src_port = struct.unpack("!H", data[tcp_off:tcp_off + 2])[0]
-            dst_port = struct.unpack("!H", data[tcp_off + 2:tcp_off + 4])[0]
-            tcp_flags = data[tcp_off + 13] & 0x3F
+        transport_header_len = 8  # default UDP
+        if protocol == 6:  # TCP
+            # Read TCP data offset (top 4 bits of byte 12 of TCP header)
+            tcp_data_offset = ((data[ihl + 12] >> 4) * 4) if len(data) > ihl + 12 else 20
+            transport_header_len = tcp_data_offset
+            if len(data) >= ihl + 20:
+                src_port = struct.unpack("!H", data[ihl:ihl + 2])[0]
+                dst_port = struct.unpack("!H", data[ihl + 2:ihl + 4])[0]
+                tcp_flags = data[ihl + 13] & 0x3F
         elif protocol == 17 and len(data) >= ihl + 8:  # UDP
-            udp_off = ihl
-            src_port = struct.unpack("!H", data[udp_off:udp_off + 2])[0]
-            dst_port = struct.unpack("!H", data[udp_off + 2:udp_off + 4])[0]
+            src_port = struct.unpack("!H", data[ihl:ihl + 2])[0]
+            dst_port = struct.unpack("!H", data[ihl + 2:ihl + 4])[0]
 
         return PacketInfo(
             src_ip=src_ip, dst_ip=dst_ip,
@@ -50,7 +54,8 @@ class PacketParser:
             packet_size=total_len,
             timestamp=timestamp or 0.0,
             tcp_flags=tcp_flags,
-            payload_size=max(0, total_len - ihl - (20 if protocol == 6 else 8)),
+            ttl=ttl,
+            payload_size=max(0, total_len - ihl - transport_header_len),
         )
 
     @staticmethod
