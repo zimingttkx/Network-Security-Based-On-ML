@@ -86,7 +86,7 @@ class NFQueueHandler:
             try:
                 self._queue.unbind()
             except Exception:
-                pass
+                logger.exception("Error unbinding nfqueue")
             self._queue = None
         logger.info(
             "nfqueue handler stopped (%d packets, %d dropped)",
@@ -116,4 +116,4 @@ class NFQueueHandler:
             try:
                 nf_packet.accept()
             except Exception:
-                pass
+                logger.exception("nfqueue: even accept() failed — packet may be lost")
