@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ipaddress
+import json
+import logging
 import re
 import time
 from collections import defaultdict
@@ -109,6 +111,30 @@ class RuleEngine(BaseDetector):
 
     def get_blacklist(self) -> list[str]:
         return sorted(self._blacklist)
+
+    # -- persistence ---------------------------------------------------------
+
+    def load_rules(self, path: Path) -> None:
+        """Restore blacklist/whitelist from a JSON file."""
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+            for ip in data.get("blacklist", []):
+                self.add_blacklist(ip)
+            for ip in data.get("whitelist", []):
+                self.add_whitelist(ip)
+        except Exception:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to load rules from %s", path)
+
+    def save_rules(self, path: Path) -> None:
+        """Persist blacklist/whitelist to a JSON file."""
+        data = {
+            "blacklist": self.get_blacklist(),
+            "whitelist": self.get_whitelist(),
+        }
+        path.write_text(json.dumps(data, indent=2))
 
     def _is_whitelisted(self, ip: str) -> bool:
         return ip in self._whitelist or any(
