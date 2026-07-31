@@ -1,0 +1,32 @@
+name: Branch name check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch name
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          if [[ "$BRANCH" =~ ^(main|release/.+|dependabot/.+)$ ]]; then
+            echo "Skipping validation for $BRANCH"
+            exit 0
+          fi
+
+          PATTERN="^(feat|fix|chore|docs|refactor|test|perf|ci)/[A-Za-z0-9][A-Za-z0-9._-]+$"
+
+          if [[ "$BRANCH" =~ $PATTERN ]]; then
+            echo "Branch name '$BRANCH' follows convention"
+          else
+            echo "::error::Branch name '$BRANCH' does not follow convention."
+            echo ""
+            echo "Expected: type/short-description"
+            echo "  Types: feat, fix, chore, docs, refactor, test, perf, ci"
+            echo "  Example: fix/packet-parser-ttl"
+            echo ""
+            exit 1
+          fi

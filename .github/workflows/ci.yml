@@ -6,18 +6,66 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  scan:
+  # ── 静态分析 & 代码规范 ─────────────────────────────────────────────
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Keyword scan — detect simulation code in production modules
+      - name: Install tools
+        run: pip install ruff
+
+      - name: Ruff — syntax & basic errors
+        run: |
+          ruff check networksecurity/ app.py cli.py scripts/ \
+            --select=E9,F63,F7,F82 \
+            --output-format=full
+          echo "Syntax/error check passed"
+
+      - name: Ruff — code style
+        run: |
+          ruff check networksecurity/ app.py cli.py \
+            --select=F,E,W,I,N,UP,B,SIM,PL,RET,PERF \
+            --ignore=E501,S101,S311,S104 \
+            --statistics
+          echo "Style check passed (warnings only, non-blocking)"
+
+  # ── 安全扫描 ─────────────────────────────────────────────────────────
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install bandit
+        run: pip install bandit
+
+      - name: Bandit — security scan
+        run: |
+          bandit -r networksecurity/ app.py cli.py \
+            --skip B101,B303,B311 \
+            -f screen \
+            -ll
+          echo "Security scan completed"
+
+  # ── 关键字扫描 ───────────────────────────────────────────────────────
+  keyword-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect simulation code in production modules
         run: |
           echo "Scanning networksecurity/ for forbidden keywords..."
           FORBIDDEN="mock simulate fake demo_data generate_packet test_traffic"
@@ -31,17 +79,30 @@ jobs:
             fi
           done
           if [ $VIOLATIONS -gt 0 ]; then
-            echo "::error::$VIOLATIONS simulation keywords found. Remove them before merging."
+            echo "::error::$VIOLATIONS simulation keywords found. Remove before merging."
             exit 1
           fi
           echo "No forbidden keywords found."
 
+  # ── 模块导入 & 基本功能测试 ──────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
       - name: Install dependencies
         run: |
-          pip install numpy fastapi uvicorn jinja2 python-multipart scikit-learn pandas pyyaml
+          pip install numpy fastapi uvicorn jinja2 python-multipart scikit-learn pandas pyyaml xgboost
           pip install -e . --no-deps 2>/dev/null || true
 
-      - name: Import check — all modules must import
+      - name: Import check — all modules
         run: |
           python -c "
           import networksecurity
@@ -55,66 +116,165 @@ jobs:
           import networksecurity.features
           import networksecurity.interception
           import networksecurity.data
-          print('All modules import successfully')
+          print('All modules import OK')
           "
 
-      - name: Smoke test — pipeline and parser
+      - name: Unit test — pipeline lifecycle
         run: |
           python -c "
           import asyncio
           from networksecurity.engine import DetectionPipeline, PacketInfo, Action
-          from networksecurity.interception import PacketParser
+          from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
 
-          # Pipeline blacklist test
           async def test():
               p = DetectionPipeline()
+              p.add_detector(KitsuneDetector())
+
+              # lifecycle
+              assert p.running == False
+              p.start()
+              assert p.running == True
+
+              # blacklist
               p.rule_engine.add_blacklist('10.0.0.99')
-              pkt = PacketInfo(src_ip='10.0.0.99', dst_ip='1.1.1.1',
-                               src_port=80, dst_port=80, protocol=6,
-                               packet_size=100, timestamp=1.0)
-              v = await p.process_packet(pkt)
-              assert v.action.value == 'block', f'Expected block, got {v.action.value}'
+              v = await p.process_packet(PacketInfo(
+                  '10.0.0.99', '192.168.1.1', 1234, 80, 6, 100, 0.0))
+              assert v.action == Action.BLOCK
+
+              # whitelist
+              p.rule_engine.add_whitelist('10.0.0.50')
+              v2 = await p.process_packet(PacketInfo(
+                  '10.0.0.50', '192.168.1.1', 1234, 80, 6, 100, 0.0))
+              assert v2.action == Action.ALLOW
+
+              # protocol filter
+              v3 = await p.process_packet(PacketInfo(
+                  '192.168.1.5', '192.168.1.1', 0, 0, 1, 64, 0.0))
+              assert v3.action == Action.BLOCK
+
+              # counters
+              assert p.total_processed == 3
+              assert p.total_blocked == 2
+
+              p.stop()
+              assert p.running == False
+              print(f'Pipeline test OK: {p.total_processed}pkt/{p.total_blocked}blocked')
+
           asyncio.run(test())
-
-          # Packet parser
-          raw = bytes([
-              0x45,0x00,0x00,0x28,0x00,0x00,0x00,0x00,0x40,0x06,0x00,0x00,
-              0xC0,0xA8,0x01,0x64,0x0A,0x00,0x00,0x01,
-              0x00,0x50,0x00,0x50,0x00,0x00,0x00,0x00,
-              0x00,0x00,0x00,0x00,0x50,0x02,0xFF,0xFF,0x00,0x00,0x00,0x00,
-          ])
-          pkt = PacketParser.from_raw(raw, 3.0)
-          assert pkt is not None and pkt.src_ip == '192.168.1.100'
-          assert pkt.protocol == 6 and pkt.tcp_flags == 0x02
-
-          print('Smoke tests passed')
           "
 
-      - name: Dead code scan — orphan functions
+      - name: Unit test — packet parser (TTL + TCP options)
         run: |
-          echo "Checking for common dead code patterns..."
-          # Check for empty function bodies in engine/
-          EMPTY_FUNCS=$(grep -rn "def .*):\s*$" networksecurity/engine/ --include="*.py" 2>/dev/null | grep -v "__init__" | grep -v "abstractmethod" || true)
-          if [ -n "$EMPTY_FUNCS" ]; then
-            echo "::warning::Potentially empty functions found:"
-            echo "$EMPTY_FUNCS"
-          fi
-          echo "Dead code scan complete."
+          python -c "
+          import struct, socket
+          from networksecurity.interception.packet_parser import PacketParser
 
-  lint:
+          ip = bytearray(20)
+          ip[0] = 0x45; struct.pack_into('!H', ip, 2, 40)
+          ip[8] = 128; ip[9] = 6  # TTL=128, TCP
+          ip[12:16] = socket.inet_aton('10.0.0.1')
+          ip[16:20] = socket.inet_aton('10.0.0.2')
+          tcp = bytearray(20)
+          tcp[12] = 0x50  # data offset = 5
+          struct.pack_into('!H', tcp, 0, 12345)
+          struct.pack_into('!H', tcp, 2, 80)
+          tcp[13] = 0x02
+          pkt = PacketParser.from_raw(bytes(ip) + bytes(tcp))
+          assert pkt and pkt.ttl == 128 and pkt.src_port == 12345
+          print(f'Parser test OK: TTL={pkt.ttl} sport={pkt.src_port}')
+
+          # TCP with options
+          tcp2 = bytearray(32)
+          tcp2[12] = 0x80  # data offset = 8 (32 bytes)
+          struct.pack_into('!H', tcp2, 0, 54321)
+          struct.pack_into('!H', tcp2, 2, 443)
+          tcp2[13] = 0x18
+          pkt2 = PacketParser.from_raw(bytes(ip) + bytes(tcp2))
+          assert pkt2 and pkt2.src_port == 54321 and pkt2.tcp_flags == 0x18
+          print(f'TCP options OK: sport={pkt2.src_port} flags={pkt2.tcp_flags:#x}')
+          "
+
+      - name: Unit test — RuleEngine persistence
+        run: |
+          python -c "
+          import tempfile, os, json
+          from pathlib import Path
+          from networksecurity.engine.rule_engine import RuleEngine
+
+          re = RuleEngine()
+          re.add_blacklist('10.0.0.1')
+          re.add_whitelist('192.168.1.0/24')
+
+          with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+              tmp = f.name
+          re.save_rules(Path(tmp))
+
+          re2 = RuleEngine()
+          re2.load_rules(Path(tmp))
+          os.unlink(tmp)
+
+          assert '10.0.0.1' in re2.get_blacklist()
+          assert '192.168.1.0/24' in re2.get_whitelist()
+          print('Persistence test OK')
+          "
+
+  # ── 攻击仿真冒烟测试 ─────────────────────────────────────────────────
+  smoke-attack:
     runs-on: ubuntu-latest
+    needs: test
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install lint tools
-        run: pip install ruff
+      - name: Install dependencies
+        run: pip install numpy scikit-learn pandas
 
-      - name: Lint
+      - name: Attack simulation — quick smoke
         run: |
-          ruff check networksecurity/ --select=E9,F63,F7,F82 --statistics || true
-          ruff check app.py cli.py --select=E9,F63,F7,F82 --statistics || true
+          python -c "
+          import asyncio, sys
+          sys.path.insert(0, '.')
+          from networksecurity.engine import DetectionPipeline, PacketInfo, Action
+          from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
+          import random
+
+          NORMAL_IPS = [f'192.168.{i}.{j}' for i in range(1,5) for j in range(1,20)]
+          ATTACK_IPS = [f'45.33.{i}.{j}' for i in range(32,36) for j in range(1,50)]
+
+          async def quick_test():
+              p = DetectionPipeline()
+              k = KitsuneDetector()
+              k._kitsune.fm_grace = 500
+              k._kitsune.ad_grace = 1000
+              p.add_detector(k)
+
+              # feed normal traffic
+              for i in range(2000):
+                  src = random.choice(NORMAL_IPS)
+                  pkt = PacketInfo(src, '10.0.0.1',
+                      random.randint(32768,65535), random.choice([80,443,22]),
+                      6, random.randint(40,1500), i*0.001,
+                      tcp_flags=random.choice([0x02,0x10,0x18]))
+                  await p.process_packet(pkt)
+
+              # feed attack traffic
+              detected = 0
+              for i in range(500):
+                  src = random.choice(ATTACK_IPS)
+                  pkt = PacketInfo(src, '10.0.0.1',
+                      random.randint(1,65535), 80, 6, 40, 2000.0 + i*0.0001,
+                      tcp_flags=0x02)
+                  v = await p.process_packet(pkt)
+                  if v.action == Action.BLOCK:
+                      detected += 1
+
+              dr = detected / 500 * 100
+              print(f'Attack smoke test: {detected}/500 detected ({dr:.0f}%)')
+              assert dr >= 50, f'Detection rate too low: {dr:.0f}%'
+              print('Smoke test passed')
+
+          asyncio.run(quick_test())
+          "
