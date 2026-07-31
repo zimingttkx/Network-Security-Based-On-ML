@@ -52,7 +52,7 @@ health() {
 # 运行测试
 test() {
     log_info "运行测试..."
-    docker-compose exec app python -m pytest tests/ -v
+    docker-compose exec api python -m pytest tests/ -v
 }
 
 # 帮助信息
