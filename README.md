@@ -1,5 +1,7 @@
 # NIPS — Network Intrusion Prevention System
 
+**English** · [简体中文](README.zh-CN.md)
+
 Real-time network intrusion detection and prevention using machine learning.
 
 <p align="center">
