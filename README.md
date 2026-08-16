@@ -39,7 +39,6 @@ Incoming Traffic
 
 - **Kitsune (NDSS'18)** — AfterImage incremental statistics (115 features) + KitNET autoencoder ensemble for online anomaly detection. Unsupervised, low-latency.
 - **LUCID (IEEE TNSM 2020)** — Lightweight 1D CNN for real-time DDoS detection. 10 packets per flow window, 11 features per packet.
-- **ML Classifiers** — RandomForest, XGBoost, and ensemble methods for supervised flow classification using NSL-KDD / CICIDS2017.
 
 ---
 
@@ -76,10 +75,14 @@ python app.py
 ### 4. CLI
 
 ```bash
-python cli.py status          # engine status
-python cli.py block 1.2.3.4   # block an IP
-python cli.py unblock 1.2.3.4 # unblock an IP
+python cli.py start            # start live interception (Linux, root)
+python cli.py stop             # stop live interception (via API)
+python cli.py status           # engine status
+python cli.py block 1.2.3.4    # block an IP
+python cli.py unblock 1.2.3.4  # unblock an IP
 python cli.py whitelist 10.0.0.0/8  # whitelist a subnet
+python cli.py rules            # list blacklist/whitelist entries
+python cli.py alerts --last 20 # show recent alerts (via API)
 python cli.py test --pcap sample.pcap  # offline detection test
 ```
 
@@ -98,6 +101,8 @@ python cli.py test --pcap sample.pcap  # offline detection test
 | `DELETE` | `/api/v1/rules/blacklist/{ip}` | Remove IP from blacklist |
 | `POST` | `/api/v1/rules/whitelist` | Add IP/CIDR to whitelist |
 | `DELETE` | `/api/v1/rules/whitelist/{ip}` | Remove IP from whitelist |
+| `POST` | `/api/v1/engine/start` | Start live interception (Linux, root) |
+| `POST` | `/api/v1/engine/stop` | Stop interception and clean up iptables |
 
 Full interactive documentation at `/docs`.
 
@@ -108,6 +113,9 @@ Full interactive documentation at `/docs`.
 ```
 app.py                         # FastAPI application entry point
 cli.py                         # CLI management tool
+config/
+  config.yaml                  # Engine/interception configuration
+templates/                     # Web status page templates
 networksecurity/
   engine/                      # Detection engine
     detector.py                # BaseDetector interface + PacketInfo
@@ -135,6 +143,10 @@ networksecurity/
   data/                        # Data loading
     dataset_loader.py          # NSL-KDD, CICIDS2017, UNSW-NB15
     pcap_loader.py             # PCAP file reader
+scripts/                       # Benchmarks & evaluation
+  benchmark.py                 # Throughput + rule-engine accuracy
+  benchmark_nslkdd.py          # NSL-KDD detection benchmark
+  attack_simulation.py         # Large-scale attack simulation
 ```
 
 ---
