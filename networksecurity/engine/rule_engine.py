@@ -68,11 +68,9 @@ class RuleEngine(BaseDetector):
         super().__init__(name="RuleEngine")
         self._whitelist: set[str] = set()
         self._blacklist: set[str] = set()
-        # Protocols allowed through.  TCP(6) and UDP(17) are the data
-        # carriers; ICMP(1) is permitted by default so pings, PMTU and
-        # error messages keep working.  ARP/other non-IP are handled
-        # elsewhere.  Uncomment to tighten: {6, 17}.
-        self._protocol_allow: set[int] = {1, 6, 17}  # ICMP, TCP, UDP
+        # Protocols allowed through.  Inline IPS: only TCP(6) and UDP(17)
+        # are passed; everything else (ICMP, etc.) is blocked by default.
+        self._protocol_allow: set[int] = {6, 17}  # TCP, UDP
         self._rate_limiter = RateLimiter()
         self._rules: list[dict] = []
         self._blocked_count: int = 0
