@@ -120,9 +120,17 @@ class Benchmark:
         )
 
     async def train_kitsune(self) -> None:
-        """Feed 16 000 normal packets for KitNET feature mapping (fm_grace=5000)
-        plus anomaly detection training (ad_grace=50000).  We use 16 000 here
-        for a faster benchmark that still exercises the full pipeline."""
+        """Feed normal packets to train KitNET.
+
+        Kitsune needs fm_grace + ad_grace normal packets before it enters
+        detection mode.  For a fast, meaningful benchmark we shorten both
+        grace periods (via the public attributes) so detection actually
+        fires in Phase 4 with a realistic number of packets.  Production
+        uses the defaults (~55k).
+        """
+        # Shorten training so detection runs within the benchmark budget.
+        self.kitsune._kitsune.fm_grace = 1000
+        self.kitsune._kitsune.ad_grace = 9000
         count = 0
         t0 = time.monotonic()
         for i in range(16_000):
