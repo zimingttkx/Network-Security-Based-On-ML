@@ -6,6 +6,7 @@ Converts raw network traffic into the input format required by the LUCID CNN.
 """
 
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import ClassVar
 
@@ -64,22 +65,34 @@ class LucidDatasetParser:
         'ttl'               # TTL value
     ]
     
-    def __init__(self, time_window: float = 10.0, packets_per_flow: int = 10):
+    def __init__(self, time_window: float = 10.0, packets_per_flow: int = 10,
+                 max_flows: int = 100000):
         """
         Args:
             time_window: time window in seconds.
             packets_per_flow: packets per flow sample.
+            max_flows: maximum number of concurrent flows to track before
+                       least-recently-created flows are evicted (bounds memory).
         """
         self.time_window = time_window
         self.packets_per_flow = packets_per_flow
+        self.max_flows = max(1, max_flows)
         self.n_features = len(self.PACKET_FEATURES)
-        
-        # Flow buffer
-        self.flows: dict[str, FlowSample] = {}
-        
+
+        # Flow buffer — bounded by max_flows (LRU eviction of oldest flows).
+        self.flows: "OrderedDict[str, FlowSample]" = OrderedDict()
+
         # Attacker/victim IPs (for labeling)
         self.attacker_ips: set = set()
         self.victim_ips: set = set()
+
+    def _register_flow(self, flow_id: str, flow: "FlowSample") -> None:
+        """Insert a flow, evicting the oldest if over capacity."""
+        if flow_id in self.flows:
+            self.flows.move_to_end(flow_id)
+        elif len(self.flows) >= self.max_flows:
+            self.flows.popitem(last=False)  # evict oldest
+        self.flows[flow_id] = flow
     
     def set_attack_info(self, attackers: list[str], victims: list[str]):
         """Set attacker and victim IPs."""
@@ -154,12 +167,13 @@ class LucidDatasetParser:
         
         # Get or create flow
         if flow_id not in self.flows:
-            self.flows[flow_id] = FlowSample(
+            flow = FlowSample(
                 flow_id=flow_id,
                 label=1 if self._is_attack(packet) else 0
             )
-        
-        flow = self.flows[flow_id]
+            self._register_flow(flow_id, flow)
+        else:
+            flow = self.flows[flow_id]
         flow.add_packet(packet)
         
         # Check if sample is complete
