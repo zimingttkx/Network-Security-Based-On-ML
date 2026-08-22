@@ -16,22 +16,35 @@ class LucidDetectorAdapter(BaseDetector):
 
     Buffers packets into flows; only emits a verdict when a flow
     window (10 packets or 10s) completes.  Most packets return None.
+
+    NOTE: LUCID is a *trained* model.  It must be trained (or have a
+    pre-trained ``.h5`` model loaded) before it will emit BLOCK verdicts.
+    Call ``self._lucid.train(...)`` or ``self._lucid.load(path)`` before
+    deployment, otherwise ``process_packet`` always returns None.
+
+    If no trained model is available at startup, pass ``enabled=False``
+    to keep it out of the active detector chain and avoid advertising a
+    detector that does nothing.
     """
 
     def __init__(
         self,
         time_window: float = 10.0,
         packets_per_flow: int = 10,
+        enabled: bool = True,
     ) -> None:
         super().__init__(name="LucidDetector")
         self._lucid = LucidDetector(
             time_window=time_window,
             packets_per_flow=packets_per_flow,
         )
+        self._enabled = enabled
 
     # -- BaseDetector interface ---------------------------------------------
 
     async def process_packet(self, packet: PacketInfo) -> Verdict | None:
+        if not self._enabled or not self._lucid.is_trained:
+            return None  # not trained / disabled -> pass to next detector
         self._packet_count += 1
 
         # LucidDetector.process_packet expects a dict
@@ -55,7 +68,7 @@ class LucidDetectorAdapter(BaseDetector):
 
     @property
     def is_trained(self) -> bool:
-        return self._lucid.is_trained
+        return self._enabled and self._lucid.is_trained
 
     def stats(self) -> dict:
         return self._lucid.get_stats()
@@ -71,7 +84,7 @@ class LucidDetectorAdapter(BaseDetector):
             "dst_ip": p.dst_ip,
             "src_port": p.src_port,
             "dst_port": p.dst_port,
-            "protocol": "TCP" if p.protocol == 6 else "UDP" if p.protocol == 17 else "OTHER",
+            "protocol": p.protocol,  # integer: 6=TCP, 17=UDP
             "packet_size": p.packet_size,
             "timestamp": p.timestamp,
             "tcp_flags": p.tcp_flags,
