@@ -89,8 +89,8 @@ class LucidDetectorAdapter(BaseDetector):
             "timestamp": p.timestamp,
             "tcp_flags": p.tcp_flags,
             "direction": 0,
-            "payload_size": p.payload_size or p.packet_size - 40,
-            "header_size": 40,
+            "payload_size": p.payload_size or max(0, p.packet_size - 40),
+            "header_size": 40 if p.protocol == 6 else (8 if p.protocol == 17 else 20),
             "window_size": 65535,
             "ttl": p.ttl,
         }
