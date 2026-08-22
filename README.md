@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-Real-time network intrusion detection and prevention using machine learning.
+A server-side IPS that intercepts traffic on Linux, scores each packet through a rule engine plus an anomaly detector, and drops malicious packets via iptables.
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
@@ -11,36 +11,33 @@ Real-time network intrusion detection and prevention using machine learning.
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
 </p>
 
-> **Contributors**: read [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code. All PRs are checked for simulation code via CI.
+> Before contributing, read [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md). CI rejects simulation/mock code in `networksecurity/`.
 
 ---
 
-## Overview
-
-NIPS is a server-side network intrusion prevention system. It intercepts incoming traffic, extracts statistical features from network flows, and classifies each packet as benign or malicious using a multi-stage detection pipeline. Malicious traffic is blocked at the kernel level via iptables.
-
-### Detection Pipeline
+## How it works
 
 ```
 Incoming Traffic
       |
       v
-[Rule Engine] ------> BLOCK (blacklist, rate limit, protocol filter)
+[Rule Engine] ------> BLOCK  (blacklist, rate limit, protocol filter)
       | pass
       v
-[Kitsune] ----------> BLOCK (AfterImage + KitNET anomaly detection)
-      | pass
-      v
-[LUCID] ------------> BLOCK (CNN-based DDoS flow detection)
+[Kitsune] ----------> BLOCK  (AfterImage + KitNET anomaly detection)
       | pass
       v
 [ALLOW]
 ```
 
-### Integrated Algorithms
+The rule engine handles known-bad traffic deterministically (blacklist, whitelist, rate limit, protocol allowlist). Anything that passes is scored by Kitsune, an unsupervised packet-level anomaly detector that trains on normal traffic and flags deviations by reconstruction error (RMSE).
 
-- **Kitsune (NDSS'18)** — AfterImage incremental statistics (115 features) + KitNET autoencoder ensemble for online anomaly detection. Unsupervised, low-latency.
-- **LUCID (IEEE TNSM 2020)** — Lightweight 1D CNN for real-time DDoS detection. 10 packets per flow window, 11 features per packet.
+LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pipeline by default — it requires a trained TensorFlow model and must be explicitly enabled. See `networksecurity/engine/lucid/`.
+
+### Algorithms
+
+- **Kitsune (NDSS'18)** — AfterImage incremental statistics (115 features) + a KitNET autoencoder ensemble. Trains online, no labels needed.
+- **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model.
 
 ---
 
@@ -49,8 +46,8 @@ Incoming Traffic
 ### Requirements
 
 - Python 3.12+
-- Linux (for live interception with nfqueue/iptables)
-- macOS (for development and offline testing)
+- Linux for live interception (nfqueue + iptables, root required)
+- macOS / other platforms for development and offline pcap testing
 
 ### 1. Clone
 
@@ -77,14 +74,14 @@ python app.py
 ### 4. CLI
 
 ```bash
-python cli.py start            # start live interception (Linux, root)
-python cli.py stop             # stop live interception (via API)
-python cli.py status           # engine status
-python cli.py block 1.2.3.4    # block an IP
-python cli.py unblock 1.2.3.4  # unblock an IP
-python cli.py whitelist 10.0.0.0/8  # whitelist a subnet
-python cli.py rules            # list blacklist/whitelist entries
-python cli.py alerts --last 20 # show recent alerts (via API)
+python cli.py start                  # start live interception (Linux, root)
+python cli.py stop                   # stop live interception (via API)
+python cli.py status                 # engine status
+python cli.py block 1.2.3.4          # block an IP
+python cli.py unblock 1.2.3.4        # unblock an IP
+python cli.py whitelist 10.0.0.0/8   # whitelist a subnet
+python cli.py rules                  # list blacklist/whitelist entries
+python cli.py alerts --last 20       # show recent alerts (via API)
 python cli.py test --pcap sample.pcap  # offline detection test
 ```
 
@@ -110,7 +107,7 @@ Full interactive documentation at `/docs`.
 
 ---
 
-## Architecture
+## Layout
 
 ```
 app.py                         # FastAPI application entry point
@@ -129,7 +126,7 @@ networksecurity/
       kitnet.py                # Autoencoder ensemble
       kitsune.py               # Orchestrator
       detector_adapter.py      # BaseDetector adapter
-    lucid/                     # LUCID DDoS detector (IEEE TNSM 2020)
+    lucid/                     # LUCID DDoS detector (IEEE TNSM 2020, optional)
       cnn.py                   # 1D CNN model
       dataset_parser.py        # Flow buffer and feature extraction
       detector.py              # Orchestrator
@@ -173,50 +170,23 @@ interceptor.start()  # Blocks. Ctrl+C to stop.
 "
 ```
 
-The interceptor automatically:
-- Sets up iptables rules to redirect traffic to NFQUEUE
-- Protects SSH (port 22) and loopback
-- Cleans up all iptables rules on shutdown
+The interceptor:
+- Installs iptables rules to redirect traffic into NFQUEUE
+- Leaves SSH (port 22) and loopback untouched
+- Removes all of its iptables rules on shutdown
 
 ---
 
----
+## Benchmarks
 
-## Benchmark
+Two scripts measure behavior on your own hardware — numbers below are not validated across environments and will vary:
 
-Benchmarked on NSL-KDD, the standard NIDS dataset from UNSW and the Canadian Institute for Cybersecurity (125,973 training flows, 11,849 test flows). Flows were mapped to per-packet `PacketInfo` objects and processed through the Kitsune pipeline (AfterImage 115-dim features + KitNET autoencoder ensemble).
+- `scripts/benchmark.py` — trains Kitsune on synthesized normal traffic, then reports rule-engine accuracy, training/detection throughput, and attack detection rate.
+- `scripts/benchmark_nslkdd.py` — downloads NSL-KDD, maps flow records to synthetic packets, trains Kitsune on normal flows, and reports precision/recall/FPR.
 
-Test environment: GitHub Codespaces (2 vCPU, 8 GB RAM).
+Why detection on NSL-KDD is weak here: NSL-KDD records are **flow-level summaries**, not packet captures. Mapping each flow to a few packets throws away the timing and burst patterns that Kitsune learns from. Volumetric attacks (DoS, probe) survive the mapping better than content attacks (R2L, U2R), which look like ordinary TCP at the packet level. Treat the per-attack numbers as a statement of that limitation, not a measured accuracy claim.
 
-### Kitsune — Unsupervised Anomaly Detection
-
-| Metric | Value |
-| ------ | ----- |
-| Training packets | 150,000 |
-| Training throughput | 819 pkt/s |
-| Detection throughput | 1,126 pkt/s |
-| Sustained throughput | 1,085 pkt/s |
-| Precision | 89.0% |
-| False Positive Rate | 3.2% |
-
-### Per-Attack Detection Rate
-
-| Attack Category | Detection Rate | Notes |
-| --------------- | -------------- | ----- |
-| DoS (SYN flood, Neptune, Smurf) | 15% | Volumetric — packet-level burst patterns partially detectable |
-| Probe (port scan, IP sweep) | 9% | Low-rate — mapping flows to packets loses scan cadence |
-| R2L (password guess, warezclient) | <1% | Content-level — indistinguishable from normal TCP at packet level |
-| U2R (buffer overflow, rootkit) | <1% | Content-level — AfterImage sees normal-sized packets with normal flags |
-
-### Interpretation
-
-Kitsune is an **unsupervised packet-level** detector. 89% precision means when it flags something, it is almost certainly malicious. The 3.2% FPR means normal traffic is rarely misclassified — acceptable for a NIPS in blocking mode.
-
-The low recall (especially on R2L and U2R) reflects a fundamental limitation of this benchmark: NSL-KDD records are **flow-level summaries**, not real packet captures. R2L/U2R attacks look identical to normal traffic at the per-packet level. DoS and probe attacks show more promise because their volumetric patterns survive the flow→packet mapping. Real per-packet detection accuracy on live pcap traces is expected to be significantly higher for DoS and probe categories.
-
-### Rule Engine — Deterministic Filtering
-
-The rule engine provides microsecond-level, 100% accurate filtering for known IPs (blacklist/whitelist), protocol filtering, and rate limiting. Combined with Kitsune anomaly detection, this provides defence-in-depth: fast rule-based pre-filtering followed by ML-based anomaly detection for unknown threats.
+The rule engine itself is exact: blacklist/whitelist, protocol filtering, and rate limiting are deterministic and always applied before the ML stage.
 
 ---
 
@@ -247,8 +217,8 @@ MIT — see [LICENSE](LICENSE)
 
 <a href="https://www.star-history.com/?repos=zimingttkx%2FNetwork-Security-Based-On-ML&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=zimingttkx/Network-Security-Based-On-ML&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=zimingttkx/Network-Security-Based-On-ML&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=zimingttkx/Network-Security-Based-On-ML&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=zimingttkx%2FNetwork-Security-Based-On-ML&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=zimingttkx%2FNetwork-Security-Based-On-ML&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=zimingttkx%2FNetwork-Security-Based-On-ML&type=date&legend=top-left" />
  </picture>
 </a>

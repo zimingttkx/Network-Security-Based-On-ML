@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文**
 
-使用机器学习进行实时网络入侵检测与防御。
+一个运行在服务器侧的 IPS：在 Linux 上拦截流量，先用规则引擎再用异常检测器对每个数据包打分，最后通过 iptables 丢弃恶意包。
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
@@ -11,15 +11,11 @@
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
 </p>
 
-> **贡献者**：提交代码前请先阅读 [ARCHITECTURE.md](ARCHITECTURE.md) 和 [CONTRIBUTING.md](CONTRIBUTING.md)。所有 PR 都会通过 CI 检查模拟代码。
+> 提交代码前请先阅读 [ARCHITECTURE.md](ARCHITECTURE.md) 和 [CONTRIBUTING.md](CONTRIBUTING.md)。CI 会拒绝 `networksecurity/` 中的模拟/桩代码。
 
 ---
 
-## 概述
-
-NIPS 是一个服务器端的网络入侵防御系统。它拦截流入流量，从网络流中提取统计特征，并通过多阶段检测流水线将每个数据包分类为良性或恶意。恶意流量通过 iptables 在内核层面进行阻断。
-
-### 检测流水线
+## 工作原理
 
 ```
 流入流量
@@ -31,16 +27,17 @@ NIPS 是一个服务器端的网络入侵防御系统。它拦截流入流量，
 [Kitsune] ----------> 阻断（AfterImage + KitNET 异常检测）
       | 通过
       v
-[LUCID] ------------> 阻断（基于 CNN 的 DDoS 流检测）
-      | 通过
-      v
 [放行 ALLOW]
 ```
 
-### 集成的算法
+规则引擎确定性地处理已知恶意流量（黑名单、白名单、限速、协议白名单）。通过的数据包交给 Kitsune——一个无监督的包级异常检测器，先在正常流量上训练，再用重建误差（RMSE）偏离程度来标记异常。
 
-- **Kitsune (NDSS'18)** — AfterImage 增量统计（115 个特征）+ KitNET 自编码器集成，用于在线异常检测。无监督、低延迟。
-- **LUCID (IEEE TNSM 2020)** — 轻量级 1D CNN，用于实时 DDoS 检测。每个流窗口 10 个数据包，每个数据包 11 个特征。
+LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流水线，需要训练好的 TensorFlow 模型并显式启用。见 `networksecurity/engine/lucid/`。
+
+### 算法
+
+- **Kitsune (NDSS'18)** — AfterImage 增量统计（115 维特征）+ KitNET 自编码器集成。在线训练，无需标签。
+- **LUCID (IEEE TNSM 2020)** — 在 10 包流窗口（每包 11 维特征）上跑的 1D CNN。默认关闭，需要训练好的模型。
 
 ---
 
@@ -49,8 +46,8 @@ NIPS 是一个服务器端的网络入侵防御系统。它拦截流入流量，
 ### 环境要求
 
 - Python 3.12+
-- Linux（用于通过 nfqueue/iptables 进行实时拦截）
-- macOS（用于开发和离线测试）
+- 实时拦截需要 Linux（nfqueue + iptables，需 root）
+- macOS / 其他平台可用于开发与离线 pcap 测试
 
 ### 1. 克隆仓库
 
@@ -77,14 +74,14 @@ python app.py
 ### 4. CLI
 
 ```bash
-python cli.py start            # 启动实时拦截（Linux，需 root）
-python cli.py stop             # 停止实时拦截（通过 API）
-python cli.py status           # 引擎状态
-python cli.py block 1.2.3.4    # 封禁某个 IP
-python cli.py unblock 1.2.3.4  # 解封某个 IP
-python cli.py whitelist 10.0.0.0/8  # 将某个子网加入白名单
-python cli.py rules            # 列出黑名单/白名单条目
-python cli.py alerts --last 20 # 查看最近告警（通过 API）
+python cli.py start                  # 启动实时拦截（Linux，需 root）
+python cli.py stop                   # 停止实时拦截（通过 API）
+python cli.py status                 # 引擎状态
+python cli.py block 1.2.3.4          # 封禁某个 IP
+python cli.py unblock 1.2.3.4        # 解封某个 IP
+python cli.py whitelist 10.0.0.0/8   # 将某个子网加入白名单
+python cli.py rules                  # 列出黑名单/白名单条目
+python cli.py alerts --last 20       # 查看最近告警（通过 API）
 python cli.py test --pcap sample.pcap  # 离线检测测试
 ```
 
@@ -110,7 +107,7 @@ python cli.py test --pcap sample.pcap  # 离线检测测试
 
 ---
 
-## 架构
+## 目录结构
 
 ```
 app.py                         # FastAPI 应用入口
@@ -129,7 +126,7 @@ networksecurity/
       kitnet.py                # 自编码器集成
       kitsune.py               # 编排器
       detector_adapter.py      # BaseDetector 适配器
-    lucid/                     # LUCID DDoS 检测器（IEEE TNSM 2020）
+    lucid/                     # LUCID DDoS 检测器（IEEE TNSM 2020，可选）
       cnn.py                   # 1D CNN 模型
       dataset_parser.py        # 流缓冲与特征提取
       detector.py              # 编排器
@@ -173,50 +170,23 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 "
 ```
 
-拦截器会自动：
-- 设置 iptables 规则，将流量重定向到 NFQUEUE
-- 保护 SSH（22 端口）和回环接口
-- 在关闭时清理所有 iptables 规则
-
----
+拦截器会：
+- 写入 iptables 规则，把流量重定向到 NFQUEUE
+- 不动 SSH（22 端口）和回环接口
+- 关闭时清除自己添加的所有 iptables 规则
 
 ---
 
 ## 基准测试
 
-在 NSL-KDD（UNSW 和加拿大网络安全研究所提供的标准 NIDS 数据集，125,973 条训练流，11,849 条测试流）上进行基准测试。将流映射为逐包 `PacketInfo` 对象，并通过 Kitsune 流水线（AfterImage 115 维特征 + KitNET 自编码器集成）进行处理。
+两个脚本用于在你自己的机器上跑出数据——下面的数字未在各环境验证，实际结果会有差异：
 
-测试环境：GitHub Codespaces（2 vCPU，8 GB RAM）。
+- `scripts/benchmark.py` — 用合成的普通流量训练 Kitsune，再报告规则引擎准确率、训练/检测吞吐量和攻击检出率。
+- `scripts/benchmark_nslkdd.py` — 下载 NSL-KDD，把流记录映射成合成数据包，用普通流训练 Kitsune，报告精确率/召回率/误报率。
 
-### Kitsune — 无监督异常检测
+为什么在 NSL-KDD 上检出率偏低：NSL-KDD 记录是**流级摘要**，不是真实抓包。把每条流映射成几个包，会丢掉 Kitsune 依赖的时序和突发模式。大流量型攻击（DoS、probe）比内容型攻击（R2L、U2R）更能保留映射后的特征——后者在包级看起来和正常 TCP 没有区别。把各攻击类别的数字当作这一局限性的说明，而不是实测准确率。
 
-| 指标 | 值 |
-| ------ | ----- |
-| 训练数据包 | 150,000 |
-| 训练吞吐量 | 819 pkt/s |
-| 检测吞吐量 | 1,126 pkt/s |
-| 持续吞吐量 | 1,085 pkt/s |
-| 精确率 | 89.0% |
-| 误报率 | 3.2% |
-
-### 各类攻击检出率
-
-| 攻击类别 | 检出率 | 说明 |
-| --------------- | -------------- | ----- |
-| DoS（SYN 洪泛、Neptune、Smurf） | 15% | 大流量型——包级突发模式可部分检出 |
-| Probe（端口扫描、IP 扫描） | 9% | 低速型——将流映射为包会丢失扫描节奏 |
-| R2L（口令猜测、warezclient） | <1% | 内容型——在包级与正常 TCP 难以区分 |
-| U2R（缓冲区溢出、rootkit） | <1% | 内容型——AfterImage 看到的是正常大小、正常标志位的包 |
-
-### 解读
-
-Kitsune 是一种**无监督包级**检测器。89% 的精确率意味着当它标记某个东西时，几乎可以肯定是恶意的。3.2% 的误报率意味着正常流量很少被误分类——对于处于阻断模式的 NIPS 来说是可以接受的。
-
-较低的召回率（尤其是 R2L 和 U2R）反映了该基准测试的一个根本局限：NSL-KDD 记录是**流级摘要**，而不是真实的数据包捕获。R2L/U2R 攻击在逐包层面看起来与正常流量完全相同。DoS 和 Probe 攻击更有前景，因为它们的流量型模式在「流→包」映射后仍然存在。在真实 pcap 流量上的逐包检测准确率对于 DoS 和 Probe 类别预计会显著更高。
-
-### 规则引擎 — 确定性过滤
-
-规则引擎为已知 IP（黑名单/白名单）、协议过滤和限速提供微秒级、100% 准确的过滤。与 Kitsune 异常检测相结合，提供了纵深防御：先进行快速的基于规则的预过滤，再进行基于 ML 的异常检测以应对未知威胁。
+规则引擎本身是精确的：黑名单/白名单、协议过滤、限速都是确定性的，且始终在 ML 阶段之前执行。
 
 ---
 
@@ -247,8 +217,8 @@ MIT — 详见 [LICENSE](LICENSE)
 
 <a href="https://www.star-history.com/?repos=zimingttkx%2FNetwork-Security-Based-On-ML&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=zimingttkx/Network-Security-Based-On-ML&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=zimingttkx/Network-Security-Based-On-ML&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=zimingttkx/Network-Security-Based-On-ML&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=zimingttkx%2FNetwork-Security-Based-On-ML&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=zimingttkx%2FNetwork-Security-Based-On-ML&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=zimingttkx%2FNetwork-Security-Based-On-ML&type=date&legend=top-left" />
  </picture>
 </a>
