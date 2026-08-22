@@ -8,6 +8,7 @@ IP pair, socket src, socket pair), producing 115 features per packet.
 """
 
 import logging
+from collections import OrderedDict
 from typing import ClassVar
 
 import numpy as np
@@ -116,17 +117,31 @@ class IncStat:
 
 
 class IncStatDB:
-    """Keyed database of incremental statistics."""
+    """Keyed database of incremental statistics.
 
-    def __init__(self, lambda_: float = 1.0):
+    Bounded by ``max_hosts``: once the cache exceeds that size, the
+    least-recently-used entry is evicted (LRU).  This keeps memory
+    bounded during long-running live interception.
+    """
+
+    def __init__(self, lambda_: float = 1.0, max_hosts: int = 100000):
         self.lambda_ = lambda_
-        self.stats: dict[str, IncStat] = {}
+        self.max_hosts = max(1, max_hosts)
+        self.stats: "OrderedDict[str, IncStat]" = OrderedDict()
 
     def get_stat(self, key: str, init_time: float = 0.0) -> IncStat:
         """Get or create an IncStat for `key`."""
-        if key not in self.stats:
-            self.stats[key] = IncStat(self.lambda_, init_time)
-        return self.stats[key]
+        stat = self.stats.get(key)
+        if stat is None:
+            if len(self.stats) >= self.max_hosts:
+                # Evict the least-recently-used entry.
+                self.stats.popitem(last=False)
+            stat = IncStat(self.lambda_, init_time)
+            self.stats[key] = stat
+        else:
+            # Mark as recently used.
+            self.stats.move_to_end(key)
+        return stat
 
     def update(self, key: str, value: float, timestamp: float = 0.0):
         """Update the statistic for `key` with a new value."""
@@ -135,8 +150,9 @@ class IncStatDB:
 
     def get_stats(self, key: str) -> tuple[float, float, float]:
         """Return (weight, mean, std) for `key`."""
-        if key in self.stats:
-            return self.stats[key].get_stats()
+        stat = self.stats.get(key)
+        if stat is not None:
+            return stat.get_stats()
         return 0.0, 0.0, 0.0
 
 
@@ -164,11 +180,11 @@ class AfterImage:
         self.max_hosts = max_hosts
 
         # One IncStatDB per time window, per channel
-        self.mac_stats = [IncStatDB(1.0 / l) for l in self.LAMBDAS]
-        self.ip_stats = [IncStatDB(1.0 / l) for l in self.LAMBDAS]
-        self.ip_pair_stats = [IncStatDB(1.0 / l) for l in self.LAMBDAS]
-        self.socket_stats = [IncStatDB(1.0 / l) for l in self.LAMBDAS]
-        self.socket_pair_stats = [IncStatDB(1.0 / l) for l in self.LAMBDAS]
+        self.mac_stats = [IncStatDB(1.0 / l, max_hosts) for l in self.LAMBDAS]
+        self.ip_stats = [IncStatDB(1.0 / l, max_hosts) for l in self.LAMBDAS]
+        self.ip_pair_stats = [IncStatDB(1.0 / l, max_hosts) for l in self.LAMBDAS]
+        self.socket_stats = [IncStatDB(1.0 / l, max_hosts) for l in self.LAMBDAS]
+        self.socket_pair_stats = [IncStatDB(1.0 / l, max_hosts) for l in self.LAMBDAS]
 
         self.packet_count = 0
 
@@ -272,9 +288,9 @@ class AfterImage:
 
     def reset(self):
         """Reset all statistics."""
-        self.mac_stats = [IncStatDB(1.0 / l) for l in self.LAMBDAS]
-        self.ip_stats = [IncStatDB(1.0 / l) for l in self.LAMBDAS]
-        self.ip_pair_stats = [IncStatDB(1.0 / l) for l in self.LAMBDAS]
-        self.socket_stats = [IncStatDB(1.0 / l) for l in self.LAMBDAS]
-        self.socket_pair_stats = [IncStatDB(1.0 / l) for l in self.LAMBDAS]
+        self.mac_stats = [IncStatDB(1.0 / l, self.max_hosts) for l in self.LAMBDAS]
+        self.ip_stats = [IncStatDB(1.0 / l, self.max_hosts) for l in self.LAMBDAS]
+        self.ip_pair_stats = [IncStatDB(1.0 / l, self.max_hosts) for l in self.LAMBDAS]
+        self.socket_stats = [IncStatDB(1.0 / l, self.max_hosts) for l in self.LAMBDAS]
+        self.socket_pair_stats = [IncStatDB(1.0 / l, self.max_hosts) for l in self.LAMBDAS]
         self.packet_count = 0

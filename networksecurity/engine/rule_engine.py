@@ -13,19 +13,38 @@ from networksecurity.engine.verdict import Action, ThreatLevel, Verdict
 
 
 class RateLimiter:
-    """Sliding-window per-IP connection rate tracker."""
+    """Sliding-window per-IP connection rate tracker.
 
-    def __init__(self, window_seconds: float = 1.0, max_connections: int = 100):
+    Buckets are evicted once they fall fully outside the window and the
+    tracked-IP set grows past ``max_buckets`` (LRU), so memory stays
+    bounded under long-running live interception.
+    """
+
+    def __init__(self, window_seconds: float = 1.0, max_connections: int = 100,
+                 max_buckets: int = 100000):
         self._window = window_seconds
         self._max_conn = max_connections
-        self._buckets: dict[str, list[float]] = defaultdict(list)
+        self._max_buckets = max(1, max_buckets)
+        self._buckets: dict[str, list[float]] = {}
 
     def check(self, ip: str, timestamp: float) -> bool:
         """Return True if IP is within rate limit."""
-        bucket = self._buckets[ip]
+        bucket = self._buckets.get(ip)
         cutoff = timestamp - self._window
+        if bucket is None:
+            bucket = []
+            self._buckets[ip] = bucket
         bucket[:] = [t for t in bucket if t > cutoff]
         bucket.append(timestamp)
+        # Evict fully-expired buckets and cap total size (LRU-ish: drop first).
+        if len(self._buckets) > self._max_buckets:
+            expired = [k for k, v in self._buckets.items()
+                       if not any(t > cutoff for t in v)]
+            for k in expired[:len(self._buckets) - self._max_buckets]:
+                self._buckets.pop(k, None)
+            # If still over cap (all active), drop the oldest tracked key.
+            while len(self._buckets) > self._max_buckets:
+                self._buckets.pop(next(iter(self._buckets)), None)
         return len(bucket) <= self._max_conn
 
     def reset(self, ip: str = "") -> None:
@@ -49,7 +68,11 @@ class RuleEngine(BaseDetector):
         super().__init__(name="RuleEngine")
         self._whitelist: set[str] = set()
         self._blacklist: set[str] = set()
-        self._protocol_allow: set[int] = {6, 17}  # TCP, UDP
+        # Protocols allowed through.  TCP(6) and UDP(17) are the data
+        # carriers; ICMP(1) is permitted by default so pings, PMTU and
+        # error messages keep working.  ARP/other non-IP are handled
+        # elsewhere.  Uncomment to tighten: {6, 17}.
+        self._protocol_allow: set[int] = {1, 6, 17}  # ICMP, TCP, UDP
         self._rate_limiter = RateLimiter()
         self._rules: list[dict] = []
         self._blocked_count: int = 0
