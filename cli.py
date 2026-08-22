@@ -36,10 +36,11 @@ def _build_pipeline() -> DetectionPipeline:
     pipeline = DetectionPipeline()
     pipeline.add_detector(KitsuneDetector())
 
-    # Optional: LUCID detector (requires TensorFlow)
+    # Optional: LUCID detector (requires TensorFlow).  Added inactive until a
+    # trained model is provided, so it does not silently no-op as "active".
     try:
         from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
-        pipeline.add_detector(LucidDetectorAdapter())
+        pipeline.add_detector(LucidDetectorAdapter(enabled=False))
     except ImportError:
         pass
 
