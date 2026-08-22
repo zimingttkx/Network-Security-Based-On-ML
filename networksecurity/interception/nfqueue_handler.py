@@ -112,8 +112,8 @@ class NFQueueHandler:
             else:
                 nf_packet.accept()
         except Exception:
-            logger.exception("packet handling error — accepting to preserve connectivity")
+            logger.exception("packet handling error — dropping (fail-closed)")
             try:
-                nf_packet.accept()
+                nf_packet.drop()
             except Exception:
-                logger.exception("nfqueue: even accept() failed — packet may be lost")
+                logger.exception("nfqueue: even drop() failed — packet may be lost")

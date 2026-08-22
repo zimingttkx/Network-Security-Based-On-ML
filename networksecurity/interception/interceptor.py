@@ -68,19 +68,15 @@ class Interceptor:
     def blocked_ips(self) -> list[str]:
         return sorted(self._blocked)
 
-    def start(self) -> None:
-        """Start interception.  Blocks until ``stop()`` is called (or SIGINT).
+    def setup(self) -> None:
+        """Prepare root/iptables and the detection event loop without
+        blocking on capture.
 
-        Runs a dedicated asyncio event loop in its own thread so every
-        packet is processed by that single loop (no per-packet
-        ``asyncio.run`` overhead).  Blocks are enforced even if detection
-        raises, so a detector failure never silently lets an attacker
-        through.
-
-        Raises:
-            RuntimeError: if not running as root.
-            RuntimeError: if iptables is not available.
-            ImportError: if NetfilterQueue is not installed.
+        Creates the dedicated asyncio event loop + thread and installs the
+        iptables NFQUEUE rules.  Capture is NOT started yet, so the caller may
+        return promptly (e.g. an HTTP handler).  Call ``begin_capture()`` to
+        actually start draining the queue, and ``stop()`` to tear everything
+        down.
         """
         import os
         import shutil
@@ -111,7 +107,10 @@ class Interceptor:
         self._nfqueue.set_callback(self._on_packet)
         self._running = True
         self._pipeline.start()
-        logger.info("Interceptor started — NFQUEUE + iptables active")
+        logger.info("Interceptor set up — NFQUEUE + iptables active")
+
+    def begin_capture(self) -> None:
+        """Start draining the NFQUEUE (blocks until stopped or SIGINT)."""
         try:
             self._nfqueue.start()
         finally:
@@ -121,6 +120,39 @@ class Interceptor:
                 self._loop.call_soon_threadsafe(self._loop.stop)
             if self._loop_thread is not None:
                 self._loop_thread.join(timeout=5.0)
+
+    def start(self) -> None:
+        """Start interception.  Blocks until ``stop()`` is called (or SIGINT).
+
+        Runs a dedicated asyncio event loop in its own thread so every
+        packet is processed by that single loop (no per-packet
+        ``asyncio.run`` overhead).  Blocks are enforced even if detection
+        raises, so a detector failure never silently lets an attacker
+        through.
+
+        Raises:
+            RuntimeError: if not running as root.
+            RuntimeError: if iptables is not available.
+            ImportError: if NetfilterQueue is not installed.
+        """
+        import os
+        import shutil
+
+        if os.geteuid() != 0:
+            raise RuntimeError(
+                "Live interception requires root privileges. "
+                "Run with: sudo python cli.py start"
+            )
+
+        if not shutil.which("iptables"):
+            raise RuntimeError(
+                "iptables not found in PATH. "
+                "Live interception requires iptables (Linux only)."
+            )
+
+        self.setup()
+        logger.info("Interceptor started — NFQUEUE + iptables active")
+        self.begin_capture()
 
     def stop(self) -> None:
         """Graceful shutdown.  Cleans up iptables rules."""
