@@ -48,13 +48,24 @@ class FlowFeatures:
 
 
 class FlowTracker:
-    """Tracks live 5-tuple flows and emits FlowFeatures on expiry."""
+    """Tracks live 5-tuple flows and emits FlowFeatures on expiry.
+
+    Wires into the detection pipeline via ``track()`` which ingests a
+    ``PacketInfo`` and returns a completed ``FlowFeatures`` (when a flow hits
+    its max duration) or ``None``.  The pipeline can use the returned vector
+    as an additional statistical signal alongside AfterImage/LUCID.
+    """
 
     def __init__(self, idle_timeout: float = 60.0, max_duration: float = 300.0):
         self._idle_timeout = idle_timeout
         self._max_duration = max_duration
         self._flows: dict[tuple, FlowFeatures] = {}
         self._last_seen: dict[tuple, float] = {}
+
+    def track(self, packet: PacketInfo) -> FlowFeatures | None:
+        """Feed a packet. Returns a completed FlowFeatures or None."""
+        completed = self.ingest(packet)
+        return completed
 
     def ingest(self, packet: PacketInfo) -> FlowFeatures | None:
         """Feed a packet. Returns a completed FlowFeatures or None."""
