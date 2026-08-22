@@ -50,10 +50,12 @@ logger = logging.getLogger(__name__)
 pipeline: DetectionPipeline = DetectionPipeline()
 pipeline.add_detector(KitsuneDetector())
 
-# Optional: LUCID DDoS detector (requires TensorFlow)
+# Optional: LUCID DDoS detector (requires TensorFlow).  It is added to the
+# pipeline but stays inactive until a trained model is provided, so it does
+# not silently no-op as an "active" detector.
 try:
     from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
-    pipeline.add_detector(LucidDetectorAdapter())
+    pipeline.add_detector(LucidDetectorAdapter(enabled=False))
 except ImportError:
     pass
 
@@ -228,30 +230,35 @@ async def engine_start():
         ),
     )
 
-    # Patch start() to signal the event once running
-    _original_start = _interceptor.start
-    def _patched_start():
-        _original_start()
+    # Setup iptables + bind nfqueue first; once running() flips to True the
+    # interceptor is actually capturing, so signal the caller immediately.
+    # We run setup synchronously up-front, then start the capture loop in a
+    # background thread so the HTTP handler can return promptly.
+    try:
+        import os as _os
+        _interceptor._iptables.setup_nfqueue()
+        _interceptor._running = True
+        _interceptor._pipeline.start()
         started.set()
-    _interceptor.start = _patched_start
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Failed to set up interception")
+        raise HTTPException(status_code=500, detail=f"Setup failed: {e}")
 
     def _run():
         try:
-            _interceptor.start()
+            _interceptor._nfqueue.set_callback(_interceptor._on_packet)
+            _interceptor._nfqueue.start()
         except Exception:
             logger.exception("Interceptor thread crashed")
-            started.set()  # unblock caller even on error
+        finally:
+            _interceptor._running = False
+            _interceptor._iptables.cleanup_all()
 
     _interceptor_thread = threading.Thread(target=_run, daemon=True)
     _interceptor_thread.start()
 
-    # Wait up to 3s for the interceptor thread to confirm startup
-    try:
-        running = await asyncio.to_thread(started.wait, 3.0)
-    except Exception:  # noqa: BLE001
-        running = False
     return {
-        "status": "started" if running else "start_pending",
+        "status": "started" if started.is_set() else "start_pending",
         "pipeline": pipeline.status(),
     }
 
