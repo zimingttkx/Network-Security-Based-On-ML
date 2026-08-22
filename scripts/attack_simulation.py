@@ -236,8 +236,8 @@ class SimulationRunner:
             max_autoencoder_size=10,
             threshold_percentile=99.0,
         )
-        self.kitsune._kitsune.fm_grace = fm_grace
-        self.kitsune._kitsune.ad_grace = ad_grace
+        self.kitsune.set_grace_periods(fm_grace_period=fm_grace,
+                                       ad_grace_period=ad_grace)
         self.pipeline.add_detector(self.kitsune)
 
         # 预配置规则引擎

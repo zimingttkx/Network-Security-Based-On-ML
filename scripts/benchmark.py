@@ -129,8 +129,7 @@ class Benchmark:
         uses the defaults (~55k).
         """
         # Shorten training so detection runs within the benchmark budget.
-        self.kitsune._kitsune.fm_grace = 1000
-        self.kitsune._kitsune.ad_grace = 9000
+        self.kitsune.set_grace_periods(fm_grace_period=1000, ad_grace_period=9000)
         count = 0
         t0 = time.monotonic()
         for i in range(16_000):
@@ -160,11 +159,14 @@ class Benchmark:
         for i in range(10_000):
             is_attack = i % 2 == 0
             src = bn_ip if is_attack else known_good_ip
+            # Spread timestamps across 1000s so the per-IP rate limiter (cap
+            # 1000 conns/s) never triggers on legitimate traffic; we are
+            # testing blacklist/whitelist matching here, not rate limiting.
             pkt = PacketInfo(
                 src_ip=src, dst_ip="10.0.0.1",
                 src_port=random.randint(1024, 65535),
                 dst_port=80, protocol=6, packet_size=random.randint(40, 1500),
-                timestamp=float(i) / 100000.0,
+                timestamp=float(i) / 100.0,
             )
             verdict = await self.pipeline.process_packet(pkt)
             actual_is_attack = is_attack
