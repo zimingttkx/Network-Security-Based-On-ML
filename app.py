@@ -199,15 +199,15 @@ async def engine_start():
         return {"status": "already_running"}
 
     # Validate environment synchronously before spawning background thread.
-    import os as _os
-    import shutil as _shutil
+    import os
+    import shutil
 
-    if _os.geteuid() != 0:
+    if os.geteuid() != 0:
         raise HTTPException(
             status_code=403,
             detail="Live interception requires root privileges.",
         )
-    if not _shutil.which("iptables"):
+    if not shutil.which("iptables"):
         raise HTTPException(
             status_code=400,
             detail="iptables not found — Linux required for live interception.",
@@ -230,15 +230,13 @@ async def engine_start():
         ),
     )
 
-    # Setup iptables + bind nfqueue first; once running() flips to True the
-    # interceptor is actually capturing, so signal the caller immediately.
-    # We run setup synchronously up-front, then start the capture loop in a
-    # background thread so the HTTP handler can return promptly.
+    # Reuse the Interceptor's own setup so the detection event loop is
+    # created correctly (a missing loop would make _on_packet fail-closed and
+    # drop every packet).  setup() installs iptables + creates the loop but
+    # does NOT block on capture, so this handler can return promptly; a
+    # background thread then drains the queue.
     try:
-        import os as _os
-        _interceptor._iptables.setup_nfqueue()
-        _interceptor._running = True
-        _interceptor._pipeline.start()
+        _interceptor.setup()
         started.set()
     except Exception as e:  # noqa: BLE001
         logger.exception("Failed to set up interception")
@@ -246,8 +244,7 @@ async def engine_start():
 
     def _run():
         try:
-            _interceptor._nfqueue.set_callback(_interceptor._on_packet)
-            _interceptor._nfqueue.start()
+            _interceptor.begin_capture()
         except Exception:
             logger.exception("Interceptor thread crashed")
         finally:
