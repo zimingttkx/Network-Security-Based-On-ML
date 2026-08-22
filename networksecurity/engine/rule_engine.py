@@ -16,8 +16,8 @@ class RateLimiter:
     """Sliding-window per-IP connection rate tracker.
 
     Buckets are evicted once they fall fully outside the window and the
-    tracked-IP set grows past ``max_buckets`` (LRU), so memory stays
-    bounded under long-running live interception.
+    tracked-IP set grows past ``max_buckets`` (oldest entry evicted first),
+    so memory stays bounded under long-running live interception.
     """
 
     def __init__(self, window_seconds: float = 1.0, max_connections: int = 100,
@@ -28,15 +28,18 @@ class RateLimiter:
         self._buckets: dict[str, list[float]] = {}
 
     def check(self, ip: str, timestamp: float) -> bool:
-        """Return True if IP is within rate limit."""
+        """Return True if IP is within rate limit (under the connection cap)."""
         bucket = self._buckets.get(ip)
         cutoff = timestamp - self._window
         if bucket is None:
             bucket = []
             self._buckets[ip] = bucket
+        # Drop entries that fell outside the sliding window.
         bucket[:] = [t for t in bucket if t > cutoff]
         bucket.append(timestamp)
-        # Evict fully-expired buckets and cap total size (LRU-ish: drop first).
+        # Evict fully-expired buckets (oldest tracked key dropped first) and
+        # cap total size so memory stays bounded under long-running live
+        # interception.
         if len(self._buckets) > self._max_buckets:
             expired = [k for k, v in self._buckets.items()
                        if not any(t > cutoff for t in v)]
@@ -71,7 +74,10 @@ class RuleEngine(BaseDetector):
         # Protocols allowed through.  Inline IPS: only TCP(6) and UDP(17)
         # are passed; everything else (ICMP, etc.) is blocked by default.
         self._protocol_allow: set[int] = {6, 17}  # TCP, UDP
-        self._rate_limiter = RateLimiter()
+        # Sliding-window rate limiter.  Default cap is generous (1000 conns/s
+        # per source IP) to avoid false-blocking busy-but-legitimate clients
+        # (API pools, monitoring agents) while still catching floods.
+        self._rate_limiter = RateLimiter(max_connections=1000)
         self._rules: list[dict] = []
         self._blocked_count: int = 0
 
