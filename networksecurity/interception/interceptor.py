@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Callable
 
 from networksecurity.engine.detector import PacketInfo
@@ -50,6 +51,8 @@ class Interceptor:
         self._running: bool = False
         self._blocked: set[str] = set()
         self._on_verdict: Callable[[PacketInfo, Verdict], None] | None = on_verdict
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
 
     # -- public -------------------------------------------------------------
 
@@ -67,6 +70,12 @@ class Interceptor:
 
     def start(self) -> None:
         """Start interception.  Blocks until ``stop()`` is called (or SIGINT).
+
+        Runs a dedicated asyncio event loop in its own thread so every
+        packet is processed by that single loop (no per-packet
+        ``asyncio.run`` overhead).  Blocks are enforced even if detection
+        raises, so a detector failure never silently lets an attacker
+        through.
 
         Raises:
             RuntimeError: if not running as root.
@@ -88,6 +97,16 @@ class Interceptor:
                 "Live interception requires iptables (Linux only)."
             )
 
+        # Dedicated event loop + thread for the detection pipeline.
+        self._loop = asyncio.new_event_loop()
+
+        def _run_loop() -> None:
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_forever()
+
+        self._loop_thread = threading.Thread(target=_run_loop, daemon=True)
+        self._loop_thread.start()
+
         self._iptables.setup_nfqueue()
         self._nfqueue.set_callback(self._on_packet)
         self._running = True
@@ -98,6 +117,10 @@ class Interceptor:
         finally:
             self._running = False
             self._iptables.cleanup_all()
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._loop_thread is not None:
+                self._loop_thread.join(timeout=5.0)
 
     def stop(self) -> None:
         """Graceful shutdown.  Cleans up iptables rules."""
@@ -121,14 +144,22 @@ class Interceptor:
     def _on_packet(self, packet: PacketInfo) -> bool:
         """Called from nfqueue callback thread.
 
-        Uses ``asyncio.run()`` to bridge the sync callback into the
-        async detection pipeline.  Returns ``True`` to drop the packet.
+        Schedules the async detection coroutine on the interceptor's
+        dedicated event loop and waits for the result.  Returns ``True``
+        to drop the packet.  On any detection failure the packet is
+        **dropped** (fail-closed), never silently accepted.
         """
+        if self._loop is None:
+            logger.error("detection loop not ready — dropping packet")
+            return True
         try:
-            return asyncio.run(self._handle(packet))
+            future = asyncio.run_coroutine_threadsafe(
+                self._handle(packet), self._loop
+            )
+            return future.result()
         except Exception:
-            logger.exception("detection error — accepting packet")
-            return False
+            logger.exception("detection error — dropping packet (fail-closed)")
+            return True
 
     async def _handle(self, packet: PacketInfo) -> bool:
         verdict = await self._pipeline.process_packet(packet)
