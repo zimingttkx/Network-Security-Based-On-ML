@@ -123,7 +123,8 @@ class KitNET:
 
     def __init__(self, input_dim: int, max_autoencoder_size: int = 10,
                  fm_grace_period: int = 5000, ad_grace_period: int = 50000,
-                 learning_rate: float = 0.1, hidden_ratio: float = 0.75):
+                 learning_rate: float = 0.1, hidden_ratio: float = 0.75,
+                 threshold_percentile: float = 99.0):
         """
         Args:
             input_dim: Input feature dimension.
@@ -139,6 +140,7 @@ class KitNET:
         self.ad_grace = ad_grace_period
         self.learning_rate = learning_rate
         self.hidden_ratio = hidden_ratio
+        self.threshold_percentile = threshold_percentile
 
         # Feature map
         self.feature_map: list[list[int]] = []
@@ -239,6 +241,17 @@ class KitNET:
                 group_data = fm_array[:, group]
                 self.ensemble[i].fit_normalization(group_data)
 
+            # Fit normalization for the output autoencoder on the ensemble
+            # RMSE vectors recorded during the FM grace period.  Without this
+            # the output layer's inputs are never normalized, hurting its
+            # convergence (see _train_step, which feeds raw ensemble RMSEs).
+            ensemble_fm_rmses = np.array([
+                [self.ensemble[i].compute_rmse(fm_array[j, group])
+                 for i, group in enumerate(self.feature_map)]
+                for j in range(len(fm_array))
+            ], dtype=np.float32)
+            self.output_ae.fit_normalization(ensemble_fm_rmses)
+
             self.fm_data = []  # Free memory
             self.is_fm_done = True
 
@@ -251,7 +264,9 @@ class KitNET:
         # Training complete — set threshold
         if not self.is_ad_done:
             if self.rmse_history:
-                self.threshold = np.percentile(self.rmse_history, 99)
+                self.threshold = np.percentile(
+                    self.rmse_history, self.threshold_percentile
+                )
             else:
                 self.threshold = 1.0
             self.rmse_history = []

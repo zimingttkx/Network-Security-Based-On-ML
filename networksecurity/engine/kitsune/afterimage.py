@@ -107,14 +107,6 @@ class IncStat:
         """Return (weight, mean, std)."""
         return self.weight, self.mean(), self.std()
 
-    def get_stats_1d(self) -> list[float]:
-        """Return 1-d stats: [weight, mean, std]."""
-        return [self.weight, self.mean(), self.std()]
-
-    def get_stats_2d(self) -> list[float]:
-        """Return 2-d stats: [weight, mean, std, cov, pcc]."""
-        return [self.weight, self.mean(), self.std(), self.cov(), self.pcc()]
-
 
 class IncStatDB:
     """Keyed database of incremental statistics.
@@ -263,24 +255,6 @@ class AfterImage:
         ])
 
         return features
-
-    def extract_features_from_packet(self, packet_info: dict) -> np.ndarray:
-        """Extract features from a packet info dict.
-
-        Args:
-            packet_info: dict with keys src_mac, dst_mac, src_ip, dst_ip,
-                         src_port, dst_port, packet_size, timestamp.
-        """
-        return self.update_get_stats(
-            src_mac=packet_info.get('src_mac', '00:00:00:00:00:00'),
-            dst_mac=packet_info.get('dst_mac', '00:00:00:00:00:00'),
-            src_ip=packet_info.get('src_ip', '0.0.0.0'),
-            dst_ip=packet_info.get('dst_ip', '0.0.0.0'),
-            src_port=packet_info.get('src_port', 0),
-            dst_port=packet_info.get('dst_port', 0),
-            packet_size=packet_info.get('packet_size', 0),
-            timestamp=packet_info.get('timestamp', 0.0),
-        )
 
     def get_feature_dim(self) -> int:
         """Return the feature dimension (115)."""

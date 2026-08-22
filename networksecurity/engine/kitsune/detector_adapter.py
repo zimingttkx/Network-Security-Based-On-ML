@@ -56,9 +56,10 @@ class KitsuneDetector(BaseDetector):
 
     # -- helpers ------------------------------------------------------------
 
-    @property
-    def is_ready(self) -> bool:
-        return self._kitsune.is_ready()
+    def set_grace_periods(self, fm_grace_period: int | None = None,
+                          ad_grace_period: int | None = None) -> None:
+        """Override KitNET grace periods (before any packet is processed)."""
+        self._kitsune.set_grace_periods(fm_grace_period, ad_grace_period)
 
     def get_state(self) -> dict:
         return self._kitsune.get_state()

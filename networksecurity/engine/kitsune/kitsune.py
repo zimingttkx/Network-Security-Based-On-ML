@@ -84,10 +84,26 @@ class Kitsune:
             max_autoencoder_size=self.max_ae_size,
             fm_grace_period=self.fm_grace,
             ad_grace_period=self.ad_grace,
-            learning_rate=self.learning_rate
+            learning_rate=self.learning_rate,
+            threshold_percentile=self.threshold_percentile,
         )
         self.is_initialized = True
         logger.info("Kitsune: KitNET initialized, feature_dim=%d", feature_dim)
+
+    def set_grace_periods(self, fm_grace_period: int | None = None,
+                          ad_grace_period: int | None = None) -> None:
+        """Override the feature-mapping / anomaly-detection grace periods.
+
+        Must be called before any packet is processed (KitNET is not yet
+        initialized at that point).  Useful for benchmarks that need shorter
+        training windows than the production defaults.
+        """
+        if self.is_initialized:
+            raise RuntimeError("grace periods can only be set before training starts")
+        if fm_grace_period is not None:
+            self.fm_grace = fm_grace_period
+        if ad_grace_period is not None:
+            self.ad_grace = ad_grace_period
     
     def process_packet(self, packet_info: dict) -> KitsuneResult:
         """Process a single packet.  Accepts a dict with:
@@ -108,20 +124,7 @@ class Kitsune:
         )
 
         return self._process_features(features)
-    
-    def process(self, data: Any) -> KitsuneResult:
-        """Process data in dict, numpy array, or list format.
 
-        Dicts are treated as packet info; arrays/lists as raw feature vectors.
-        """
-        self.packet_count += 1
-
-        if isinstance(data, dict):
-            return self.process_packet(data)
-
-        features = np.asarray(data, dtype=np.float32).ravel()
-        return self._process_features(features)
-    
     def _process_features(self, features: np.ndarray) -> KitsuneResult:
         """Process a feature vector through KitNET."""
         if not self.is_initialized:
@@ -130,7 +133,7 @@ class Kitsune:
         rmse = self.kitnet.process(features)
         is_training = not self.kitnet.is_ad_done
         is_anomaly = self.kitnet.is_anomaly(rmse) if not is_training else False
-        
+
         return KitsuneResult(
             rmse=rmse,
             is_anomaly=is_anomaly,
@@ -138,34 +141,7 @@ class Kitsune:
             is_training=is_training,
             threshold=self.kitnet.threshold
         )
-    
-    def batch_process(self, data_list: list[Any]) -> list[KitsuneResult]:
-        """Batch process."""
-        return [self.process(d) for d in data_list]
-    
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Batch prediction (sklearn-compatible).
-        Returns 1 (normal) or -1 (anomalous).
-        """
-        results = []
-        for x in X:
-            result = self.process(x)
-            results.append(-1 if result.is_anomaly else 1)
-        return np.array(results)
-    
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        """Return anomaly probabilities (sklearn-compatible)."""
-        probas = []
-        for x in X:
-            result = self.process(x)
-            if self.kitnet and self.kitnet.threshold:
-                # Compute probability from RMSE and threshold.
-                prob = min(1.0, result.rmse / (self.kitnet.threshold * 2))
-            else:
-                prob = 0.5
-            probas.append([1 - prob, prob])
-        return np.array(probas)
-    
+
     def get_state(self) -> dict:
         """Get model state."""
         state = {
