@@ -153,6 +153,10 @@ async def _run_test(args) -> None:
     blocked = 0
 
     async for pkt_dict in loader.load(args.pcap):
+        # PcapLoader yields None for frames it cannot parse (e.g. ARP); skip them
+        # the same way PacketParser.from_raw returns None for unparseable packets.
+        if pkt_dict is None:
+            continue
         packet = PacketParser.from_dict(pkt_dict)
         verdict = await pipeline.process_packet(packet)
         count += 1
