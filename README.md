@@ -177,6 +177,22 @@ The interceptor:
 
 ---
 
+## Training dataset preparation
+
+`DatasetLoader` (`networksecurity/data/dataset_loader.py`) loads NSL-KDD, CICIDS2017, and UNSW-NB15 as **labeled CSV** for supervised training of LUCID/Kitsune. It assumes each file is already a **header-bearing CSV** with the dataset's standard column names — it does **not** detect or convert headers, nor does it handle the raw headerless NSL-KDD `.txt` distribution. Preparing the files is the user's responsibility before calling `DatasetLoader`.
+
+Required layout per dataset:
+
+| Dataset | Expects | Notes |
+| --- | --- | --- |
+| **NSL-KDD** | CSV with header, 43 columns: 41 features in the standard NSL-KDD order, then `difficulty`, then `label` | The official `KDDTrain+.txt` / `KDDTest+.txt` are **headerless** — add the 41 standard feature names + `difficulty` + `label` before loading. Binary label: `normal`/`normal.` → 0 (benign), anything else → 1 (attack). |
+| **UNSW-NB15** | CSV with header, binary `label` column (0/1), plus `id` and `attack_cat` metadata | `attack_cat` is dropped automatically (it leaks the label). |
+| **CICIDS2017** | CSV with header, `Label` column (capital L), plus `Flow ID` / `Timestamp` / `Source IP` / `Destination IP` | Those four metadata columns are dropped automatically. `BENIGN` → 0, everything else → 1. |
+
+Categorical columns are one-hot encoded (`get_dummies`, `drop_first`), missing values filled with 0, and the result is returned as `float32`. For aligned train/test encodings use `train_test_split()`, which fits the encoding on the training split and reindexes the test split to the same columns.
+
+---
+
 ## Benchmarks
 
 Two scripts measure behavior on your own hardware — numbers below are not validated across environments and will vary:

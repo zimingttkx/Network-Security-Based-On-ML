@@ -103,7 +103,7 @@ networksecurity/
     feature_registry.py # Feature set names, dimensions, descriptions
 
   data/             # Offline data loading (dev/testing only)
-    dataset_loader.py   # NSL-KDD, CICIDS2017, UNSW-NB15 CSV loader
+    dataset_loader.py   # NSL-KDD, CICIDS2017, UNSW-NB15 labeled CSV loader (header required)
     pcap_loader.py      # scapy pcap reader
 ```
 
@@ -171,9 +171,10 @@ Kitsune uses **online unsupervised learning** — no offline dataset required:
 LUCID requires **offline supervised training** on labeled DDoS datasets:
 
 1. Prepare labeled flow data (CICIDS2017 DDoS subset or similar)
-2. Train CNN with `LucidDetector.train(X, y)`
-3. Save model with `LucidDetector.save(path)`
-4. Load model with `LucidDetector.load(path)` before deployment
+2. **Preprocess the dataset yourself first** — `DatasetLoader` assumes a **header-bearing CSV** with the dataset's standard column names. It does **not** detect, convert, or add headers, and does **not** handle the raw headerless NSL-KDD `.txt` distribution (add the 41 standard feature names + `difficulty` + `label`). Preprocessing is the operator's responsibility; the loader only reads the prepared file. See *Training dataset preparation* in README.
+3. Train CNN with `LucidDetector.train(X, y)`
+4. Save model with `LucidDetector.save(path)`
+5. Load model with `LucidDetector.load(path)` before deployment
 
 ---
 

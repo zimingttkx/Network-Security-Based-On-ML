@@ -177,6 +177,22 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 
 ---
 
+## 训练数据集准备
+
+`DatasetLoader`（`networksecurity/data/dataset_loader.py`）把 NSL-KDD、CICIDS2017、UNSW-NB15 作为**带标签的 CSV**加载，用于 LUCID/Kitsune 的监督训练。它要求每个文件**已经是带有标准列名的 CSV**（含表头）——它**不会**自动识别或转换表头，也不处理原始的、无表头的 NSL-KDD `.txt` 发行版。在调用 `DatasetLoader` 之前，由用户自己负责把文件整理好。
+
+各数据集要求的格式：
+
+| 数据集 | 要求 | 说明 |
+| --- | --- | --- |
+| **NSL-KDD** | 带表头 CSV，共 43 列：41 个标准 NSL-KDD 特征，然后是 `difficulty`，最后是 `label` | 官方的 `KDDTrain+.txt` / `KDDTest+.txt` **没有表头**——加载前需补上 41 个标准特征名 + `difficulty` + `label`。二元标签：`normal`/`normal.` → 0（正常），其余 → 1（攻击）。 |
+| **UNSW-NB15** | 带表头 CSV，含二元 `label` 列（0/1），以及元数据列 `id`、`attack_cat` | `attack_cat` 会被自动丢弃（否则会泄漏标签）。 |
+| **CICIDS2017** | 带表头 CSV，含 `Label` 列（大写 L），以及 `Flow ID` / `Timestamp` / `Source IP` / `Destination IP` | 这 4 个元数据列会被自动丢弃。`BENIGN` → 0，其余 → 1。 |
+
+类别型列会做 one-hot 编码（`get_dummies`，`drop_first`），缺失值填 0，结果以 `float32` 返回。若需要训练/测试编码对齐，请用 `train_test_split()`——它会在训练集上拟合编码，再把测试集 reindex 到相同列。
+
+---
+
 ## 基准测试
 
 两个脚本用于在你自己的机器上跑出数据——下面的数字未在各环境验证，实际结果会有差异：
