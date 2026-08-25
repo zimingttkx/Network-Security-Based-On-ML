@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from networksecurity.engine.detector import PacketInfo
 
@@ -17,13 +17,12 @@ class FlowFeatures:
     dst_port: int
     protocol: int
     duration: float = 0.0
-    start_time: float = 0.0
+    start_time: float | None = None
     packet_count: int = 0
     byte_count: int = 0
     pkt_rate: float = 0.0
     mean_pkt_size: float = 0.0
     tcp_flags_or: int = 0
-    tcp_flags_count: dict = field(default_factory=dict)
 
     def to_vector(self) -> list[float]:
         return [
@@ -61,6 +60,10 @@ class FlowTracker:
         self._max_duration = max_duration
         self._flows: dict[tuple, FlowFeatures] = {}
         self._last_seen: dict[tuple, float] = {}
+        # Flows evicted by idle timeout that could not be returned on the
+        # triggering packet (because only one FlowFeatures may be returned).
+        # They are buffered and emitted on subsequent track() calls.
+        self._pending: list[FlowFeatures] = []
 
     def track(self, packet: PacketInfo) -> FlowFeatures | None:
         """Feed a packet. Returns a completed FlowFeatures or None."""
@@ -68,18 +71,32 @@ class FlowTracker:
         return completed
 
     def ingest(self, packet: PacketInfo) -> FlowFeatures | None:
-        """Feed a packet. Returns a completed FlowFeatures or None."""
+        """Feed a packet. Returns a completed FlowFeatures or None.
+
+        Priority of what is returned on a given call:
+          1. The current flow if it completes via its own max_duration.
+          2. A previously buffered idle-expired flow (``_pending``).
+
+        Only one FlowFeatures is returned per call to honour the contract, but
+        every completed/evicted flow is guaranteed to be emitted eventually via
+        the buffer.
+        """
         key = (packet.src_ip, packet.dst_ip,
                packet.src_port, packet.dst_port, packet.protocol)
         now = packet.timestamp
 
-        # Expire stale flows
-        expired = None
+        # Sweep stale flows. The current key, if stale, must NOT be popped here:
+        # it is about to be refreshed below, and popping it would corrupt its
+        # aggregation. All other expired flows are buffered for later emission
+        # (a call may only return one FlowFeatures, so they queue up).
+        swept: list[FlowFeatures] = []
         for k in list(self._flows):
+            if k == key:
+                continue
             if now - self._last_seen.get(k, now) > self._idle_timeout:
-                expired = self._flows.pop(k)
+                evicted = self._flows.pop(k)
                 self._last_seen.pop(k, None)
-                break
+                swept.append(evicted)
 
         if key not in self._flows:
             self._flows[key] = FlowFeatures(
@@ -92,20 +109,39 @@ class FlowTracker:
         self._last_seen[key] = now
         flow.packet_count += 1
         flow.byte_count += packet.packet_size
-        if flow.start_time == 0.0:
+        if flow.start_time is None:
             flow.start_time = now
-        flow.duration = now - flow.start_time
-        flow.pkt_rate = (flow.packet_count / max(0.001, flow.duration)
-                         if flow.duration else 0.0)
+        # Guard against out-of-order / non-monotonic timestamps: never let
+        # duration go negative (would yield nonsensical negative duration and
+        # absurd pkt_rate). The flow's clock is monotonic relative to its start.
+        flow.duration = max(0.0, now - flow.start_time)
+        flow.pkt_rate = flow.packet_count / max(0.001, flow.duration)
         flow.mean_pkt_size = flow.byte_count / max(1, flow.packet_count)
         flow.tcp_flags_or |= packet.tcp_flags
 
+        # Buffer any idle-expired flows swept by THIS call BEFORE checking the
+        # current flow's max_duration. This guarantees they are never silently
+        # dropped when the current flow completes via max_duration (which returns
+        # early below, skipping the extend that would otherwise follow it).
+        self._pending.extend(swept)
+
+        # 1) The current flow completes via max_duration — emit it now.
+        #    Checked AFTER _pending is topped up, so a flow reaching its max
+        #    duration is returned promptly (not starved by the backlog) AND the
+        #    idle-expired flows swept here are already buffered for later calls.
         if flow.duration > self._max_duration:
-            return self._flows.pop(key)
-        return expired
+            self._flows.pop(key)
+            return flow
+
+        # 2) Emit a previously buffered idle-expired flow.
+        if self._pending:
+            return self._pending.pop(0)
+
+        return None
 
     def flush(self) -> list[FlowFeatures]:
-        result = list(self._flows.values())
+        result = list(self._flows.values()) + list(self._pending)
         self._flows.clear()
         self._last_seen.clear()
+        self._pending.clear()
         return result
