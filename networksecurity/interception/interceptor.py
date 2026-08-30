@@ -50,9 +50,11 @@ class Interceptor:
         self._iptables = IptablesManager(safe_ips=safe_ips)
         self._running: bool = False
         self._blocked: set[str] = set()
+        self._blocked_lock: threading.Lock = threading.Lock()
         self._on_verdict: Callable[[PacketInfo, Verdict], None] | None = on_verdict
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
+        self._detect_timeout: float = 5.0
 
     # -- public -------------------------------------------------------------
 
@@ -66,7 +68,8 @@ class Interceptor:
 
     @property
     def blocked_ips(self) -> list[str]:
-        return sorted(self._blocked)
+        with self._blocked_lock:
+            return sorted(self._blocked)
 
     def setup(self) -> None:
         """Prepare root/iptables and the detection event loop without
@@ -163,9 +166,11 @@ class Interceptor:
         logger.info("Interceptor stopped.  %d IPs permanently blocked.", len(self._blocked))
 
     def status(self) -> dict:
+        with self._blocked_lock:
+            blocked = sorted(self._blocked)
         return {
             "running": self._running,
-            "blocked_ips": sorted(self._blocked),
+            "blocked_ips": blocked,
             "nfqueue_packets": self._nfqueue.packet_count,
             "nfqueue_dropped": self._nfqueue.dropped_count,
             "pipeline": self._pipeline.status(),
@@ -180,23 +185,41 @@ class Interceptor:
         dedicated event loop and waits for the result.  Returns ``True``
         to drop the packet.  On any detection failure the packet is
         **dropped** (fail-closed), never silently accepted.
+
+        A timeout only drops *this* packet inline.  It must NOT commit a
+        permanent iptables block: the detection verdict may still be
+        in-flight, and committing a block on an unresolved verdict would
+        risk permanently banning a legitimate IP.  We therefore signal the
+        coroutine that it timed out; the coroutine skips ``block_ip`` and
+        only records that the inline drop already happened.
         """
         if self._loop is None:
             logger.error("detection loop not ready — dropping packet")
             return True
+
+        state: dict = {"timed_out": False}
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._handle(packet), self._loop
+                self._handle(packet, state), self._loop
             )
-            # Bound the wait so a hung detector cannot block the nfqueue
-            # callback thread forever (which would freeze all traffic).
-            # On timeout we drop (fail-closed).
-            return future.result(timeout=5.0)
+            try:
+                # Bound the wait so a hung detector cannot block the nfqueue
+                # callback thread forever (which would freeze all traffic).
+                return future.result(timeout=self._detect_timeout)
+            except TimeoutError:
+                # Inline-drop this packet, but forbid a permanent block.
+                state["timed_out"] = True
+                logger.warning(
+                    "detection timeout (%ss) for %s — dropping inline, "
+                    "skipping permanent block",
+                    self._detect_timeout, packet.src_ip,
+                )
+                return True
         except Exception:
             logger.exception("detection error — dropping packet (fail-closed)")
             return True
 
-    async def _handle(self, packet: PacketInfo) -> bool:
+    async def _handle(self, packet: PacketInfo, state: dict) -> bool:
         verdict = await self._pipeline.process_packet(packet)
 
         if self._on_verdict is not None:
@@ -207,10 +230,21 @@ class Interceptor:
 
         if verdict.action == Action.BLOCK:
             # Permanent block: add iptables rule so future packets
-            # from this IP never reach nfqueue.
-            if packet.src_ip not in self._blocked:
-                self._blocked.add(packet.src_ip)
-                self._iptables.block_ip(packet.src_ip)
+            # from this IP never reach nfqueue.  Skip if the inline
+            # decision already timed out — we must not commit a block on
+            # an unresolved verdict (could ban a legitimate IP).
+            if not state.get("timed_out"):
+                with self._blocked_lock:
+                    already = packet.src_ip in self._blocked
+                if not already:
+                    with self._blocked_lock:
+                        self._blocked.add(packet.src_ip)
+                    self._iptables.block_ip(packet.src_ip)
+            else:
+                logger.warning(
+                    "skipping permanent block for %s — verdict resolved after "
+                    "inline-drop timeout", packet.src_ip,
+                )
             logger.info(
                 "DROP %s:%d -> %s:%d  [%s]  %s",
                 packet.src_ip, packet.src_port,

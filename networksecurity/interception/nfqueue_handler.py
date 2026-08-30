@@ -104,7 +104,12 @@ class NFQueueHandler:
             packet = PacketParser.from_raw(bytes(payload), timestamp=time.time())
 
             should_drop = False
-            if packet is not None and self._callback is not None:
+            if packet is None:
+                # Unparseable packet (non-IPv4, truncated, etc.).  Treat as
+                # fail-closed: drop rather than let it bypass detection.
+                logger.warning("unparseable packet — dropping (fail-closed)")
+                should_drop = True
+            elif self._callback is not None:
                 should_drop = self._callback(packet)
 
             if should_drop:

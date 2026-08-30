@@ -20,10 +20,11 @@ class IptablesManager:
 
     Thread safety: block_ip() may be called from the detection event-loop
     thread while cleanup_all() runs on the main thread during teardown.
-    All rule mutations are serialized by _lock so a block rule can never be
-    inserted into a chain that is being torn down (which would otherwise
-    raise CalledProcessError and desync the in-memory blocked set from the
-    real firewall state).
+    All rule mutations are serialized by _lock.  block_ip() additionally
+    checks ``_nfqueue_rules_added`` *inside* the lock: if teardown has
+    already deleted the chain, the block is skipped rather than raising
+    CalledProcessError (which would otherwise be lost and desync the
+    in-memory blocked set from the real firewall state).
     """
 
     CHAIN = "NIPS"
@@ -37,25 +38,43 @@ class IptablesManager:
     # --- nfqueue setup / teardown -----------------------------------------
 
     def setup_nfqueue(self, queue_num: int = 0) -> None:
-        """Redirect incoming TCP/UDP to NFQUEUE."""
-        self._run("iptables", "-N", self.CHAIN)
-        self._run("iptables", "-I", "INPUT", "-j", self.CHAIN)
+        """Redirect incoming TCP/UDP to NFQUEUE.
+
+        Idempotent: safe to call when a previous run left the chain behind
+        (e.g. after a crash).  ``_nfqueue_rules_added`` is set *before* any
+        rule mutation so that ``cleanup_nfqueue`` always attempts teardown —
+        even on a partial failure — preventing orphaned rules from
+        desynchronizing the kernel firewall state.
+        """
+        self._nfqueue_rules_added = True
+
+        # Create the chain if absent.  ``-N`` fails (rc!=0) when the chain
+        # already exists; that is expected on a restart, so do not raise.
+        self._run("iptables", "-N", self.CHAIN, check=False)
+
+        if not self._rule_exists("INPUT", "-j", self.CHAIN):
+            self._run("iptables", "-I", "INPUT", "-j", self.CHAIN)
 
         # Protect SSH and loopback.  Skip safe IPs that fail (e.g. IPv6 on legacy iptables).
         for ip in self._safe_ips:
-            try:
-                self._run("iptables", "-I", self.CHAIN, "-s", ip, "-j", "ACCEPT")
-            except subprocess.CalledProcessError:
-                logger.warning("Could not add safe IP %s — skipping (likely unsupported on this system)", ip)
-        self._run("iptables", "-A", self.CHAIN, "-p", "tcp", "--dport", "22",
-                  "-j", "ACCEPT")
+            if not self._rule_exists(self.CHAIN, "-s", ip, "-j", "ACCEPT"):
+                try:
+                    self._run("iptables", "-I", self.CHAIN, "-s", ip, "-j", "ACCEPT")
+                except subprocess.CalledProcessError:
+                    logger.warning("Could not add safe IP %s — skipping (likely unsupported on this system)", ip)
+
+        if not self._rule_exists(self.CHAIN, "-p", "tcp", "--dport", "22", "-j", "ACCEPT"):
+            self._run("iptables", "-A", self.CHAIN, "-p", "tcp", "--dport", "22",
+                      "-j", "ACCEPT")
 
         # Redirect remaining TCP/UDP to NFQUEUE
-        self._run("iptables", "-A", self.CHAIN, "-p", "tcp",
-                  "-j", "NFQUEUE", "--queue-num", str(queue_num))
-        self._run("iptables", "-A", self.CHAIN, "-p", "udp",
-                  "-j", "NFQUEUE", "--queue-num", str(queue_num))
-        self._nfqueue_rules_added = True
+        if not self._rule_exists(self.CHAIN, "-p", "tcp", "-j", "NFQUEUE", "--queue-num", str(queue_num)):
+            self._run("iptables", "-A", self.CHAIN, "-p", "tcp",
+                      "-j", "NFQUEUE", "--queue-num", str(queue_num))
+        if not self._rule_exists(self.CHAIN, "-p", "udp", "-j", "NFQUEUE", "--queue-num", str(queue_num)):
+            self._run("iptables", "-A", self.CHAIN, "-p", "udp",
+                      "-j", "NFQUEUE", "--queue-num", str(queue_num))
+
         logger.info("nfqueue rules added to iptables chain %s", self.CHAIN)
 
     def cleanup_nfqueue(self) -> None:
@@ -73,9 +92,23 @@ class IptablesManager:
 
     def block_ip(self, ip: str) -> None:
         with self._lock:
+            # Teardown may have already deleted the chain on another thread.
+            # Inserting into a non-existent chain raises CalledProcessError,
+            # which would abort before updating ``_blocked`` and desync state
+            # from the real firewall.  Skip the insert when the chain is gone.
+            if not self._nfqueue_rules_added or not self._rule_exists(self.CHAIN):
+                logger.warning(
+                    "block_ip(%s) skipped — chain %s gone (likely during teardown)",
+                    ip, self.CHAIN,
+                )
+                return
             if ip in self._blocked or ip in self._safe_ips:
                 return
-            self._run("iptables", "-I", self.CHAIN, "1", "-s", ip, "-j", "DROP")
+            try:
+                self._run("iptables", "-I", self.CHAIN, "1", "-s", ip, "-j", "DROP")
+            except subprocess.CalledProcessError:
+                logger.warning("block_ip(%s) failed — iptables rejected the rule", ip)
+                return
             self._blocked.add(ip)
         logger.info("blocked IP: %s", ip)
 
@@ -98,6 +131,23 @@ class IptablesManager:
             self.unblock_ip(ip)
 
     # --- helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _rule_exists(*args) -> bool:
+        """Return True if an iptables rule matching ``args`` already exists.
+
+        ``iptables -C`` exits 0 when the rule is present and non-zero
+        otherwise; ``check=False`` keeps it from raising.
+        """
+        try:
+            result = subprocess.run(
+                ["iptables", "-C", *args],
+                capture_output=True,
+                text=True,
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            return False
 
     @staticmethod
     def _run(*args, check: bool = True) -> str:
