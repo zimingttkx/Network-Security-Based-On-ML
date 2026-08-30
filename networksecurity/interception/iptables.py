@@ -57,6 +57,18 @@ class IptablesManager:
 
         # Protect SSH and loopback.  Skip safe IPs that fail (e.g. IPv6 on legacy iptables).
         for ip in self._safe_ips:
+            # IPv6 addresses belong in ip6tables; legacy `iptables -C/-I -s ::1`
+            # behaves unpredictably (often errors rather than cleanly reporting
+            # absence), so do NOT let _rule_exists' probe on ::1 masquerade as
+            # "already installed" and silently skip the rule.  For IPv4 we still
+            # probe to stay idempotent; for IPv6 we just attempt the insert and
+            # tolerate failure (the caller's except swallows it as a warning).
+            if ":" in ip:  # looks like IPv6
+                try:
+                    self._run("ip6tables", "-I", self.CHAIN, "-s", ip, "-j", "ACCEPT")
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    logger.warning("Could not add IPv6 safe IP %s — skipping", ip)
+                continue
             if not self._rule_exists(self.CHAIN, "-s", ip, "-j", "ACCEPT"):
                 try:
                     self._run("iptables", "-I", self.CHAIN, "-s", ip, "-j", "ACCEPT")

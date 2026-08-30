@@ -117,12 +117,7 @@ class Interceptor:
         try:
             self._nfqueue.start()
         finally:
-            self._running = False
-            self._iptables.cleanup_all()
-            if self._loop is not None:
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            if self._loop_thread is not None:
-                self._loop_thread.join(timeout=5.0)
+            self._teardown()
 
     def start(self) -> None:
         """Start interception.  Blocks until ``stop()`` is called (or SIGINT).
@@ -158,12 +153,44 @@ class Interceptor:
         self.begin_capture()
 
     def stop(self) -> None:
-        """Graceful shutdown.  Cleans up iptables rules."""
+        """Graceful shutdown.  Cleans up iptables rules.
+
+        Idempotent and self-contained: it stops the nfqueue capture, tears
+        down iptables, and joins the detection event-loop thread.  This makes
+        shutdown correct on both the CLI path (SIGINT -> stop -> sys.exit) and
+        the API path (engine_stop -> stop) without relying on ``begin_capture``'s
+        ``finally`` block having already run.  Calling stop() after the capture
+        thread has exited is also safe.
+        """
+        if not self._running and not self._nfqueue._running and self._loop is None:
+            # Nothing live to tear down; just make sure iptables is clean.
+            self._iptables.cleanup_all()
+            return
+
         self._running = False
         self._nfqueue.stop()
-        self._iptables.cleanup_all()
+        self._teardown()
         self._pipeline.stop()
         logger.info("Interceptor stopped.  %d IPs permanently blocked.", len(self._blocked))
+
+    # -- teardown helper ------------------------------------------------------
+
+    def _teardown(self) -> None:
+        """Shared cleanup used by both stop() and begin_capture()'s finally.
+
+        Stops the detection event loop and joins its thread, then removes the
+        iptables rules.  Guarded so it is safe to call from multiple code
+        paths (e.g. stop() and the capture finally block) without double-join
+        errors.
+        """
+        self._running = False
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._loop_thread is not None:
+            self._loop_thread.join(timeout=5.0)
+        self._loop = None
+        self._loop_thread = None
+        self._iptables.cleanup_all()
 
     def status(self) -> dict:
         with self._blocked_lock:
