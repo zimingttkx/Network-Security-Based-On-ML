@@ -4,7 +4,8 @@ Callback receives a parsed PacketInfo and returns a bool:
   True  -> nf_packet.drop()   (kernel discards the packet)
   False -> nf_packet.accept() (kernel delivers the packet)
 
-On any exception, the packet is accepted to avoid breaking connectivity.
+On any exception, the packet is DROPPED (fail-closed) so a parse or
+detection error never silently lets attacker traffic through.
 """
 
 from __future__ import annotations

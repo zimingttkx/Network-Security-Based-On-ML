@@ -188,7 +188,10 @@ class Interceptor:
             future = asyncio.run_coroutine_threadsafe(
                 self._handle(packet), self._loop
             )
-            return future.result()
+            # Bound the wait so a hung detector cannot block the nfqueue
+            # callback thread forever (which would freeze all traffic).
+            # On timeout we drop (fail-closed).
+            return future.result(timeout=5.0)
         except Exception:
             logger.exception("detection error — dropping packet (fail-closed)")
             return True

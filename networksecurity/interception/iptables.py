@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,13 @@ class IptablesManager:
     its pre-NIPS state.
 
     Requires root.
+
+    Thread safety: block_ip() may be called from the detection event-loop
+    thread while cleanup_all() runs on the main thread during teardown.
+    All rule mutations are serialized by _lock so a block rule can never be
+    inserted into a chain that is being torn down (which would otherwise
+    raise CalledProcessError and desync the in-memory blocked set from the
+    real firewall state).
     """
 
     CHAIN = "NIPS"
@@ -24,6 +32,7 @@ class IptablesManager:
         self._safe_ips: list[str] = safe_ips or ["127.0.0.1"]
         self._blocked: set[str] = set()
         self._nfqueue_rules_added: bool = False
+        self._lock = threading.Lock()
 
     # --- nfqueue setup / teardown -----------------------------------------
 
@@ -53,26 +62,29 @@ class IptablesManager:
         """Remove nfqueue rules. Safe to call even if not set up."""
         if not self._nfqueue_rules_added:
             return
-        self._run("iptables", "-D", "INPUT", "-j", self.CHAIN, check=False)
-        self._run("iptables", "-F", self.CHAIN, check=False)
-        self._run("iptables", "-X", self.CHAIN, check=False)
-        self._nfqueue_rules_added = False
+        with self._lock:
+            self._run("iptables", "-D", "INPUT", "-j", self.CHAIN, check=False)
+            self._run("iptables", "-F", self.CHAIN, check=False)
+            self._run("iptables", "-X", self.CHAIN, check=False)
+            self._nfqueue_rules_added = False
         logger.info("nfqueue rules removed")
 
     # --- IP blocking -------------------------------------------------------
 
     def block_ip(self, ip: str) -> None:
-        if ip in self._blocked or ip in self._safe_ips:
-            return
-        self._run("iptables", "-I", self.CHAIN, "1", "-s", ip, "-j", "DROP")
-        self._blocked.add(ip)
+        with self._lock:
+            if ip in self._blocked or ip in self._safe_ips:
+                return
+            self._run("iptables", "-I", self.CHAIN, "1", "-s", ip, "-j", "DROP")
+            self._blocked.add(ip)
         logger.info("blocked IP: %s", ip)
 
     def unblock_ip(self, ip: str) -> None:
-        if ip not in self._blocked:
-            return
-        self._run("iptables", "-D", self.CHAIN, "-s", ip, "-j", "DROP", check=False)
-        self._blocked.discard(ip)
+        with self._lock:
+            if ip not in self._blocked:
+                return
+            self._run("iptables", "-D", self.CHAIN, "-s", ip, "-j", "DROP", check=False)
+            self._blocked.discard(ip)
         logger.info("unblocked IP: %s", ip)
 
     def blocked_ips(self) -> list[str]:

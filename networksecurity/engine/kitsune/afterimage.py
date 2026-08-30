@@ -116,7 +116,7 @@ class IncStatDB:
     bounded during long-running live interception.
     """
 
-    def __init__(self, lambda_: float = 1.0, max_hosts: int = 100000):
+    def __init__(self, lambda_: float = 1.0, max_hosts: int = 10000):
         self.lambda_ = lambda_
         self.max_hosts = max(1, max_hosts)
         self.stats: "OrderedDict[str, IncStat]" = OrderedDict()
@@ -164,12 +164,17 @@ class AfterImage:
 
     LAMBDAS: ClassVar[list] = [5, 3, 1, 0.1, 0.01]
 
-    def __init__(self, max_hosts: int = 100000):
+    def __init__(self, max_hosts: int = 10000):
         """
         Args:
-            max_hosts: Maximum number of hosts to track simultaneously.
+            max_hosts: Maximum number of hosts to track *per channel per
+                time window*.  There are 5 channels × 5 windows = 25
+                independent IncStatDBs, so the real upper bound on tracked
+                IncStat objects is ``25 * max_hosts``.  The default (10k)
+                keeps that at ~250k objects, which is bounded for edge
+                deployment; raise it only if you have the RAM to spare.
         """
-        self.max_hosts = max_hosts
+        self.max_hosts = max(1, max_hosts)
 
         # One IncStatDB per time window, per channel
         self.mac_stats = [IncStatDB(1.0 / l, max_hosts) for l in self.LAMBDAS]

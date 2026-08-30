@@ -74,13 +74,14 @@ saved_models/
 mlruns/
 mlartifacts/
 
-# Data
+# Data (generated / user-owned — excluded)
 data/
-*.csv
 *.xlsx
 *.json
-*.parquet
 Network_Data/
+
+# Bundled reference dataset (committed on purpose — used by engine integration tests)
+!datasets/unsw-nb15/
 
 # Database
 *.db

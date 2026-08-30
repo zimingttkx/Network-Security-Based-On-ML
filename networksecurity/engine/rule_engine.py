@@ -28,7 +28,16 @@ class RateLimiter:
         self._buckets: dict[str, list[float]] = {}
 
     def check(self, ip: str, timestamp: float) -> bool:
-        """Return True if IP is within rate limit (under the connection cap)."""
+        """Return True if IP is within rate limit (under the connection cap).
+
+        A non-positive ``timestamp`` (e.g. the ``0.0`` default when a packet
+        carries no timing information) cannot form a valid sliding window, so
+        the check is skipped for that IP instead of counting it — otherwise
+        the bucket would never expire and the IP would be blocked permanently
+        after ``max_connections`` such packets.
+        """
+        if timestamp <= 0:
+            return True
         bucket = self._buckets.get(ip)
         cutoff = timestamp - self._window
         if bucket is None:
