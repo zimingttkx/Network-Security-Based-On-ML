@@ -248,8 +248,12 @@ async def engine_start():
         except Exception:
             logger.exception("Interceptor thread crashed")
         finally:
-            _interceptor._running = False
-            _interceptor._iptables.cleanup_all()
+            # Only tear down if this is still the active interceptor.  A fast
+            # stop() -> start() cycle may have already swapped in a new one;
+            # cleaning up here would rip out the new instance's iptables rules.
+            if _interceptor is not None:
+                _interceptor._running = False
+                _interceptor._iptables.cleanup_all()
 
     _interceptor_thread = threading.Thread(target=_run, daemon=True)
     _interceptor_thread.start()

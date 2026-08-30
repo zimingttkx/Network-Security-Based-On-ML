@@ -30,6 +30,11 @@ class KitsuneDetector(BaseDetector):
             threshold_percentile=threshold_percentile,
         )
 
+    @property
+    def is_ready(self) -> bool:
+        """Whether KitNET training has completed and detection is live."""
+        return self._kitsune.is_ready
+
     # -- BaseDetector interface ---------------------------------------------
 
     async def process_packet(self, packet: PacketInfo) -> Verdict | None:

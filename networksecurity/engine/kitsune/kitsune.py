@@ -161,6 +161,7 @@ class Kitsune:
         self.is_initialized = False
         self._start_time = time.time()
     
+    @property
     def is_ready(self) -> bool:
         """Check whether training is complete."""
         return self.kitnet is not None and self.kitnet.is_ad_done
