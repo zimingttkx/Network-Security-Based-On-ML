@@ -84,9 +84,15 @@ async function refresh() {
     st.textContent = status.running ? 'Running' : 'Stopped';
 
     const tbody = document.getElementById('alerts-body');
-    tbody.innerHTML = (alerts.items || []).map(a =>
-      `<tr><td>${a.timestamp}</td><td>${a.source_ip}</td><td>${a.detector}</td><td>${a.reason}</td></tr>`
-    ).join('');
+    tbody.replaceChildren(...(alerts.items || []).map(a => {
+      const tr = document.createElement('tr');
+      const tdTime = document.createElement('td'); tdTime.textContent = a.timestamp;
+      const tdIp = document.createElement('td'); tdIp.textContent = a.source_ip;
+      const tdDet = document.createElement('td'); tdDet.textContent = a.detector;
+      const tdReason = document.createElement('td'); tdReason.textContent = a.reason;
+      tr.append(tdTime, tdIp, tdDet, tdReason);
+      return tr;
+    }));
   } catch(e) { console.error(e); }
 }
 refresh();
