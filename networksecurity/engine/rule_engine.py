@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import threading
 from collections import defaultdict
 from pathlib import Path
 
@@ -89,11 +90,22 @@ class RuleEngine(BaseDetector):
         self._rate_limiter = RateLimiter(max_connections=1000)
         self._rules: list[dict] = []
         self._blocked_count: int = 0
+        # Guards all whitelist/blacklist mutations and reads.  Rules are
+        # edited from the API thread (rules CRUD endpoints) while being read
+        # on every packet by the detection loop thread; without this lock a
+        # concurrent edit can raise "Set changed size during iteration" inside
+        # _is_blacklisted/_is_whitelisted and force a fail-closed drop of all
+        # traffic.
+        self._lock = threading.Lock()
 
     # -- public API ---------------------------------------------------------
 
     async def process_packet(self, packet: PacketInfo) -> Verdict | None:
-        self._packet_count += 1
+        # Counters are mutated under self._lock so the API thread reading
+        # stats() sees a consistent snapshot (no lost updates under
+        # concurrent packet processing).
+        with self._lock:
+            self._packet_count += 1
 
         # 1. Whitelist check
         if self._is_whitelisted(packet.src_ip):
@@ -103,7 +115,8 @@ class RuleEngine(BaseDetector):
 
         # 2. Protocol filter
         if packet.protocol not in self._protocol_allow:
-            self._blocked_count += 1
+            with self._lock:
+                self._blocked_count += 1
             return Verdict(action=Action.BLOCK, confidence=1.0,
                            threat_level=ThreatLevel.MEDIUM,
                            reason=f"protocol {packet.protocol} not allowed",
@@ -111,14 +124,16 @@ class RuleEngine(BaseDetector):
 
         # 3. Blacklist check
         if self._is_blacklisted(packet.src_ip):
-            self._blocked_count += 1
+            with self._lock:
+                self._blocked_count += 1
             return Verdict(action=Action.BLOCK, confidence=1.0,
                            threat_level=ThreatLevel.HIGH,
                            reason="blacklist", detector=self.name)
 
         # 4. Rate limit
         if not self._rate_limiter.check(packet.src_ip, packet.timestamp):
-            self._blocked_count += 1
+            with self._lock:
+                self._blocked_count += 1
             return Verdict(action=Action.BLOCK, confidence=0.9,
                            threat_level=ThreatLevel.MEDIUM,
                            reason="rate limit exceeded", detector=self.name)
@@ -128,22 +143,28 @@ class RuleEngine(BaseDetector):
     # -- whitelist / blacklist management -----------------------------------
 
     def add_whitelist(self, entry: str) -> None:
-        self._whitelist.add(entry)
+        with self._lock:
+            self._whitelist.add(entry)
 
     def add_blacklist(self, entry: str) -> None:
-        self._blacklist.add(entry)
+        with self._lock:
+            self._blacklist.add(entry)
 
     def remove_whitelist(self, entry: str) -> None:
-        self._whitelist.discard(entry)
+        with self._lock:
+            self._whitelist.discard(entry)
 
     def remove_blacklist(self, entry: str) -> None:
-        self._blacklist.discard(entry)
+        with self._lock:
+            self._blacklist.discard(entry)
 
     def get_whitelist(self) -> list[str]:
-        return sorted(self._whitelist)
+        with self._lock:
+            return sorted(self._whitelist)
 
     def get_blacklist(self) -> list[str]:
-        return sorted(self._blacklist)
+        with self._lock:
+            return sorted(self._blacklist)
 
     # -- persistence ---------------------------------------------------------
 
@@ -170,16 +191,18 @@ class RuleEngine(BaseDetector):
         path.write_text(json.dumps(data, indent=2))
 
     def _is_whitelisted(self, ip: str) -> bool:
-        return ip in self._whitelist or any(
-            self._ip_in_network(ip, entry)
-            for entry in self._whitelist if "/" in entry
-        )
+        with self._lock:
+            return ip in self._whitelist or any(
+                self._ip_in_network(ip, entry)
+                for entry in self._whitelist if "/" in entry
+            )
 
     def _is_blacklisted(self, ip: str) -> bool:
-        return ip in self._blacklist or any(
-            self._ip_in_network(ip, entry)
-            for entry in self._blacklist if "/" in entry
-        )
+        with self._lock:
+            return ip in self._blacklist or any(
+                self._ip_in_network(ip, entry)
+                for entry in self._blacklist if "/" in entry
+            )
 
     @staticmethod
     def _ip_in_network(ip: str, network: str) -> bool:
@@ -198,9 +221,10 @@ class RuleEngine(BaseDetector):
         self._rate_limiter.reset()
 
     def stats(self) -> dict:
-        return {
-            "whitelist_size": len(self._whitelist),
-            "blacklist_size": len(self._blacklist),
-            "blocked_count": self._blocked_count,
-            "packet_count": self._packet_count,
-        }
+        with self._lock:
+            return {
+                "whitelist_size": len(self._whitelist),
+                "blacklist_size": len(self._blacklist),
+                "blocked_count": self._blocked_count,
+                "packet_count": self._packet_count,
+            }
