@@ -43,7 +43,7 @@ templates = Jinja2Templates(directory="templates")
 
 # --- Engine state -----------------------------------------------------------
 
-RULES_FILE = Path("rules.json")
+RULES_FILE = Path(__file__).resolve().parent / "rules.json"
 
 logger = logging.getLogger(__name__)
 
@@ -63,19 +63,21 @@ _interceptor: object | None = None  # Interceptor | None
 _interceptor_thread: threading.Thread | None = None
 
 alerts: list[dict] = []
+_alerts_lock: threading.Lock = threading.Lock()
 start_time: datetime = datetime.now(tz=timezone.utc)
 
 
 def _record_alert(source_ip: str, reason: str, action: str, detector: str) -> None:
-    alerts.insert(0, {
-        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-        "source_ip": source_ip,
-        "reason": reason,
-        "action": action,
-        "detector": detector,
-    })
-    if len(alerts) > 500:
-        alerts.pop()
+    with _alerts_lock:
+        alerts.insert(0, {
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "source_ip": source_ip,
+            "reason": reason,
+            "action": action,
+            "detector": detector,
+        })
+        if len(alerts) > 500:
+            alerts.pop()
 
 
 pipeline.rule_engine.load_rules(RULES_FILE)
@@ -143,10 +145,11 @@ async def stats_overview():
 
 @app.get("/api/v1/alerts")
 async def get_alerts(limit: int = 50, offset: int = 0):
-    return {
-        "total": len(alerts),
-        "items": alerts[offset : offset + limit],
-    }
+    with _alerts_lock:
+        return {
+            "total": len(alerts),
+            "items": list(alerts[offset : offset + limit]),
+        }
 
 
 # --- Rule management -------------------------------------------------------
@@ -221,10 +224,17 @@ async def engine_start():
             detail="Interceptor unavailable — install NetfilterQueue on Linux",
         )
 
+    # Load interception config so safe_ips / queue num from config.yaml are
+    # actually applied (previously ignored; config.yaml was dead).
+    from networksecurity.utils.config import load_interception_config
+    inter_cfg = load_interception_config()
+
     started = threading.Event()
 
-    _interceptor = Interceptor(
+    local_interceptor = Interceptor(
         pipeline,
+        queue_num=inter_cfg.get("nfqueue_num", 0),
+        safe_ips=inter_cfg.get("safe_ips"),
         on_verdict=lambda pkt, v: _record_alert(
             pkt.src_ip, v.reason, v.action.value, v.detector
         ),
@@ -236,26 +246,29 @@ async def engine_start():
     # does NOT block on capture, so this handler can return promptly; a
     # background thread then drains the queue.
     try:
-        _interceptor.setup()
+        local_interceptor.setup()
         started.set()
+        _interceptor = local_interceptor
     except Exception as e:  # noqa: BLE001
         logger.exception("Failed to set up interception")
         raise HTTPException(status_code=500, detail=f"Setup failed: {e}")
 
-    def _run():
+    def _run(instance):
         try:
-            _interceptor.begin_capture()
+            instance.begin_capture()
         except Exception:
             logger.exception("Interceptor thread crashed")
         finally:
-            # Only tear down if this is still the active interceptor.  A fast
-            # stop() -> start() cycle may have already swapped in a new one;
-            # cleaning up here would rip out the new instance's iptables rules.
-            if _interceptor is not None:
-                _interceptor._running = False
-                _interceptor._iptables.cleanup_all()
+            # Tear down ONLY the instance this thread owns.  Capturing the
+            # local reference (not the module-global) prevents a fast
+            # stop() -> start() cycle from having this stale thread rip out
+            # the NEW interceptor's iptables rules (fail-open window).
+            instance._running = False
+            instance._iptables.cleanup_all()
 
-    _interceptor_thread = threading.Thread(target=_run, daemon=True)
+    _interceptor_thread = threading.Thread(
+        target=_run, args=(local_interceptor,), daemon=True
+    )
     _interceptor_thread.start()
 
     return {

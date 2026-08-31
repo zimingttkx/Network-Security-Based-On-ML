@@ -29,7 +29,7 @@ from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
 
 # --- Persistence paths ------------------------------------------------------
 
-RULES_FILE = Path("rules.json")
+RULES_FILE = Path(__file__).resolve().parent / "rules.json"
 
 
 def _build_pipeline() -> DetectionPipeline:
@@ -58,8 +58,14 @@ def cmd_start(args) -> None:
         sys.exit(1)
 
     from networksecurity.interception import Interceptor
+    from networksecurity.utils.config import load_interception_config
 
-    interceptor = Interceptor(pipeline)
+    inter_cfg = load_interception_config()
+    interceptor = Interceptor(
+        pipeline,
+        queue_num=inter_cfg.get("nfqueue_num", 0),
+        safe_ips=inter_cfg.get("safe_ips"),
+    )
 
     def _shutdown(signum, frame):
         print("\nShutting down...")
