@@ -7,6 +7,11 @@ from typing import AsyncIterator
 
 logger = logging.getLogger(__name__)
 
+# scapy is imported lazily (only when load()/_parse_ip actually run) because it
+# is a heavy optional dependency.  These module-level names are bound inside
+# load() before any packet is parsed, and _parse_ip() relies on them being in
+# the module globals — see the lazy import at the top of load().
+
 
 class PcapLoader:
     """Load packets from pcap files.
@@ -50,6 +55,12 @@ class PcapLoader:
             raise ImportError(
                 "scapy is required for pcap loading. Install it with: pip install scapy"
             ) from None
+        # Bind into module globals so the staticmethod _parse_ip() (which
+        # references ``IP``) resolves correctly.  Without this, _parse_ip
+        # raises NameError on every packet and the loader yields None for all
+        # frames, making `cli.py test --pcap` process zero packets.
+        globals().update(IP=IP, TCP=TCP, UDP=UDP, Ether=Ether, Dot1Q=Dot1Q,
+                         Packet=Packet, rdpcap=rdpcap)
 
         try:
             packets = rdpcap(path)
