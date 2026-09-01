@@ -102,7 +102,13 @@ class DatasetLoader:
 
     def load(self, path: str | Path) -> tuple[np.ndarray, np.ndarray]:
         """Load a dataset, returning (X, y)."""
-        df = pd.read_csv(path)
+        path = Path(path)
+        # Parquet is the distribution format of the bundled datasets
+        # (datasets/unsw-nb15/*.parquet); CSV is read by default otherwise.
+        if path.suffix.lower() == ".parquet":
+            df = pd.read_parquet(path)
+        else:
+            df = pd.read_csv(path)
         logger.info("Loaded %s: %d rows, %d columns", path, len(df), len(df.columns))
 
         # Drop metadata columns
@@ -135,7 +141,9 @@ class DatasetLoader:
         # and applies the same columns to the test split (aligning dimensions).
         if X.shape[1] > 0:
             X = pd.get_dummies(X, drop_first=True)
-        X = X.fillna(0).astype(np.float32)
+        # CICIDS2017 is known to carry Infinity in Flow Duration/Packets rates;
+        # fillna(0) does not touch inf, which would crash sklearn/Keras downstream.
+        X = X.replace([np.inf, -np.inf], np.nan).fillna(0).astype(np.float32)
 
         return X.values, y
 
@@ -174,8 +182,8 @@ class DatasetLoader:
             X_train = pd.DataFrame(index=X_train.index)
         X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
 
-        X_train = X_train.fillna(0).astype(np.float32)
-        X_test = X_test.fillna(0).astype(np.float32)
+        X_train = X_train.replace([np.inf, -np.inf], np.nan).fillna(0).astype(np.float32)
+        X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(0).astype(np.float32)
         return X_train.values, y_train, X_test.values, y_test
 
     def train_test_split(
@@ -183,7 +191,11 @@ class DatasetLoader:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         from sklearn.model_selection import train_test_split as tts
 
-        df = pd.read_csv(path)
+        path = Path(path)
+        if path.suffix.lower() == ".parquet":
+            df = pd.read_parquet(path)
+        else:
+            df = pd.read_csv(path)
         target = self._config.get("target_column", "label")
         if target not in df.columns:
             for candidate in ["label", "Label", "class", "Class", "attack", "Attack"]:
