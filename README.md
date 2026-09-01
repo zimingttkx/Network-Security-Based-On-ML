@@ -39,6 +39,8 @@ LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pip
 - **Kitsune (NDSS'18)** — AfterImage incremental statistics (115 features) + a KitNET autoencoder ensemble. Trains online, no labels needed.
 - **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model.
 
+> **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17) only. Any other protocol — including **ICMP(1)** — is blocked by default. This means legitimate ICMP (ping, PMTUD, traceroute) is also dropped unless its source is whitelisted. If you run on a network that relies on ICMP, either whitelist the relevant sources or constrain the policy before enabling live interception.
+
 ---
 
 ## Quick Start
@@ -82,8 +84,32 @@ python cli.py unblock 1.2.3.4        # unblock an IP
 python cli.py whitelist 10.0.0.0/8   # whitelist a subnet
 python cli.py rules                  # list blacklist/whitelist entries
 python cli.py alerts --last 20       # show recent alerts (via API)
-python cli.py test --pcap sample.pcap  # offline detection test
+python cli.py test --pcap sample.pcap  # offline detection test (no root needed)
 ```
+
+#### Configuration
+
+`config/config.yaml` drives both the engine and live interception:
+
+```yaml
+interception:
+  nfqueue_num: 0
+  safe_ips:                 # IPs that are never blocked (loopback is protected)
+    - "127.0.0.1"
+    - "::1"
+engine:
+  kitsune:
+    fm_grace_period: 5000   # feature-mapping training packets
+    ad_grace_period: 50000  # anomaly-detector training packets
+    threshold_percentile: 99.0
+  rule_engine:
+    allowed_protocols: [6, 17]   # TCP, UDP; everything else blocked
+    rate_limit:
+      window_seconds: 1.0
+      max_connections_per_window: 100
+```
+
+On `engine/start` the API/CLI load `safe_ips` and `nfqueue_num` from this file and pass them to the interceptor, so operator-tuned values are actually applied at runtime.
 
 ---
 
@@ -172,8 +198,10 @@ interceptor.start()  # Blocks. Ctrl+C to stop.
 
 The interceptor:
 - Installs iptables rules to redirect traffic into NFQUEUE
-- Leaves SSH (port 22) and loopback untouched
+- Leaves SSH (port 22) and loopback (IPv4 `127.0.0.1` / IPv6 `::1`) untouched, per `safe_ips` in `config.yaml`
 - Removes all of its iptables rules on shutdown
+
+`Interceptor` reads `safe_ips` and `nfqueue_num` from `config.yaml`, so the `safe_ips` list silently has no effect if the config is missing — keep `config.yaml` present and committed.
 
 ---
 
@@ -203,6 +231,20 @@ Two scripts measure behavior on your own hardware — numbers below are not vali
 Why detection on NSL-KDD is weak here: NSL-KDD records are **flow-level summaries**, not packet captures. Mapping each flow to a few packets throws away the timing and burst patterns that Kitsune learns from. Volumetric attacks (DoS, probe) survive the mapping better than content attacks (R2L, U2R), which look like ordinary TCP at the packet level. Treat the per-attack numbers as a statement of that limitation, not a measured accuracy claim.
 
 The rule engine itself is exact: blacklist/whitelist, protocol filtering, and rate limiting are deterministic and always applied before the ML stage.
+
+### Offline testing with real traffic
+
+Two paths exercise the detection pipeline **without** root or iptables — useful for verifying behavior on real captures:
+
+- **Real pcap (recommended for true performance):** capture packets and run them through the pipeline offline.
+  ```bash
+  # capture 30s of live traffic (requires root for the sniff)
+  sudo python -c "from scapy.all import sniff, wrpcap; wrpcap('cap.pcap', sniff(iface='en0', timeout=30))"
+  # offline detection — no root needed
+  python cli.py test --pcap cap.pcap
+  ```
+  This surfaces the **real** false-positive rate (e.g. legitimate ICMP being blocked by the protocol filter), which the synthetic sim below does not. Note Kitsune needs ~55k normal packets before it leaves training mode, so short captures mostly exercise the rule engine.
+- **Synthetic attack simulation:** `scripts/attack_simulation.py` generates labeled traffic and reports per-attack detection rates. Its ICMP/SSH results reflect the hard protocol rule and a separable generator distribution, not production accuracy — treat the overall ~20% attack detection in fast mode as a floor, not a claim.
 
 ---
 
