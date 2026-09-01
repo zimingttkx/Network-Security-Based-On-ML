@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from networksecurity.engine import DetectionPipeline
+from networksecurity.engine import DetectionPipeline, RuleEngine
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
 
 # --- Application -----------------------------------------------------------
@@ -48,7 +48,28 @@ RULES_FILE = Path(__file__).resolve().parent / "rules.json"
 logger = logging.getLogger(__name__)
 
 pipeline: DetectionPipeline = DetectionPipeline()
-pipeline.add_detector(KitsuneDetector())
+
+# Engine tuning comes from config/config.yaml (engine block) so operator
+# overrides actually apply — previously only the interception block was read.
+from networksecurity.utils.config import load_engine_config
+
+_engine_cfg = load_engine_config()
+pipeline.set_rule_engine(RuleEngine(
+    window_seconds=_engine_cfg["rule_engine"]["window_seconds"],
+    max_connections=_engine_cfg["rule_engine"]["max_connections"],
+    allowed_protocols=set(_engine_cfg["rule_engine"]["allowed_protocols"]),
+))
+pipeline.add_detector(KitsuneDetector(
+    max_autoencoder_size=_engine_cfg["kitsune"]["max_autoencoder_size"],
+    threshold_percentile=_engine_cfg["kitsune"]["threshold_percentile"],
+))
+# Kitsune grace periods must be set before the first packet is processed.
+for _d in pipeline.detectors:
+    if isinstance(_d, KitsuneDetector):
+        _d._kitsune.set_grace_periods(
+            fm_grace_period=_engine_cfg["kitsune"]["fm_grace_period"],
+            ad_grace_period=_engine_cfg["kitsune"]["ad_grace_period"],
+        )
 
 # Optional: LUCID DDoS detector (requires TensorFlow).  It is added to the
 # pipeline but stays inactive until a trained model is provided, so it does
@@ -97,7 +118,11 @@ class WhitelistEntry(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"page": "home"})
+    # "request" is a required context key in current Starlette; without it
+    # TemplateResponse raises and the dashboard returns 500.
+    return templates.TemplateResponse(
+        "index.html", {"request": request, "page": "home"}
+    )
 
 
 @app.get("/health")

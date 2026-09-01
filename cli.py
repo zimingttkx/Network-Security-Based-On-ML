@@ -34,7 +34,27 @@ RULES_FILE = Path(__file__).resolve().parent / "rules.json"
 
 def _build_pipeline() -> DetectionPipeline:
     pipeline = DetectionPipeline()
-    pipeline.add_detector(KitsuneDetector())
+
+    # Engine tuning from config/config.yaml (engine block) — same contract as
+    # app.py, so CLI live interception and the API behave identically.
+    from networksecurity.utils.config import load_engine_config
+    _engine_cfg = load_engine_config()
+    from networksecurity.engine import RuleEngine
+    pipeline.set_rule_engine(RuleEngine(
+        window_seconds=_engine_cfg["rule_engine"]["window_seconds"],
+        max_connections=_engine_cfg["rule_engine"]["max_connections"],
+        allowed_protocols=set(_engine_cfg["rule_engine"]["allowed_protocols"]),
+    ))
+    pipeline.add_detector(KitsuneDetector(
+        max_autoencoder_size=_engine_cfg["kitsune"]["max_autoencoder_size"],
+        threshold_percentile=_engine_cfg["kitsune"]["threshold_percentile"],
+    ))
+    for d in pipeline.detectors:
+        if isinstance(d, KitsuneDetector):
+            d._kitsune.set_grace_periods(
+                fm_grace_period=_engine_cfg["kitsune"]["fm_grace_period"],
+                ad_grace_period=_engine_cfg["kitsune"]["ad_grace_period"],
+            )
 
     # Optional: LUCID detector (requires TensorFlow).  Added inactive until a
     # trained model is provided, so it does not silently no-op as "active".
