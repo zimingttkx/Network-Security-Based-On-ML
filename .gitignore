@@ -74,8 +74,12 @@ saved_models/
 mlruns/
 mlartifacts/
 
-# Data (generated / user-owned — excluded)
-data/
+# Generated evaluation captures (rebuild with scripts/build_unsw_pcap.py)
+datasets/unsw-nb15/*.pcap
+
+# Data (generated / user-owned — excluded).  Anchored to the repo root so the
+# package directory networksecurity/data/ is never caught by this rule.
+/data/
 *.xlsx
 *.json
 Network_Data/
@@ -122,4 +126,5 @@ prometheus_data/
 Auto Run Docs/
 *Wizard*/
 LOOP_*.md
-SECURITY_LOG_*.mdrules.json
+SECURITY_LOG_*.md
+rules.json
