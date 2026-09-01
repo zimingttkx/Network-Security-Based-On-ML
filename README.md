@@ -198,10 +198,14 @@ interceptor.start()  # Blocks. Ctrl+C to stop.
 
 The interceptor:
 - Installs iptables rules to redirect traffic into NFQUEUE
-- Leaves SSH (port 22) and loopback (IPv4 `127.0.0.1` / IPv6 `::1`) untouched, per `safe_ips` in `config.yaml`
+- Leaves loopback traffic untouched — everything arriving on `lo` is ACCEPTed before the NFQUEUE rules, and loopback sources (`127.0.0.0/8`, `::1`) are never eligible for a permanent block (host-local traffic cannot be an attacker; blocking the DNS stub `127.0.0.53` would silently break host DNS)
+- Leaves SSH (port 22) untouched
+- Mirrors every ML/rule-engine BLOCK into the rule-engine blacklist, so blocks survive restarts (`rules.json`) and are re-applied to the kernel on the next start
 - Removes all of its iptables rules on shutdown
 
 `Interceptor` reads `safe_ips` and `nfqueue_num` from `config.yaml`, so the `safe_ips` list silently has no effect if the config is missing — keep `config.yaml` present and committed.
+
+A detection timeout drops only the in-flight packet (fail-closed); it never commits a permanent block, so a slow verdict cannot ban a legitimate IP.
 
 ---
 
