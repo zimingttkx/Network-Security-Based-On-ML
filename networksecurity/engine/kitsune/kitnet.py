@@ -157,6 +157,18 @@ class KitNET:
         self.is_fm_done = False
         self.is_ad_done = False
 
+        # Output-layer input normalization (running, Welford).  The ensemble
+        # AEs are untrained at FM end, so fitting a z-score on their RMSEs
+        # there captures a scale that is meaningless once the ensembles train
+        # (their RMSE distribution shifts by orders of magnitude, and the
+        # frozen fit made every packet score RMSE≈threshold — 100% FPR).
+        # Instead we track the ensemble-RMSE vector statistics online during
+        # the AD grace period and freeze them when detection starts.
+        self._out_mean: np.ndarray | None = None
+        self._out_m2: np.ndarray | None = None
+        self._out_count: int = 0
+        self._out_frozen: tuple[np.ndarray, np.ndarray] | None = None
+
         # Anomaly threshold
         self.threshold = None
         self.rmse_history: list[float] = []
@@ -241,17 +253,6 @@ class KitNET:
                 group_data = fm_array[:, group]
                 self.ensemble[i].fit_normalization(group_data)
 
-            # Fit normalization for the output autoencoder on the ensemble
-            # RMSE vectors recorded during the FM grace period.  Without this
-            # the output layer's inputs are never normalized, hurting its
-            # convergence (see _train_step, which feeds raw ensemble RMSEs).
-            ensemble_fm_rmses = np.array([
-                [self.ensemble[i].compute_rmse(fm_array[j, group])
-                 for i, group in enumerate(self.feature_map)]
-                for j in range(len(fm_array))
-            ], dtype=np.float32)
-            self.output_ae.fit_normalization(ensemble_fm_rmses)
-
             self.fm_data = []  # Free memory
             self.is_fm_done = True
 
@@ -263,6 +264,17 @@ class KitNET:
 
         # Training complete — set threshold
         if not self.is_ad_done:
+            # Freeze the output layer's input normalization on the exact
+            # statistics the output AE was trained against; detection-phase
+            # inputs are z-scored with this frozen fit (original KitNET
+            # behavior of running normalization through the AD grace period).
+            if self._out_mean is not None:
+                std = np.sqrt(self._out_m2 / max(1, self._out_count - 1))
+                std[std < 1e-10] = 1.0
+                self.output_ae.norm_mean = self._out_mean.copy()
+                self.output_ae.norm_std = std
+                self.output_ae.is_fitted = True
+            self._out_frozen = (self.output_ae.norm_mean, self.output_ae.norm_std)
             if self.rmse_history:
                 self.threshold = np.percentile(
                     self.rmse_history, self.threshold_percentile
@@ -279,16 +291,35 @@ class KitNET:
     def _train_step(self, x: np.ndarray) -> float:
         """Training step."""
         ensemble_rmses = []
-        
+
         for i, group in enumerate(self.feature_map):
             x_group = x[group]
             rmse = self.ensemble[i].train_step(x_group)
             ensemble_rmses.append(rmse)
-        
-        # Train output layer.
-        ensemble_rmses = np.array(ensemble_rmses)
+
+        # Train output layer on the ensemble RMSE vector, normalized by the
+        # running statistics accumulated below (Welford).  These statistics
+        # freeze when the AD grace ends so detection scores stay on the same
+        # scale the output layer was trained on.
+        ensemble_rmses = np.array(ensemble_rmses, dtype=np.float64)
+        if self._out_frozen is None:
+            self._out_count += 1
+            prev_mean = self._out_mean
+            if prev_mean is None:
+                prev_mean = np.zeros_like(ensemble_rmses)
+                self._out_m2 = np.zeros_like(ensemble_rmses)
+            delta = ensemble_rmses - prev_mean
+            self._out_mean = prev_mean + delta / self._out_count
+            self._out_m2 = self._out_m2 + delta * (ensemble_rmses - self._out_mean)
+            if self._out_count > 1:
+                std = np.sqrt(self._out_m2 / (self._out_count - 1))
+                std[std < 1e-10] = 1.0
+                self.output_ae.norm_mean = self._out_mean.copy()
+                self.output_ae.norm_std = std
+                self.output_ae.is_fitted = True
+
         output_rmse = self.output_ae.train_step(ensemble_rmses)
-        
+
         return output_rmse
     
     def _execute(self, x: np.ndarray) -> float:

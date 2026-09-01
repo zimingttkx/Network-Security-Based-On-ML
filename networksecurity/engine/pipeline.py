@@ -54,6 +54,17 @@ class DetectionPipeline:
         self._detectors.append(detector)
         return self
 
+    def set_rule_engine(self, rule_engine: RuleEngine) -> DetectionPipeline:
+        """Replace the default rule engine (position 0 in the chain).
+
+        The pipeline constructs a default ``RuleEngine``; callers that read
+        engine tuning from config.yaml use this to swap in a configured one
+        before any packet is processed.
+        """
+        self._rule_engine = rule_engine
+        self._detectors[0] = rule_engine
+        return self
+
     @property
     def rule_engine(self) -> RuleEngine:
         return self._rule_engine

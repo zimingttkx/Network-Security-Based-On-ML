@@ -77,17 +77,22 @@ class RuleEngine(BaseDetector):
     4. None       -> pass to next detector
     """
 
-    def __init__(self) -> None:
+    def __init__(self, window_seconds: float = 1.0, max_connections: int = 1000,
+                 allowed_protocols: set[int] | None = None) -> None:
         super().__init__(name="RuleEngine")
         self._whitelist: set[str] = set()
         self._blacklist: set[str] = set()
         # Protocols allowed through.  Inline IPS: only TCP(6) and UDP(17)
         # are passed; everything else (ICMP, etc.) is blocked by default.
-        self._protocol_allow: set[int] = {6, 17}  # TCP, UDP
-        # Sliding-window rate limiter.  Default cap is generous (1000 conns/s
-        # per source IP) to avoid false-blocking busy-but-legitimate clients
-        # (API pools, monitoring agents) while still catching floods.
-        self._rate_limiter = RateLimiter(max_connections=1000)
+        # Overridable via config.yaml -> engine.rule_engine.allowed_protocols.
+        self._protocol_allow: set[int] = set(
+            allowed_protocols) if allowed_protocols else {6, 17}
+        # Sliding-window rate limiter.  The code default cap is generous
+        # (1000 conns/s per source IP) to avoid false-blocking busy-but-
+        # legitimate clients; config.yaml -> engine.rule_engine.rate_limit
+        # overrides it when present (shipped config: 100).
+        self._rate_limiter = RateLimiter(window_seconds=window_seconds,
+                                         max_connections=max_connections)
         self._rules: list[dict] = []
         self._blocked_count: int = 0
         # Guards all whitelist/blacklist mutations and reads.  Rules are
