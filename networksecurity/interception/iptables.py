@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
+from ipaddress import ip_address
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,12 @@ class IptablesManager:
                 except subprocess.CalledProcessError:
                     logger.warning("Could not add safe IP %s — skipping (likely unsupported on this system)", ip)
 
+        # Loopback never enters the pipeline.  Intercepting it caused 5s
+        # detection timeouts on DNS replies from the 127.0.0.53 stub and, in
+        # the worst case, a permanent self-DoS once the stub IP got blocked.
+        if not self._rule_exists(self.CHAIN, "-i", "lo", "-j", "ACCEPT"):
+            self._run("iptables", "-A", self.CHAIN, "-i", "lo", "-j", "ACCEPT")
+
         if not self._rule_exists(self.CHAIN, "-p", "tcp", "--dport", "22", "-j", "ACCEPT"):
             self._run("iptables", "-A", self.CHAIN, "-p", "tcp", "--dport", "22",
                       "-j", "ACCEPT")
@@ -104,11 +111,23 @@ class IptablesManager:
 
     def block_ip(self, ip: str) -> None:
         with self._lock:
+            # Loopback sources are definitionally local traffic — this host,
+            # its DNS stub resolver (127.0.0.53), or an internal service.
+            # Blocking any of them is a self-DoS (observed live: the
+            # systemd-resolved stub got a kernel DROP, silently killing host
+            # DNS), and no real remote attacker arrives from 127.0.0.0/8 or ::1.
+            try:
+                loopback = ip_address(ip).is_loopback
+            except ValueError:
+                loopback = False
+            if loopback:
+                logger.warning("block_ip(%s) refused — loopback source", ip)
+                return
             # Teardown may have already deleted the chain on another thread.
             # Inserting into a non-existent chain raises CalledProcessError,
             # which would abort before updating ``_blocked`` and desync state
             # from the real firewall.  Skip the insert when the chain is gone.
-            if not self._nfqueue_rules_added or not self._rule_exists(self.CHAIN):
+            if not self._nfqueue_rules_added or not self._chain_exists(self.CHAIN):
                 logger.warning(
                     "block_ip(%s) skipped — chain %s gone (likely during teardown)",
                     ip, self.CHAIN,
@@ -143,6 +162,25 @@ class IptablesManager:
             self.unblock_ip(ip)
 
     # --- helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _chain_exists(chain: str) -> bool:
+        """Return True if the iptables chain exists.
+
+        ``iptables -L <chain>`` succeeds (rc 0) exactly when the chain is
+        present.  Do NOT use ``-C <chain>`` for this: ``-C`` checks a *rule
+        specification*, and a bare chain name is "Bad rule" (rc 1) even when
+        the chain exists — which silently disabled every block_ip() call.
+        """
+        try:
+            result = subprocess.run(
+                ["iptables", "-L", chain],
+                capture_output=True,
+                text=True,
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            return False
 
     @staticmethod
     def _rule_exists(*args) -> bool:

@@ -46,6 +46,7 @@ class Interceptor:
         on_verdict: Callable[[PacketInfo, Verdict], None] | None = None,
     ) -> None:
         self._pipeline = pipeline
+        self._queue_num = queue_num
         self._nfqueue = NFQueueHandler(queue_num=queue_num)
         self._iptables = IptablesManager(safe_ips=safe_ips)
         self._running: bool = False
@@ -106,7 +107,11 @@ class Interceptor:
         self._loop_thread = threading.Thread(target=_run_loop, daemon=True)
         self._loop_thread.start()
 
-        self._iptables.setup_nfqueue()
+        # Same queue for the kernel redirect and the userspace listener —
+        # letting these drift (e.g. config.yaml nfqueue_num != 0) would send
+        # every packet to a queue nobody reads, where the kernel queue
+        # timeout freezes all traffic.
+        self._iptables.setup_nfqueue(self._queue_num)
         self._nfqueue.set_callback(self._on_packet)
         self._running = True
         self._pipeline.start()
@@ -267,6 +272,19 @@ class Interceptor:
                     with self._blocked_lock:
                         self._blocked.add(packet.src_ip)
                     self._iptables.block_ip(packet.src_ip)
+                    # Mirror the block into the rule engine's blacklist so
+                    # the verdict ALSO short-circuits future packets at the
+                    # rule-engine stage, and so shutdown (rules.json) and the
+                    # API (GET /alerts, /rules) see the same blocker set.
+                    # Previously these lived only in IptablesManager._blocked
+                    # and were silently dropped on every restart.
+                    try:
+                        self._pipeline.rule_engine.add_blacklist(packet.src_ip)
+                    except Exception:
+                        logger.exception(
+                            "failed to mirror block of %s into rule engine",
+                            packet.src_ip,
+                        )
             else:
                 logger.warning(
                     "skipping permanent block for %s — verdict resolved after "
