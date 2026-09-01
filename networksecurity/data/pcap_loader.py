@@ -7,10 +7,8 @@ from typing import AsyncIterator
 
 logger = logging.getLogger(__name__)
 
-# scapy is imported lazily (only when load()/_parse_ip actually run) because it
-# is a heavy optional dependency.  These module-level names are bound inside
-# load() before any packet is parsed, and _parse_ip() relies on them being in
-# the module globals — see the lazy import at the top of load().
+# scapy is imported lazily inside load()/_parse_ip() (only when they actually
+# run) because it is a heavy optional dependency.
 
 
 class PcapLoader:
@@ -55,12 +53,6 @@ class PcapLoader:
             raise ImportError(
                 "scapy is required for pcap loading. Install it with: pip install scapy"
             ) from None
-        # Bind into module globals so the staticmethod _parse_ip() (which
-        # references ``IP``) resolves correctly.  Without this, _parse_ip
-        # raises NameError on every packet and the loader yields None for all
-        # frames, making `cli.py test --pcap` process zero packets.
-        globals().update(IP=IP, TCP=TCP, UDP=UDP, Ether=Ether, Dot1Q=Dot1Q,
-                         Packet=Packet, rdpcap=rdpcap)
 
         try:
             packets = rdpcap(path)
@@ -205,8 +197,20 @@ class PcapLoader:
     # -- link-layer parsing --------------------------------------------------
 
     @staticmethod
-    def _parse_ip(pkt: Packet):
-        """Return the IP layer for a scapy packet, or None if not IPv4-parseable."""
+    def _parse_ip(pkt):
+        """Return the IP layer for a scapy packet, or None if not IPv4-parseable.
+
+        scapy is imported lazily here (matching load()'s deferred import) —
+        ruff >= 0.16 no longer accepts the previous globals().update() binding
+        trick for these names (F821), and a function-local import makes the
+        dependency explicit at the only site that needs it.
+        """
+        try:
+            from scapy.layers.inet import IP  # type: ignore
+        except ImportError:
+            raise ImportError(
+                "scapy is required for pcap loading. Install it with: pip install scapy"
+            ) from None
         try:
             ip_layer = pkt.getlayer(IP)
             return ip_layer
