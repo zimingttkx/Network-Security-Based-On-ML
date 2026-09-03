@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import json
 import logging
 import threading
@@ -186,12 +187,21 @@ class RuleEngine(BaseDetector):
             logger.exception("Failed to load rules from %s", path)
 
     def save_rules(self, path: Path) -> None:
-        """Persist blacklist/whitelist to a JSON file."""
+        """Persist blacklist/whitelist to a JSON file (atomic).
+
+        Writes go to a temp file in the same directory followed by
+        ``os.replace``: a crash mid-write used to leave a truncated
+        rules.json, and load_rules swallows parse errors — so every saved
+        block (including permanent bans escalated by the block policy)
+        would silently vanish on the next restart.
+        """
         data = {
             "blacklist": self.get_blacklist(),
             "whitelist": self.get_whitelist(),
         }
-        path.write_text(json.dumps(data, indent=2))
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(data, indent=2))
+        os.replace(tmp_path, path)
 
     def _is_whitelisted(self, ip: str) -> bool:
         with self._lock:

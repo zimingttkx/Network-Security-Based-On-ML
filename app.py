@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from networksecurity.engine import DetectionPipeline, RuleEngine
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
@@ -135,13 +135,46 @@ pipeline.rule_engine.load_rules(RULES_FILE)
 
 # --- Pydantic models -------------------------------------------------------
 
+def _validate_ip_or_cidr(value: str) -> str:
+    """Reject blacklist/whitelist entries that are not an IP or CIDR.
+
+    Without this, any string (10 MB of garbage, a CVE payload, a typo'd
+    CIDR) entered the rule sets: garbage bloats rules.json (written on
+    every POST), a malformed CIDR silently matches nothing (rule LOOKS
+    active but blocks no traffic — the worst failure mode for a rule).
+    """
+    value = value.strip()
+    import ipaddress as _ipa
+    try:
+        _ipa.ip_address(value)
+        return value
+    except ValueError:
+        pass
+    try:
+        _ipa.ip_network(value, strict=False)
+        return value
+    except ValueError:
+        pass
+    raise ValueError(f"{value!r} is not a valid IP address or CIDR network")
+
+
 class BlacklistEntry(BaseModel):
     ip: str
     reason: str = "manual"
 
+    @field_validator("ip")
+    @classmethod
+    def _ip_ok(cls, v: str) -> str:
+        return _validate_ip_or_cidr(v)
+
 
 class WhitelistEntry(BaseModel):
     ip: str
+
+    @field_validator("ip")
+    @classmethod
+    def _ip_ok(cls, v: str) -> str:
+        return _validate_ip_or_cidr(v)
 
 
 # --- Page routes -----------------------------------------------------------
