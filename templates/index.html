@@ -54,6 +54,10 @@
       <div class="label">Kitsune</div>
       <div class="value" id="kitsune-ready">--</div>
     </div>
+    <div class="stat-card">
+      <div class="label">Detection Loop</div>
+      <div class="value" id="detect-stale">--</div>
+    </div>
   </div>
 
   <p class="refresh">Auto-refresh every 5s | API docs: <a href="/docs">/docs</a></p>
@@ -82,6 +86,21 @@ async function refresh() {
     const st = document.getElementById('status-text');
     dot.className = 'indicator ' + (status.running ? 'on' : 'off');
     st.textContent = status.running ? 'Running' : 'Stopped';
+
+    // Detection-loop health: null = interception never started; large
+    // staleness while interception is active means the loop is hung and
+    // traffic is being fail-closed dropped.
+    const staleEl = document.getElementById('detect-stale');
+    const stale = status.detection_loop_stale_seconds;
+    if (stale === null || stale === undefined) {
+      staleEl.textContent = 'n/a';
+    } else if (stale > 10) {
+      staleEl.textContent = Math.floor(stale) + 's STALE';
+      staleEl.style.color = '#f85149';
+    } else {
+      staleEl.textContent = Math.floor(stale) + 's ago';
+      staleEl.style.color = '';
+    }
 
     const tbody = document.getElementById('alerts-body');
     tbody.replaceChildren(...(alerts.items || []).map(a => {

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -66,6 +67,12 @@ class Interceptor:
         self._loop_thread: threading.Thread | None = None
         self._detect_timeout: float = 5.0
         self._expiry_task: asyncio.Task | None = None
+        # Health telemetry: monotonic timestamp of the last completed
+        # detection.  Stays None until the first packet is handled; the API
+        # surfaces it as detection_loop_stale_seconds so a hung detection
+        # loop (which fail-closes ALL traffic) is visible on the dashboard
+        # instead of presenting as a silent network outage.
+        self._last_detect_mono: float | None = None
 
     # -- public -------------------------------------------------------------
 
@@ -253,11 +260,16 @@ class Interceptor:
     def status(self) -> dict:
         with self._blocked_lock:
             blocked = sorted(self._blocked)
+        stale = (
+            None if self._last_detect_mono is None
+            else time.monotonic() - self._last_detect_mono
+        )
         return {
             "running": self._running,
             "blocked_ips": blocked,
             "nfqueue_packets": self._nfqueue.packet_count,
             "nfqueue_dropped": self._nfqueue.dropped_count,
+            "detection_loop_stale_seconds": stale,
             "pipeline": self._pipeline.status(),
         }
 
@@ -305,6 +317,7 @@ class Interceptor:
             return True
 
     async def _handle(self, packet: PacketInfo, state: dict) -> bool:
+        self._last_detect_mono = time.monotonic()
         verdict = await self._pipeline.process_packet(packet)
 
         if self._on_verdict is not None:

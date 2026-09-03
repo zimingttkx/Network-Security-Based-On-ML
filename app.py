@@ -210,6 +210,15 @@ async def engine_status():
         if _interceptor is not None and hasattr(_interceptor, "blocked_ips")
         else []
     )
+    # Detection-loop health: seconds since the last packet completed
+    # detection.  A hung loop fail-closes ALL traffic (fail-closed by
+    # design), so surfacing staleness turns a silent network outage into a
+    # visible dashboard alert.  None = interception never started.
+    detect_stale = (
+        _interceptor.status()["detection_loop_stale_seconds"]
+        if _interceptor is not None and hasattr(_interceptor, "status")
+        else None
+    )
     status = {
         "running": interceptor_running or pipeline.running,
         "interception_active": interceptor_running,
@@ -226,6 +235,7 @@ async def engine_status():
         "total_blocked": pipeline.total_blocked,
         "blocked_ips": pipeline.rule_engine.get_blacklist(),
         "kernel_blocked_ips": kernel_blocked,
+        "detection_loop_stale_seconds": detect_stale,
     }
     return status
 
