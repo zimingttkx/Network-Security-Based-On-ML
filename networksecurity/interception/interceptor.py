@@ -197,6 +197,24 @@ class Interceptor:
         self._loop_thread = None
         self._iptables.cleanup_all()
 
+    def unblock_ip(self, ip: str) -> bool:
+        """Remove a permanent kernel-level block for ``ip``.
+
+        Returns True if a block was actually removed, False if the IP was
+        not in the blocked set.  Called from the API layer when an operator
+        removes a blacklist entry so the iptables DROP rule and the rule
+        engine's blacklist stay in sync.  (The forward direction — BLOCK
+        verdict -> blacklist — is handled in _handle(); without this reverse
+        direction an API unblock leaves the kernel DROP in place and the IP
+        stays banned with no recovery short of manual firewall surgery.)
+        """
+        with self._blocked_lock:
+            if ip not in self._blocked:
+                return False
+            self._blocked.discard(ip)
+        self._iptables.unblock_ip(ip)
+        return True
+
     def status(self) -> dict:
         with self._blocked_lock:
             blocked = sorted(self._blocked)
