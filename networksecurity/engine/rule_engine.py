@@ -6,7 +6,7 @@ import ipaddress
 import json
 import logging
 import threading
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from pathlib import Path
 
 from networksecurity.engine.detector import BaseDetector, PacketInfo
@@ -16,9 +16,13 @@ from networksecurity.engine.verdict import Action, ThreatLevel, Verdict
 class RateLimiter:
     """Sliding-window per-IP connection rate tracker.
 
-    Buckets are evicted once they fall fully outside the window and the
-    tracked-IP set grows past ``max_buckets`` (oldest entry evicted first),
-    so memory stays bounded under long-running live interception.
+    ``_buckets`` is an OrderedDict used as an LRU: every touch refreshes the
+    key's position, and once the tracked-IP set grows past ``max_buckets``
+    the least-recently-seen bucket is evicted with ``popitem(last=False)``
+    (O(1)).  Eviction is deliberately heuristic — a bucket not touched
+    within the window is dead anyway, so scanning the whole table to find
+    "expired" buckets first (the previous O(n)-per-packet behavior, trivially
+    weaponizable with 100k+ spoofed sources) buys nothing over plain LRU.
     """
 
     def __init__(self, window_seconds: float = 1.0, max_connections: int = 100,
@@ -26,7 +30,7 @@ class RateLimiter:
         self._window = window_seconds
         self._max_conn = max_connections
         self._max_buckets = max(1, max_buckets)
-        self._buckets: dict[str, list[float]] = {}
+        self._buckets: "OrderedDict[str, list[float]]" = OrderedDict()
 
     def check(self, ip: str, timestamp: float) -> bool:
         """Return True if IP is within rate limit (under the connection cap).
@@ -44,20 +48,14 @@ class RateLimiter:
         if bucket is None:
             bucket = []
             self._buckets[ip] = bucket
+        else:
+            self._buckets.move_to_end(ip)  # LRU refresh
         # Drop entries that fell outside the sliding window.
         bucket[:] = [t for t in bucket if t > cutoff]
         bucket.append(timestamp)
-        # Evict fully-expired buckets (oldest tracked key dropped first) and
-        # cap total size so memory stays bounded under long-running live
-        # interception.
-        if len(self._buckets) > self._max_buckets:
-            expired = [k for k, v in self._buckets.items()
-                       if not any(t > cutoff for t in v)]
-            for k in expired[:len(self._buckets) - self._max_buckets]:
-                self._buckets.pop(k, None)
-            # If still over cap (all active), drop the oldest tracked key.
-            while len(self._buckets) > self._max_buckets:
-                self._buckets.pop(next(iter(self._buckets)), None)
+        # Cap total size: O(1) eviction of the least-recently-seen bucket.
+        while len(self._buckets) > self._max_buckets:
+            self._buckets.popitem(last=False)
         return len(bucket) <= self._max_conn
 
     def reset(self, ip: str = "") -> None:
