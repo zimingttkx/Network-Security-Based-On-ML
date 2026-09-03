@@ -9,8 +9,11 @@ pyyaml>=6.0
 scikit-learn>=1.3.0
 xgboost>=2.0.0
 
-# Deep Learning (optional — for LUCID CNN DDoS detection)
-tensorflow>=2.17.0
+# Deep Learning — OPTIONAL, for the LUCID CNN DDoS detector.  Not installed
+# by default: the LUCID adapter stays inactive without a trained model, and
+# TF is by far the heaviest dependency in the image.  Install with:
+#   pip install nips[lucid]   (or: pip install tensorflow)
+# The code lazy-imports TF (lucid/cnn.py) and degrades gracefully without it.
 
 # Web API
 fastapi>=0.104.0

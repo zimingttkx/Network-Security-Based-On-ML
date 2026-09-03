@@ -17,5 +17,10 @@ setup(
     author_email="2147514473@qq.com",
     packages=find_packages(),
     install_requires=requirements,
+    extras_require={
+        # LUCID CNN DDoS detector; without it the adapter stays inactive
+        # (lazy import in networksecurity/engine/lucid/cnn.py).
+        "lucid": ["tensorflow>=2.17.0"],
+    },
     python_requires=">=3.12",
 )
