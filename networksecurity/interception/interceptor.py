@@ -15,12 +15,19 @@ import asyncio
 import logging
 import threading
 from collections.abc import Callable
+from pathlib import Path
 
+from networksecurity.engine.block_policy import BlockPolicy
 from networksecurity.engine.detector import PacketInfo
 from networksecurity.engine.pipeline import DetectionPipeline
 from networksecurity.engine.verdict import Action, Verdict
 from networksecurity.interception.iptables import IptablesManager
 from networksecurity.interception.nfqueue_handler import NFQueueHandler
+
+# Persistence for PERMANENT bans escalated by the block policy.  Temp bans
+# are intentionally NOT persisted (reversible by design); the API layer
+# saves the same file when operators edit rules manually.
+RULES_FILE = Path(__file__).resolve().parent.parent.parent / "rules.json"
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +51,13 @@ class Interceptor:
         queue_num: int = 0,
         safe_ips: list[str] | None = None,
         on_verdict: Callable[[PacketInfo, Verdict], None] | None = None,
+        block_policy: BlockPolicy | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._queue_num = queue_num
         self._nfqueue = NFQueueHandler(queue_num=queue_num)
         self._iptables = IptablesManager(safe_ips=safe_ips)
+        self._block_policy = block_policy or BlockPolicy()
         self._running: bool = False
         self._blocked: set[str] = set()
         self._blocked_lock: threading.Lock = threading.Lock()
@@ -56,6 +65,7 @@ class Interceptor:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._detect_timeout: float = 5.0
+        self._expiry_task: asyncio.Task | None = None
 
     # -- public -------------------------------------------------------------
 
@@ -115,7 +125,27 @@ class Interceptor:
         self._nfqueue.set_callback(self._on_packet)
         self._running = True
         self._pipeline.start()
+        # Expired temp bans must be lifted even if the source stops sending
+        # (nobody left to trigger lazy cleanup), so run the sweeper on the
+        # detection loop — the same thread that processes verdicts.
+        self._expiry_task = self._loop.create_task(self._temp_ban_sweeper())
         logger.info("Interceptor set up — NFQUEUE + iptables active")
+
+    async def _temp_ban_sweeper(self) -> None:
+        """Periodically lift expired temp bans from every enforcement layer."""
+        while True:
+            await asyncio.sleep(30.0)
+            try:
+                lifted = self._block_policy.expire_temp_bans()
+            except Exception:
+                logger.exception("temp-ban sweeper failed")
+                continue
+            for ip in lifted:
+                with self._blocked_lock:
+                    self._blocked.discard(ip)
+                self._iptables.unblock_ip(ip)
+                self._pipeline.rule_engine.remove_blacklist(ip)
+                logger.info("temp ban expired for %s — unblocked", ip)
 
     def begin_capture(self) -> None:
         """Start draining the NFQUEUE (blocks until stopped or SIGINT)."""
@@ -189,6 +219,9 @@ class Interceptor:
         errors.
         """
         self._running = False
+        if self._expiry_task is not None:
+            self._expiry_task.cancel()
+            self._expiry_task = None
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._loop_thread is not None:
@@ -202,15 +235,17 @@ class Interceptor:
 
         Returns True if a block was actually removed, False if the IP was
         not in the blocked set.  Called from the API layer when an operator
-        removes a blacklist entry so the iptables DROP rule and the rule
-        engine's blacklist stay in sync.  (The forward direction — BLOCK
-        verdict -> blacklist — is handled in _handle(); without this reverse
-        direction an API unblock leaves the kernel DROP in place and the IP
-        stays banned with no recovery short of manual firewall surgery.)
+        removes a blacklist entry so the iptables DROP rule, the rule
+        engine's blacklist, and the escalation policy's record all stay in
+        sync.  (The forward direction — BLOCK verdict -> escalation — is
+        handled in _handle(); without this reverse direction an API unblock
+        leaves the kernel DROP in place and the IP stays banned with no
+        recovery short of manual firewall surgery.)
         """
+        dropped_record = self._block_policy.unblock(ip)
         with self._blocked_lock:
             if ip not in self._blocked:
-                return False
+                return dropped_record
             self._blocked.discard(ip)
         self._iptables.unblock_ip(ip)
         return True
@@ -279,29 +314,48 @@ class Interceptor:
                 logger.exception("on_verdict callback failed")
 
         if verdict.action == Action.BLOCK:
-            # Permanent block: add iptables rule so future packets
-            # from this IP never reach nfqueue.  Skip if the inline
-            # decision already timed out — we must not commit a block on
-            # an unresolved verdict (could ban a legitimate IP).
+            # Escalation policy decides whether this verdict crosses the
+            # strike threshold.  A single BLOCK only counts a strike; the
+            # iptables DROP + blacklist mirror happen once, on escalation.
+            # Skip entirely if the inline decision timed out — we must not
+            # count evidence on an unresolved verdict.
             if not state.get("timed_out"):
-                with self._blocked_lock:
-                    already = packet.src_ip in self._blocked
-                if not already:
-                    with self._blocked_lock:
-                        self._blocked.add(packet.src_ip)
-                    self._iptables.block_ip(packet.src_ip)
-                    # Mirror the block into the rule engine's blacklist so
-                    # the verdict ALSO short-circuits future packets at the
-                    # rule-engine stage, and so shutdown (rules.json) and the
-                    # API (GET /alerts, /rules) see the same blocker set.
-                    # Previously these lived only in IptablesManager._blocked
-                    # and were silently dropped on every restart.
-                    try:
-                        self._pipeline.rule_engine.add_blacklist(packet.src_ip)
-                    except Exception:
-                        logger.exception(
-                            "failed to mirror block of %s into rule engine",
-                            packet.src_ip,
+                should_enforce, rec = self._block_policy.record_block(packet.src_ip)
+                if should_enforce:
+                    if rec.state == "perm_banned":
+                        with self._blocked_lock:
+                            self._blocked.add(packet.src_ip)
+                        self._iptables.block_ip(packet.src_ip)
+                        try:
+                            self._pipeline.rule_engine.add_blacklist(packet.src_ip)
+                            self._pipeline.rule_engine.save_rules(RULES_FILE_DEFAULT)
+                        except Exception:
+                            logger.exception(
+                                "failed to enforce perm ban of %s", packet.src_ip,
+                            )
+                        logger.warning(
+                            "PERM BAN %s after %d temp bans", packet.src_ip,
+                            rec.temp_ban_count,
+                        )
+                    else:  # temp_banned
+                        with self._blocked_lock:
+                            self._blocked.add(packet.src_ip)
+                        self._iptables.block_ip(packet.src_ip)
+                        # Mirror into the rule engine's *in-memory* blacklist
+                        # only: temp bans are reversible, so they must NOT
+                        # survive in rules.json — the expiry sweeper lifts
+                        # them from both layers together.
+                        try:
+                            self._pipeline.rule_engine.add_blacklist(packet.src_ip)
+                        except Exception:
+                            logger.exception(
+                                "failed to mirror temp ban of %s into rule engine",
+                                packet.src_ip,
+                            )
+                        logger.warning(
+                            "TEMP BAN %s for %ss (strikes=%d, ban #%d)",
+                            packet.src_ip, self._block_policy.temp_ban_seconds,
+                            rec.strikes, rec.temp_ban_count,
                         )
             else:
                 logger.warning(

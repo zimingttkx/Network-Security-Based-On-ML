@@ -106,3 +106,32 @@ def load_engine_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
             _DEFAULT_ENGINE["rule_engine"]["allowed_protocols"]),
     }
     return {"kitsune": kitsune, "rule_engine": rule_engine}
+
+
+# Defaults mirror config/config.yaml's ``blocking:`` block.
+_DEFAULT_BLOCKING = {
+    "strikes_threshold": 5,
+    "strikes_window": 300.0,
+    "temp_ban_seconds": 600.0,
+    "temp_ban_count_to_perm": 3,
+    "table_max": 50_000,
+}
+
+
+def load_blocking_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
+    """Return the ``blocking`` block of config.yaml (escalation policy knobs).
+
+    Same degradation policy as the other loaders: missing/malformed file
+    falls back to the shipped defaults.
+    """
+    path = Path(path)
+    data: dict = {}
+    if path.exists():
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except Exception:
+            data = {}
+    blocking = data.get("blocking") or {}
+    return {key: blocking.get(key, default)
+            for key, default in _DEFAULT_BLOCKING.items()}

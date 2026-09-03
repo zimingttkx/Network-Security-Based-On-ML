@@ -27,6 +27,18 @@ interception:
     - "127.0.0.1"
     - "::1"
 
+# BLOCK-verdict escalation policy.  A single ML BLOCK no longer installs a
+# permanent kernel DROP: strikes accumulate per source IP inside a rolling
+# window; crossing the threshold triggers a temp ban (kernel DROP + rule-
+# engine blacklist with a TTL, auto-lifted); repeated ban/recur cycles
+# escalate to permanent (persisted blacklist).
+blocking:
+  strikes_threshold: 5          # BLOCKs inside strikes_window before a temp ban
+  strikes_window: 300.0         # seconds; the strike counter restarts after it
+  temp_ban_seconds: 600.0       # temp-ban TTL
+  temp_ban_count_to_perm: 3     # completed temp bans before permanent escalation
+  table_max: 50000              # LRU cap on tracked escalation records
+
 api:
   host: "0.0.0.0"
   port: 8000

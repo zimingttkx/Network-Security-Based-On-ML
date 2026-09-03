@@ -198,6 +198,19 @@ async def get_rules():
     }
 
 
+@app.get("/api/v1/blocks")
+async def get_blocks():
+    """Escalation-policy view: who is observing / temp-banned / perm-banned.
+
+    Complements /rules (the persisted operator blacklist) with the live
+    strike counters and temp-ban TTLs so an operator can see WHY an IP is
+    blocked and when a temp ban lifts.
+    """
+    if _interceptor is None or not hasattr(_interceptor, "_block_policy"):
+        return {"items": []}
+    return {"items": _interceptor._block_policy.snapshot()}
+
+
 @app.post("/api/v1/rules/blacklist")
 async def add_blacklist(entry: BlacklistEntry):
     pipeline.rule_engine.add_blacklist(entry.ip)
@@ -276,8 +289,18 @@ async def engine_start():
 
     # Load interception config so safe_ips / queue num from config.yaml are
     # actually applied (previously ignored; config.yaml was dead).
-    from networksecurity.utils.config import load_interception_config
+    from networksecurity.utils.config import load_interception_config, load_blocking_config
     inter_cfg = load_interception_config()
+    blocking_cfg = load_blocking_config()
+
+    from networksecurity.engine.block_policy import BlockPolicy
+    policy = BlockPolicy(
+        strikes_threshold=blocking_cfg["strikes_threshold"],
+        strikes_window=blocking_cfg["strikes_window"],
+        temp_ban_seconds=blocking_cfg["temp_ban_seconds"],
+        temp_ban_count_to_perm=blocking_cfg["temp_ban_count_to_perm"],
+        table_max=blocking_cfg["table_max"],
+    )
 
     started = threading.Event()
 
@@ -288,6 +311,7 @@ async def engine_start():
         on_verdict=lambda pkt, v: _record_alert(
             pkt.src_ip, v.reason, v.action.value, v.detector
         ),
+        block_policy=policy,
     )
 
     # Reuse the Interceptor's own setup so the detection event loop is

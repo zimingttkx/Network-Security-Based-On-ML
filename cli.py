@@ -78,13 +78,25 @@ def cmd_start(args) -> None:
         sys.exit(1)
 
     from networksecurity.interception import Interceptor
-    from networksecurity.utils.config import load_interception_config
+    from networksecurity.utils.config import load_interception_config, load_blocking_config
 
     inter_cfg = load_interception_config()
+    blocking_cfg = load_blocking_config()
+
+    from networksecurity.engine.block_policy import BlockPolicy
+    policy = BlockPolicy(
+        strikes_threshold=blocking_cfg["strikes_threshold"],
+        strikes_window=blocking_cfg["strikes_window"],
+        temp_ban_seconds=blocking_cfg["temp_ban_seconds"],
+        temp_ban_count_to_perm=blocking_cfg["temp_ban_count_to_perm"],
+        table_max=blocking_cfg["table_max"],
+    )
+
     interceptor = Interceptor(
         pipeline,
         queue_num=inter_cfg.get("nfqueue_num", 0),
         safe_ips=inter_cfg.get("safe_ips"),
+        block_policy=policy,
     )
 
     def _shutdown(signum, frame):
