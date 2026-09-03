@@ -219,6 +219,10 @@ jobs:
           print('Persistence test OK')
           "
 
+      - name: Regression — post-training FPR guard (wall-clock incident)
+        run: |
+          python scripts/verify_fpr_regression.py
+
   # ── 攻击仿真冒烟测试 ─────────────────────────────────────────────────
   smoke-attack:
     runs-on: ubuntu-latest
