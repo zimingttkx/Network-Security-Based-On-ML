@@ -91,14 +91,16 @@ report("out-of-order ts: no negative duration/rate", bool(bad_dur) or (r is not 
 
 # 8. memory bound: 100k distinct single-packet flows, all single calls
 tr3 = FlowTracker(idle_timeout=0.0, max_duration=1.0)  # everything expires immediately
-import resource
+import resource, sys as _sys
 t = 3000.0
 for i in range(100_000):
     p = PacketInfo(src_ip=f"10.{(i//65536)%256}.{(i//256)%256}.{i%256}",
                    dst_ip="8.8.8.8", src_port=i % 65536, dst_port=53,
                    protocol=17, packet_size=60, timestamp=t)
     tr3.track(p)
-rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+ru_maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+# ru_maxrss units differ by platform: KILOBYTES on Linux, BYTES on macOS.
+rss_kb = ru_maxrss if _sys.platform == "linux" else ru_maxrss // 1024
 report("memory bounded under 100k short flows", rss_kb > 500_000,
        f"peak RSS ≈ {rss_kb//1024} MB")
 
