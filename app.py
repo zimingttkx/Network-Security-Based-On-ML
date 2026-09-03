@@ -137,6 +137,16 @@ async def engine_status():
     interceptor_running = (
         _interceptor is not None and getattr(_interceptor, "running", False)
     )
+    # Kernel-level permanent blocks (iptables DROPs installed by the
+    # interceptor on BLOCK verdicts).  Distinct view from the rule engine's
+    # blacklist before any verdict fires; after the forward-sync in
+    # _handle() the two sets converge, but this keeps the true firewall
+    # state visible for reconciliation.
+    kernel_blocked = (
+        _interceptor.blocked_ips
+        if _interceptor is not None and hasattr(_interceptor, "blocked_ips")
+        else []
+    )
     status = {
         "running": interceptor_running or pipeline.running,
         "interception_active": interceptor_running,
@@ -152,6 +162,7 @@ async def engine_status():
         "total_processed": pipeline.total_processed,
         "total_blocked": pipeline.total_blocked,
         "blocked_ips": pipeline.rule_engine.get_blacklist(),
+        "kernel_blocked_ips": kernel_blocked,
     }
     return status
 
@@ -199,7 +210,21 @@ async def add_blacklist(entry: BlacklistEntry):
 async def remove_blacklist(ip: str):
     pipeline.rule_engine.remove_blacklist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
-    return {"status": "ok", "blacklist": pipeline.rule_engine.get_blacklist()}
+    # Keep the kernel-level enforcement in sync: if the interceptor
+    # permanently blocked this IP via iptables (BLOCK verdict, mirrored into
+    # the blacklist), lift that DROP too — otherwise the IP stays kernel-
+    # banned while the rule engine reports it unblocked.
+    unblocked = False
+    if _interceptor is not None:
+        try:
+            unblocked = _interceptor.unblock_ip(ip)
+        except Exception:
+            logger.exception("Failed to lift kernel block for %s", ip)
+    return {
+        "status": "ok",
+        "kernel_block_removed": unblocked,
+        "blacklist": pipeline.rule_engine.get_blacklist(),
+    }
 
 
 @app.post("/api/v1/rules/whitelist")
