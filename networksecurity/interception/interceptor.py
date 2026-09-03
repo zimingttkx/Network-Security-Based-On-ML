@@ -341,7 +341,7 @@ class Interceptor:
                         self._iptables.block_ip(packet.src_ip)
                         try:
                             self._pipeline.rule_engine.add_blacklist(packet.src_ip)
-                            self._pipeline.rule_engine.save_rules(RULES_FILE_DEFAULT)
+                            self._pipeline.rule_engine.save_rules(RULES_FILE)
                         except Exception:
                             logger.exception(
                                 "failed to enforce perm ban of %s", packet.src_ip,
