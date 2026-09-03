@@ -493,7 +493,7 @@ async def main():
           f"= ~{total_all:,} 包")
     fast = not args.full
     print(f"  模式: {'快速 (短训练周期)' if fast else '完整 (标准训练周期)'}")
-    print(f"  检测器: RuleEngine + Kitsune (AfterImage 115维 + KitNET)")
+    print(f"  检测器: RuleEngine + Kitsune (AfterImage 100维 + KitNET)")
 
     runner = SimulationRunner(fast_mode=fast)
     await runner.run_simulation(normal_packets, attack_scale)

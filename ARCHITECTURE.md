@@ -28,7 +28,7 @@ NIPS is a **server-side Network Intrusion Prevention System** for Linux.
 │  ┌──────────┐  ┌───────────────┐  ┌──────────────┐  │
 │  │RuleEngine│→ │KitsuneDetector│→ │LucidDetector │  │
 │  │ whitelist│  │ AfterImage    │  │ CNN DDoS     │  │
-│  │ blacklist│  │ 115-dim stats │  │ flow detect  │  │
+│  │ blacklist│  │ 100-dim stats │  │ flow detect  │  │
 │  │ rate lim │  │ KitNET AE ens │  │              │  │
 │  └──────────┘  └───────────────┘  └──────────────┘  │
 │                         │                            │
@@ -40,7 +40,7 @@ NIPS is a **server-side Network Intrusion Prevention System** for Linux.
 ┌────────────────────────┴─────────────────────────────┐
 │  LAYER 2 — Feature Extraction                        │
 │  networksecurity/features/                            │
-│  AfterImage (115-dim incremental stats)              │
+│  AfterImage (100-dim incremental stats)              │
 │  FlowTracker (5-tuple → flow features)               │
 │  Constraints: features computed from packet fields.  │
 │  No fixed templates, no random vectors.              │

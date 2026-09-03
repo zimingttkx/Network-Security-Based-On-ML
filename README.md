@@ -36,7 +36,7 @@ LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pip
 
 ### Algorithms
 
-- **Kitsune (NDSS'18)** — AfterImage incremental statistics (115 features) + a KitNET autoencoder ensemble. Trains online, no labels needed.
+- **Kitsune (NDSS'18)** — AfterImage incremental statistics (100 features) + a KitNET autoencoder ensemble. Trains online, no labels needed.
 - **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model.
 
 > **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17) only. Any other protocol — including **ICMP(1)** — is blocked by default. This means legitimate ICMP (ping, PMTUD, traceroute) is also dropped unless its source is whitelisted. If you run on a network that relies on ICMP, either whitelist the relevant sources or constrain the policy before enabling live interception.
@@ -148,7 +148,7 @@ networksecurity/
     pipeline.py                # DetectionPipeline (multi-stage chain)
     rule_engine.py             # IP blacklist/whitelist, rate limiting
     kitsune/                   # Kitsune anomaly detector (NDSS'18)
-      afterimage.py            # 115-dim incremental statistics
+      afterimage.py            # 100-dim incremental statistics
       kitnet.py                # Autoencoder ensemble
       kitsune.py               # Orchestrator
       detector_adapter.py      # BaseDetector adapter

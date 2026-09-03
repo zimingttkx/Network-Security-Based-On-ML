@@ -27,7 +27,7 @@ Complete project restructure from phishing URL classification demo to a real Net
 
 - Four-layer architecture: interception → features → engine → management
 - NFQUEUE + iptables real-time traffic interception (Linux)
-- AfterImage 115-dim incremental statistics + KitNET anomaly detection (Kitsune, NDSS'18)
+- AfterImage 100-dim incremental statistics + KitNET anomaly detection (Kitsune, NDSS'18)
 - LUCID CNN-based DDoS flow detection (IEEE TNSM 2020)
 - Rule engine: IP blacklist/whitelist, protocol filter, rate limiting
 - DetectionPipeline with short-circuit semantics

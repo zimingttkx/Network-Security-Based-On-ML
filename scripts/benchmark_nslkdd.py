@@ -7,7 +7,7 @@ trains Kitsune on normal traffic, measures throughput & detection rate.
 NSL-KDD is the standard NIDS benchmark from UNSW/Canadian Institute
 for Cybersecurity.  Each record has 41 features describing a network
 flow.  We map these to per-packet PacketInfo objects so the AfterImage
-engine can extract its 115 statistical features.
+engine can extract its 100 statistical features.
 
 Note: This is a flow-to-packet adaptation.  Real per-packet accuracy
 on live pcap files may differ because AfterImage captures temporal
@@ -396,7 +396,7 @@ async def main() -> None:
     print("Notes:")
     print("  - NSL-KDD provides flow-level records; we map each to")
     print("    a sequence of per-packet PacketInfo objects.")
-    print("  - AfterImage builds 115-dim features from packet fields.")
+    print("  - AfterImage builds 100-dim features from packet fields.")
     print("  - KitNET autoencoder ensemble is trained on normal traffic")
     print("    only (unsupervised), then detects anomalies via RMSE threshold.")
     print("  - LUCID CNN excluded: requires pre-trained TensorFlow model.")

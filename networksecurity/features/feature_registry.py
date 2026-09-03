@@ -2,7 +2,7 @@
 
 FEATURE_REGISTRY: dict[str, dict] = {
     "afterimage": {
-        "dim": 115,
+        "dim": 100,
         "description": "AfterImage incremental statistics — MAC/IP/transport in 5 time windows",
         "source": "networksecurity.engine.kitsune.afterimage.AfterImage",
     },

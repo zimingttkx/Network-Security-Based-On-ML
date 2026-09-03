@@ -25,7 +25,7 @@ from networksecurity.engine.rule_engine import RuleEngine
 
 # ---------------------------------------------------------------------------
 # Packet generators — these produce realistic-looking PacketInfo objects,
-# NOT hardcoded feature vectors.  The AfterImage engine computes 115 features
+# NOT hardcoded feature vectors.  The AfterImage engine computes 100 features
 # from the packet fields.
 # ---------------------------------------------------------------------------
 

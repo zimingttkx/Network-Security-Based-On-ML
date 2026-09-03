@@ -4,7 +4,7 @@ Based on ymirsky/Kitsune-py (NDSS'18).
 
 Tracks temporal patterns across 5 exponentially-decaying time windows
 (5s, 3s, 1s, 0.1s, 0.01s) over 5 traffic channels (MAC pair, IP src,
-IP pair, socket src, socket pair), producing 115 features per packet.
+IP pair, socket src, socket pair), producing 100 features per packet.
 """
 
 import logging
@@ -152,12 +152,12 @@ class AfterImage:
     """
     AfterImage feature extractor.
 
-    Extracts 115 features per packet across five traffic channels:
-    - MAC pair (23 features)
-    - IP source (23 features)
-    - IP pair (23 features)
-    - Socket source (23 features)
-    - Socket pair (23 features)
+    Extracts 100 features per packet across five traffic channels:
+    - MAC pair (20 features)
+    - IP source (20 features)
+    - IP pair (20 features)
+    - Socket source (20 features)
+    - Socket pair (20 features)
 
     Each channel is tracked across 5 decay windows (5s, 3s, 1s, 0.1s, 0.01s).
     """
@@ -188,7 +188,7 @@ class AfterImage:
     def update_get_stats(self, src_mac: str, dst_mac: str, src_ip: str, dst_ip: str,
                          src_port: int, dst_port: int, packet_size: int,
                          timestamp: float) -> np.ndarray:
-        """Update all statistics and return the 115-dim feature vector.
+        """Update all statistics and return the 100-dim feature vector.
 
         Args:
             src_mac: Source MAC address.
@@ -201,31 +201,31 @@ class AfterImage:
             timestamp: Unix timestamp in seconds.
 
         Returns:
-            115-dimensional float32 feature vector.
+            100-dimensional float32 feature vector.
         """
         self.packet_count += 1
         features = []
 
-        # MAC pair channel (23 features)
+        # MAC pair channel (20 features)
         mac_key = f"{src_mac}->{dst_mac}"
         features.extend(self._extract_channel_features(
             self.mac_stats, mac_key, packet_size, timestamp))
 
-        # IP source channel (23 features)
+        # IP source channel (20 features)
         features.extend(self._extract_channel_features(
             self.ip_stats, src_ip, packet_size, timestamp))
 
-        # IP pair channel (23 features)
+        # IP pair channel (20 features)
         ip_pair_key = f"{src_ip}->{dst_ip}"
         features.extend(self._extract_channel_features(
             self.ip_pair_stats, ip_pair_key, packet_size, timestamp))
 
-        # Socket source channel (23 features)
+        # Socket source channel (20 features)
         socket_src_key = f"{src_ip}:{src_port}"
         features.extend(self._extract_channel_features(
             self.socket_stats, socket_src_key, packet_size, timestamp))
 
-        # Socket pair channel (23 features)
+        # Socket pair channel (20 features)
         socket_pair_key = f"{src_ip}:{src_port}->{dst_ip}:{dst_port}"
         features.extend(self._extract_channel_features(
             self.socket_pair_stats, socket_pair_key, packet_size, timestamp))
@@ -250,20 +250,27 @@ class AfterImage:
             np.max(all_weights) - np.min(all_weights) if all_weights else 0,
         ])
 
-        # Time and size features
+        # Size feature.  NOTE: earlier revisions also appended normalized
+        # wall-clock features here (timestamp % 86400/3600/60).  They are
+        # non-stationary — over any realistic training window the day/hour
+        # fractions are monotonic ramps, so detection-time values always sit
+        # outside the training range and the model flags EVERY new packet as
+        # anomalous.  Measured on a 55s training window: FPR 0.4% at t=0
+        # grows to 100% within 10 minutes of wall-clock drift and stays
+        # there for 12h (RMSE 0.44 -> 8.9 -> 328).  Temporal dynamics are
+        # already captured by the damped decay windows above; wall-clock has
+        # no place in per-packet anomaly features (the Kitsune paper's
+        # AfterImage has none either).
         features.extend([
             np.log1p(value),
-            timestamp % 86400 / 86400,   # time-of-day normalized
-            timestamp % 3600 / 3600,      # hour-of-day normalized
-            timestamp % 60 / 60,          # minute-of-hour normalized
-            1.0,                          # placeholder
+            1.0,  # placeholder (constant, contributes no variance)
         ])
 
         return features
 
     def get_feature_dim(self) -> int:
-        """Return the feature dimension (115)."""
-        return 115
+        """Return the feature dimension (100)."""
+        return 100
 
     def reset(self):
         """Reset all statistics."""

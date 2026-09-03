@@ -3,7 +3,7 @@ Network Intrusion Prevention Engine.
 
 Components:
 - RuleEngine:       IP/protocol/rate-limit fast filtering (microseconds)
-- KitsuneDetector:  AfterImage 115-dim feature extraction + KitNET anomaly detection (NDSS'18)
+- KitsuneDetector:  AfterImage 100-dim feature extraction + KitNET anomaly detection (NDSS'18)
 - LucidDetector:    1D CNN DDoS flow detection (IEEE TNSM 2020)
 - DetectionPipeline: Multi-stage chain with short-circuit on BLOCK verdict
 """

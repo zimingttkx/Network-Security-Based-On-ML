@@ -3,7 +3,7 @@ Kitsune — Online network intrusion detection via incremental statistics and au
 Reference: ymirsky/Kitsune-py (NDSS'18)
 
 Core components:
-- AfterImage: damped incremental statistics for 115-dim per-packet features
+- AfterImage: damped incremental statistics for 100-dim per-packet features
 - KitNET: autoencoder ensemble for unsupervised anomaly detection
 """
 

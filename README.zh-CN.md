@@ -36,7 +36,7 @@ LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流
 
 ### 算法
 
-- **Kitsune (NDSS'18)** — AfterImage 增量统计（115 维特征）+ KitNET 自编码器集成。在线训练，无需标签。
+- **Kitsune (NDSS'18)** — AfterImage 增量统计（100 维特征）+ KitNET 自编码器集成。在线训练，无需标签。
 - **LUCID (IEEE TNSM 2020)** — 在 10 包流窗口（每包 11 维特征）上跑的 1D CNN。默认关闭，需要训练好的模型。
 
 ---
@@ -122,7 +122,7 @@ networksecurity/
     pipeline.py                # DetectionPipeline（多阶段链）
     rule_engine.py             # IP 黑名单/白名单、限速
     kitsune/                   # Kitsune 异常检测器（NDSS'18）
-      afterimage.py            # 115 维增量统计
+      afterimage.py            # 100 维增量统计
       kitnet.py                # 自编码器集成
       kitsune.py               # 编排器
       detector_adapter.py      # BaseDetector 适配器
