@@ -43,6 +43,16 @@ api:
   host: "0.0.0.0"
   port: 8000
   title: "NIPS — Network Intrusion Prevention System"
+  # Management-API authentication.  Empty = auth DISABLED (development only;
+  # the server logs a WARNING).  Every /api/v1/* call must then carry
+  # header 'X-API-Token: <token>'.  NIPS_API_TOKEN env var overrides this.
+  auth_token: ""
+  # Browser origins allowed to call the API (CORS).  "*" was removed: the
+  # API can blacklist/whitelist arbitrary IPs, so any origin must be
+  # explicit.
+  cors_origins:
+    - "http://localhost:8000"
+    - "http://127.0.0.1:8000"
 
 logging:
   level: "INFO"                 # DEBUG, INFO, WARNING, ERROR

@@ -135,3 +135,39 @@ def load_blocking_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
     blocking = data.get("blocking") or {}
     return {key: blocking.get(key, default)
             for key, default in _DEFAULT_BLOCKING.items()}
+
+
+# API surface defaults.  auth_token "" = authentication DISABLED (local
+# development); the app logs a loud WARNING in that mode.  cors_origins
+# default only trusts the dashboard's own origin.
+_DEFAULT_API = {
+    "auth_token": "",
+    "cors_origins": ["http://localhost:8000", "http://127.0.0.1:8000"],
+}
+
+
+def load_api_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
+    """Return the ``api`` block: auth token + CORS origins.
+
+    ``NIPS_API_TOKEN`` overrides the YAML value so container deployments
+    don't need the secret inside the image/volume.  Same degradation policy
+    as the other loaders.
+    """
+    import os
+
+    path = Path(path)
+    data: dict = {}
+    if path.exists():
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except Exception:
+            data = {}
+    api = data.get("api") or {}
+    token = os.environ.get("NIPS_API_TOKEN") or api.get(
+        "auth_token", _DEFAULT_API["auth_token"])
+    return {
+        "auth_token": str(token or ""),
+        "cors_origins": api.get("cors_origins",
+                                list(_DEFAULT_API["cors_origins"])),
+    }

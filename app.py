@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,13 +27,44 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# CORS + auth come from config (api block).  "*" origins are gone: this API
+# can blacklist/whitelist arbitrary IPs and start/stop the interception
+# engine, so an open-CORS management surface was a remote-DoS primitive.
+from networksecurity.utils.config import load_api_config
+
+logger = logging.getLogger(__name__)
+
+_api_cfg = load_api_config()
+API_AUTH_TOKEN: str = _api_cfg["auth_token"]
+
+if not API_AUTH_TOKEN:
+    logger.warning(
+        "api.auth_token is EMPTY — the management API runs WITHOUT "
+        "authentication.  Anyone who can reach this port can blacklist/"
+        "whitelist arbitrary IPs and start/stop the engine.  Set "
+        "api.auth_token in config.yaml or the NIPS_API_TOKEN env var."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_api_cfg["cors_origins"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def require_token(x_api_token: str = Header(default="")) -> None:
+    """Dependency guarding every /api/v1/* route.
+
+    /health and the dashboard page stay open (liveness probes, read-only
+    HTML).  Comparison uses secrets.compare_digest: a plain == short-
+    circuits, leaking the token prefix byte-by-byte through timing.
+    """
+    if not API_AUTH_TOKEN:
+        return  # auth disabled by config (development mode)
+    if not secrets.compare_digest(x_api_token, API_AUTH_TOKEN):
+        raise HTTPException(status_code=401, detail="invalid or missing X-API-Token")
 
 try:
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -44,8 +76,6 @@ templates = Jinja2Templates(directory="templates")
 # --- Engine state -----------------------------------------------------------
 
 RULES_FILE = Path(__file__).resolve().parent / "rules.json"
-
-logger = logging.getLogger(__name__)
 
 pipeline: DetectionPipeline = DetectionPipeline()
 
@@ -132,7 +162,7 @@ async def health():
 
 # --- Status & stats --------------------------------------------------------
 
-@app.get("/api/v1/status")
+@app.get("/api/v1/status", dependencies=[Depends(require_token)])
 async def engine_status():
     interceptor_running = (
         _interceptor is not None and getattr(_interceptor, "running", False)
@@ -167,7 +197,7 @@ async def engine_status():
     return status
 
 
-@app.get("/api/v1/stats/overview")
+@app.get("/api/v1/stats/overview", dependencies=[Depends(require_token)])
 async def stats_overview():
     return {
         "total_processed": pipeline.total_processed,
@@ -179,7 +209,7 @@ async def stats_overview():
 
 # --- Alerts ----------------------------------------------------------------
 
-@app.get("/api/v1/alerts")
+@app.get("/api/v1/alerts", dependencies=[Depends(require_token)])
 async def get_alerts(limit: int = 50, offset: int = 0):
     with _alerts_lock:
         return {
@@ -190,7 +220,7 @@ async def get_alerts(limit: int = 50, offset: int = 0):
 
 # --- Rule management -------------------------------------------------------
 
-@app.get("/api/v1/rules")
+@app.get("/api/v1/rules", dependencies=[Depends(require_token)])
 async def get_rules():
     return {
         "blacklist": pipeline.rule_engine.get_blacklist(),
@@ -198,7 +228,7 @@ async def get_rules():
     }
 
 
-@app.get("/api/v1/blocks")
+@app.get("/api/v1/blocks", dependencies=[Depends(require_token)])
 async def get_blocks():
     """Escalation-policy view: who is observing / temp-banned / perm-banned.
 
@@ -211,7 +241,7 @@ async def get_blocks():
     return {"items": _interceptor._block_policy.snapshot()}
 
 
-@app.post("/api/v1/rules/blacklist")
+@app.post("/api/v1/rules/blacklist", dependencies=[Depends(require_token)])
 async def add_blacklist(entry: BlacklistEntry):
     pipeline.rule_engine.add_blacklist(entry.ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
@@ -219,7 +249,7 @@ async def add_blacklist(entry: BlacklistEntry):
     return {"status": "ok", "blacklist": pipeline.rule_engine.get_blacklist()}
 
 
-@app.delete("/api/v1/rules/blacklist/{ip}")
+@app.delete("/api/v1/rules/blacklist/{ip}", dependencies=[Depends(require_token)])
 async def remove_blacklist(ip: str):
     pipeline.rule_engine.remove_blacklist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
@@ -240,14 +270,14 @@ async def remove_blacklist(ip: str):
     }
 
 
-@app.post("/api/v1/rules/whitelist")
+@app.post("/api/v1/rules/whitelist", dependencies=[Depends(require_token)])
 async def add_whitelist(entry: WhitelistEntry):
     pipeline.rule_engine.add_whitelist(entry.ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
     return {"status": "ok", "whitelist": pipeline.rule_engine.get_whitelist()}
 
 
-@app.delete("/api/v1/rules/whitelist/{ip}")
+@app.delete("/api/v1/rules/whitelist/{ip}", dependencies=[Depends(require_token)])
 async def remove_whitelist(ip: str):
     pipeline.rule_engine.remove_whitelist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
@@ -256,7 +286,7 @@ async def remove_whitelist(ip: str):
 
 # --- Engine control --------------------------------------------------------
 
-@app.post("/api/v1/engine/start")
+@app.post("/api/v1/engine/start", dependencies=[Depends(require_token)])
 async def engine_start():
     """Start live interception (Linux, requires root)."""
     global _interceptor, _interceptor_thread
@@ -351,7 +381,7 @@ async def engine_start():
     }
 
 
-@app.post("/api/v1/engine/stop")
+@app.post("/api/v1/engine/stop", dependencies=[Depends(require_token)])
 async def engine_stop():
     """Stop live interception and clean up iptables rules."""
     global _interceptor

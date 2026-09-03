@@ -8,7 +8,10 @@ services:
     container_name: nips-api
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # Bind to loopback only: the management API can blacklist/whitelist
+      # arbitrary IPs and control the engine.  Remote access should go
+      # through an authenticated reverse proxy, not a published port.
+      - "127.0.0.1:8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
       - TF_CPP_MIN_LOG_LEVEL=2

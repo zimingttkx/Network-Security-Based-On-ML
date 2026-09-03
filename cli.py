@@ -113,10 +113,28 @@ def cmd_start(args) -> None:
     interceptor.start()
 
 
+
+# --- API helper -------------------------------------------------------------
+# The management API may require an X-API-Token (config api.auth_token or the
+# NIPS_API_TOKEN env var).  CLI commands go through _api_request so they pick
+# the token up automatically instead of failing with a bare 401.
+
+API_BASE = "http://127.0.0.1:8000"
+
+
+def _api_request(path: str) -> bytes:
+    from networksecurity.utils.config import load_api_config
+    token = load_api_config()["auth_token"]
+    req = urllib.request.Request(f"{API_BASE}{path}")
+    if token:
+        req.add_header("X-API-Token", token)
+    return urllib.request.urlopen(req).read()
+
+
 def cmd_stop(args) -> None:
     """Stop a running interceptor via the API."""
     try:
-        urllib.request.urlopen("http://127.0.0.1:8000/api/v1/engine/stop")
+        _api_request("/api/v1/engine/stop")
         print("Stop signal sent.")
     except Exception as e:  # noqa: BLE001
         print(f"Could not reach API: {e}")
@@ -125,9 +143,7 @@ def cmd_stop(args) -> None:
 def cmd_status(args) -> None:
     """Print pipeline and (if available) interceptor status."""
     try:
-        resp = json.loads(
-            urllib.request.urlopen("http://127.0.0.1:8000/api/v1/status").read()
-        )
+        resp = json.loads(_api_request("/api/v1/status"))
         print("=== NIPS Status ===")
         for k, v in resp.items():
             print(f"  {k}: {v}")
@@ -171,11 +187,7 @@ def cmd_rules(args) -> None:
 def cmd_alerts(args) -> None:
     limit = args.last or 20
     try:
-        resp = json.loads(
-            urllib.request.urlopen(
-                f"http://127.0.0.1:8000/api/v1/alerts?limit={limit}"
-            ).read()
-        )
+        resp = json.loads(_api_request(f"/api/v1/alerts?limit={limit}"))
         for a in resp.get("items", []):
             print(f"{a['timestamp']}  {a['source_ip']}  [{a['detector']}]  {a['reason']}")
     except Exception:  # noqa: BLE001
