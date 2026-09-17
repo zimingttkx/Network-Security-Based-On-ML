@@ -7,7 +7,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.104+-green.svg" alt="FastAPI">
-  <img src="https://img.shields.io/badge/TensorFlow-2.17+-orange.svg" alt="TensorFlow">
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
 </p>
 
@@ -32,7 +31,7 @@
 
 规则引擎确定性地处理已知恶意流量（黑名单、白名单、限速、协议白名单）。通过的数据包交给 Kitsune——一个无监督的包级异常检测器，先在正常流量上训练，再用重建误差（RMSE）偏离程度来标记异常。
 
-LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流水线，需要训练好的 TensorFlow 模型并显式启用。见 `networksecurity/engine/lucid/`。
+LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流水线，需要 TensorFlow（`pip install nips[lucid]` 或 `pip install tensorflow`）和训练好的模型，并显式启用。见 `networksecurity/engine/lucid/`。
 
 ### 算法
 
@@ -62,6 +61,10 @@ cd Network-Security-Based-On-ML
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+# 可选：LUCID CNN 检测器需要 TensorFlow，默认安装不包含它
+#（未安装时 LUCID 适配器保持未激活状态）。
+pip install tensorflow    # 或：pip install nips[lucid]
 ```
 
 ### 3. 运行 API
@@ -92,10 +95,11 @@ python cli.py test --pcap sample.pcap  # 离线检测测试
 | 方法 | 端点 | 描述 |
 | ------ | -------- | ----------- |
 | `GET` | `/health` | 健康检查 |
-| `GET` | `/api/v1/status` | 引擎状态、检测器、已封禁 IP |
+| `GET` | `/api/v1/status` | 引擎状态、检测器、已封禁 IP（含内核级封禁）、检测循环健康度 |
 | `GET` | `/api/v1/stats/overview` | 流量与阻断统计 |
 | `GET` | `/api/v1/alerts` | 最近告警日志（分页） |
 | `GET` | `/api/v1/rules` | 当前黑名单和白名单 |
+| `GET` | `/api/v1/blocks` | 封禁升级状态（观察中 / 临时封禁 / 永久封禁） |
 | `POST` | `/api/v1/rules/blacklist` | 将 IP 加入黑名单 |
 | `DELETE` | `/api/v1/rules/blacklist/{ip}` | 从黑名单移除 IP |
 | `POST` | `/api/v1/rules/whitelist` | 将 IP/CIDR 加入白名单 |
@@ -104,6 +108,8 @@ python cli.py test --pcap sample.pcap  # 离线检测测试
 | `POST` | `/api/v1/engine/stop` | 停止拦截并清理 iptables 规则 |
 
 完整的交互式文档见 `/docs`。
+
+**认证：**在 `config.yaml` 中设置 `api.auth_token`（或环境变量 `NIPS_API_TOKEN`）后，所有 `/api/v1/*` 调用都必须携带请求头 `X-API-Token: <token>`。留空表示关闭认证（仅限开发环境，服务启动时会打 WARNING）。`/health` 与状态页保持开放；状态页自身的 `/api/v1/*` 请求同样遵守该 token 规则。
 
 ---
 
@@ -121,6 +127,7 @@ networksecurity/
     verdict.py                 # Verdict、Action、ThreatLevel 类型
     pipeline.py                # DetectionPipeline（多阶段链）
     rule_engine.py             # IP 黑名单/白名单、限速
+    block_policy.py            # BLOCK 判决升级：strike 累计 → 临时封禁 → 永久封禁
     kitsune/                   # Kitsune 异常检测器（NDSS'18）
       afterimage.py            # 100 维增量统计
       kitnet.py                # 自编码器集成
@@ -140,12 +147,17 @@ networksecurity/
     flow_extractor.py          # 逐流统计特征
     feature_registry.py        # 特征集注册表
   data/                        # 数据加载
-    dataset_loader.py          # NSL-KDD、CICIDS2017、UNSW-NB15
+    dataset_loader.py          # NSL-KDD、CICIDS2017、UNSW-NB15（CSV / Parquet）
     pcap_loader.py             # PCAP 文件读取器
-scripts/                       # 基准测试与评估
+  utils/                       # 共享工具
+    config.py                  # config.yaml 读取（engine / api / blocking 块）
+scripts/                       # 基准测试、评估与回归检查
   benchmark.py                 # 吞吐量 + 规则引擎准确率
   benchmark_nslkdd.py          # NSL-KDD 检测基准
   attack_simulation.py         # 大规模攻击模拟
+  build_unsw_pcap.py           # 用内置 UNSW-NB15 流记录重建真实流量 pcap
+  evaluate_pcap.py             # 端到端 pcap 评估（按攻击类别报告）
+  verify_*.py                  # 模块回归检查，含 CI 的 FPR 守卫
 ```
 
 ---
@@ -175,10 +187,10 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 - 写入 iptables 规则，把流量重定向到 NFQUEUE
 - 回环流量完全不进检测流水线——`lo` 接口到达的包在 NFQUEUE 规则之前就被 ACCEPT；回环源地址（`127.0.0.0/8`、`::1`）永远不会被永久封禁（本机流量不可能是攻击者；封掉 DNS stub `127.0.0.53` 会静默瘫痪本机域名解析）
 - 不动 SSH（22 端口）
-- 每一次 ML/规则引擎的 BLOCK 判决都会同步写入规则引擎黑名单，封禁因此能跨重启保留（`rules.json`），下次启动时自动重新应用到内核
+- 通过升级策略（`config.yaml` 的 `blocking:`）执行 BLOCK 判决：单次 BLOCK 只内联丢弃当前包，并给源 IP 计一次 strike。滚动窗口内累计达到 `strikes_threshold` 触发**临时封禁**——内核 DROP 加规则引擎黑名单条目（带 TTL，到期自动解除）；反复触发临时封禁会升级为**永久封禁**，写入 `rules.json` 并在下次启动时重新应用到内核
 - 关闭时清除自己添加的所有 iptables 规则
 
-`Interceptor` 从 `config.yaml` 读取 `safe_ips` 和 `nfqueue_num`；配置文件缺失时这些配置会被静默忽略——请保留并提交 `config.yaml`。
+`Interceptor` 从 `config.yaml` 读取 `safe_ips` 和 `nfqueue_num`；配置文件缺失或无法解析时回退到安全默认值（包含回环防护），不会在无保护状态下启动。
 
 检测超时只会内联丢弃当前这个包（fail-closed），绝不提交永久封禁，因此检测慢不会误封合法 IP。
 
@@ -186,7 +198,7 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 
 ## 训练数据集准备
 
-`DatasetLoader`（`networksecurity/data/dataset_loader.py`）把 NSL-KDD、CICIDS2017、UNSW-NB15 作为**带标签的 CSV**加载，用于 LUCID/Kitsune 的监督训练。它要求每个文件**已经是带有标准列名的 CSV**（含表头）——它**不会**自动识别或转换表头，也不处理原始的、无表头的 NSL-KDD `.txt` 发行版。在调用 `DatasetLoader` 之前，由用户自己负责把文件整理好。
+`DatasetLoader`（`networksecurity/data/dataset_loader.py`）把 NSL-KDD、CICIDS2017、UNSW-NB15 作为**带标签的 CSV 或 Parquet**加载，用于 LUCID/Kitsune 的监督训练。它要求每个文件**已经是带有标准列名的 CSV**（含表头；`.parquet` 后缀的文件按 Parquet 读取）——它**不会**自动识别或转换表头，也不处理原始的、无表头的 NSL-KDD `.txt` 发行版。在调用 `DatasetLoader` 之前，由用户自己负责把文件整理好。
 
 各数据集要求的格式：
 

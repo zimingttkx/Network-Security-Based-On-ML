@@ -20,10 +20,10 @@ All function signatures in `engine/`, `interception/`, and `features/` must have
 
 ```python
 # Required
-async def process_packet(self, packet: PacketInfo) -> Optional[Verdict]:
+async def process_packet(self, packet: PacketInfo) -> Verdict | None:
 
 # Required
-def from_raw(data: bytes, timestamp: float = 0.0) -> Optional[PacketInfo]:
+def from_raw(data: bytes, timestamp: float = 0.0) -> PacketInfo | None:
 
 # Acceptable for internal helpers
 def _is_whitelisted(self, ip: str) -> bool:
@@ -37,7 +37,6 @@ Organize in three blocks, separated by blank lines:
 # 1. Standard library
 from __future__ import annotations
 import logging
-from typing import Optional
 
 # 2. Third-party
 import numpy as np

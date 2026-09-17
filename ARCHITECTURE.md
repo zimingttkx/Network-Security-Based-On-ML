@@ -73,7 +73,9 @@ NIC → iptables NFQUEUE target → nfqueue kernel queue
          → Verdict {action, confidence, reason}
      → if BLOCK:
          nf_packet.drop()            ← inline kernel drop (this packet never reaches app)
-         iptables -I NIPS -s IP -j DROP  ← permanent block (subsequent packets dropped in kernel)
+         BlockPolicy.record_block()  ← strike counting; a single BLOCK installs NO kernel rule
+             → temp_banned: iptables DROP + in-memory blacklist entry (TTL, auto-lifted)
+             → perm_banned: iptables DROP + persisted blacklist entry (rules.json)
      → if ALLOW:
          nf_packet.accept()          ← packet delivered to application
 ```
@@ -89,6 +91,7 @@ networksecurity/
     verdict.py      # Action, ThreatLevel, Verdict types
     rule_engine.py  # IP whitelist/blacklist, rate limiting
     pipeline.py     # DetectionPipeline chain with short-circuit
+    block_policy.py # BLOCK escalation policy: strikes → temp ban → permanent ban
     kitsune/        # AfterImage + KitNET anomaly detection (NDSS'18)
     lucid/          # CNN DDoS flow detection (IEEE TNSM 2020)
 
@@ -103,8 +106,11 @@ networksecurity/
     feature_registry.py # Feature set names, dimensions, descriptions
 
   data/             # Offline data loading (dev/testing only)
-    dataset_loader.py   # NSL-KDD, CICIDS2017, UNSW-NB15 labeled CSV loader (header required)
+    dataset_loader.py   # NSL-KDD, CICIDS2017, UNSW-NB15 labeled CSV/Parquet loader (header required)
     pcap_loader.py      # scapy pcap reader
+
+  utils/            # Shared configuration loading
+    config.py       # config.yaml readers (engine / api / blocking blocks)
 ```
 
 ### Dependency Rules
@@ -116,6 +122,7 @@ engine/       ──imports──→ interception/  ✗ FORBIDDEN (engine must n
 engine/       ──imports──→ features/      ✓ allowed
 app.py/cli.py ──imports──→ engine/        ✓ allowed
 app.py/cli.py ──imports──→ interception/  ✓ allowed (lazy, only for start/stop)
+app.py/cli.py ──imports──→ utils/         ✓ allowed (config loading)
 features/     ──imports──→ engine/        ✓ allowed (uses PacketInfo)
 data/         standalone                   ✓ (no internal deps)
 ```
@@ -171,7 +178,7 @@ Kitsune uses **online unsupervised learning** — no offline dataset required:
 LUCID requires **offline supervised training** on labeled DDoS datasets:
 
 1. Prepare labeled flow data (CICIDS2017 DDoS subset or similar)
-2. **Preprocess the dataset yourself first** — `DatasetLoader` assumes a **header-bearing CSV** with the dataset's standard column names. It does **not** detect, convert, or add headers, and does **not** handle the raw headerless NSL-KDD `.txt` distribution (add the 41 standard feature names + `difficulty` + `label`). Preprocessing is the operator's responsibility; the loader only reads the prepared file. See *Training dataset preparation* in README.
+2. **Preprocess the dataset yourself first** — `DatasetLoader` assumes a **header-bearing CSV** (or an equivalent `.parquet` file) with the dataset's standard column names. It does **not** detect, convert, or add headers, and does **not** handle the raw headerless NSL-KDD `.txt` distribution (add the 41 standard feature names + `difficulty` + `label`). Preprocessing is the operator's responsibility; the loader only reads the prepared file. See *Training dataset preparation* in README.
 3. Train CNN with `LucidDetector.train(X, y)`
 4. Save model with `LucidDetector.save(path)`
 5. Load model with `LucidDetector.load(path)` before deployment

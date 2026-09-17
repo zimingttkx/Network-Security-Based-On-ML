@@ -7,7 +7,6 @@ A server-side IPS that intercepts traffic on Linux, scores each packet through a
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.104+-green.svg" alt="FastAPI">
-  <img src="https://img.shields.io/badge/TensorFlow-2.17+-orange.svg" alt="TensorFlow">
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
 </p>
 
@@ -32,7 +31,7 @@ Incoming Traffic
 
 The rule engine handles known-bad traffic deterministically (blacklist, whitelist, rate limit, protocol allowlist). Anything that passes is scored by Kitsune, an unsupervised packet-level anomaly detector that trains on normal traffic and flags deviations by reconstruction error (RMSE).
 
-LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pipeline by default — it requires a trained TensorFlow model and must be explicitly enabled. See `networksecurity/engine/lucid/`.
+LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pipeline by default — it requires TensorFlow (`pip install nips[lucid]` or `pip install tensorflow`) and a trained model, and must be explicitly enabled. See `networksecurity/engine/lucid/`.
 
 ### Algorithms
 
@@ -64,6 +63,10 @@ cd Network-Security-Based-On-ML
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+# Optional: the LUCID CNN detector needs TensorFlow, which is not part of the
+# default install (the adapter stays inactive without it).
+pip install tensorflow    # or: pip install nips[lucid]
 ```
 
 ### 3. Run the API
@@ -107,9 +110,18 @@ engine:
     rate_limit:
       window_seconds: 1.0
       max_connections_per_window: 100
+blocking:                    # BLOCK escalation policy (see "Live Interception")
+  strikes_threshold: 5       # BLOCKs inside the window before a temp ban
+  strikes_window: 300.0
+  temp_ban_seconds: 600.0
+  temp_ban_count_to_perm: 3  # completed temp bans before a permanent ban
+api:
+  auth_token: ""             # empty = auth disabled (dev only); NIPS_API_TOKEN overrides
+  cors_origins:              # explicit allowlist — "*" is not supported
+    - "http://localhost:8000"
 ```
 
-On `engine/start` the API/CLI load `safe_ips` and `nfqueue_num` from this file and pass them to the interceptor, so operator-tuned values are actually applied at runtime.
+On `engine/start` the API/CLI read the `interception`, `engine`, `blocking`, and `api` blocks from this file and apply them at runtime. If the file is missing or malformed, each loader falls back to safe defaults (loopback protection included) rather than crashing.
 
 ---
 
@@ -118,10 +130,11 @@ On `engine/start` the API/CLI load `safe_ips` and `nfqueue_num` from this file a
 | Method | Endpoint | Description |
 | ------ | -------- | ----------- |
 | `GET` | `/health` | Health check |
-| `GET` | `/api/v1/status` | Engine status, detectors, blocked IPs |
+| `GET` | `/api/v1/status` | Engine status, detectors, blocked IPs (incl. kernel-level), detection-loop health |
 | `GET` | `/api/v1/stats/overview` | Traffic and blocking statistics |
 | `GET` | `/api/v1/alerts` | Recent alert log (paginated) |
 | `GET` | `/api/v1/rules` | Current blacklist and whitelist |
+| `GET` | `/api/v1/blocks` | Live escalation state (observing / temp-banned / perm-banned) |
 | `POST` | `/api/v1/rules/blacklist` | Add IP to blacklist |
 | `DELETE` | `/api/v1/rules/blacklist/{ip}` | Remove IP from blacklist |
 | `POST` | `/api/v1/rules/whitelist` | Add IP/CIDR to whitelist |
@@ -130,6 +143,8 @@ On `engine/start` the API/CLI load `safe_ips` and `nfqueue_num` from this file a
 | `POST` | `/api/v1/engine/stop` | Stop interception and clean up iptables |
 
 Full interactive documentation at `/docs`.
+
+**Authentication:** when `api.auth_token` is set in `config.yaml` (or the `NIPS_API_TOKEN` env var is present), every `/api/v1/*` call must carry the header `X-API-Token: <token>`. An empty token disables authentication (development only — the server logs a warning at startup). `/health` and the dashboard page stay open; the page's own `/api/v1/*` calls follow the same token rule.
 
 ---
 
@@ -147,6 +162,7 @@ networksecurity/
     verdict.py                 # Verdict, Action, ThreatLevel types
     pipeline.py                # DetectionPipeline (multi-stage chain)
     rule_engine.py             # IP blacklist/whitelist, rate limiting
+    block_policy.py            # BLOCK escalation: strikes → temp ban → permanent ban
     kitsune/                   # Kitsune anomaly detector (NDSS'18)
       afterimage.py            # 100-dim incremental statistics
       kitnet.py                # Autoencoder ensemble
@@ -166,12 +182,17 @@ networksecurity/
     flow_extractor.py          # Per-flow statistical features
     feature_registry.py        # Feature set registry
   data/                        # Data loading
-    dataset_loader.py          # NSL-KDD, CICIDS2017, UNSW-NB15
+    dataset_loader.py          # NSL-KDD, CICIDS2017, UNSW-NB15 (CSV / Parquet)
     pcap_loader.py             # PCAP file reader
-scripts/                       # Benchmarks & evaluation
+  utils/                       # Shared helpers
+    config.py                  # config.yaml loading (engine / api / blocking blocks)
+scripts/                       # Benchmarks, evaluation & regression checks
   benchmark.py                 # Throughput + rule-engine accuracy
   benchmark_nslkdd.py          # NSL-KDD detection benchmark
   attack_simulation.py         # Large-scale attack simulation
+  build_unsw_pcap.py           # Rebuild real-traffic pcaps from the bundled UNSW-NB15 flows
+  evaluate_pcap.py             # End-to-end pcap evaluation (per attack category)
+  verify_*.py                  # Module regression checks, incl. the CI FPR guard
 ```
 
 ---
@@ -200,10 +221,10 @@ The interceptor:
 - Installs iptables rules to redirect traffic into NFQUEUE
 - Leaves loopback traffic untouched — everything arriving on `lo` is ACCEPTed before the NFQUEUE rules, and loopback sources (`127.0.0.0/8`, `::1`) are never eligible for a permanent block (host-local traffic cannot be an attacker; blocking the DNS stub `127.0.0.53` would silently break host DNS)
 - Leaves SSH (port 22) untouched
-- Mirrors every ML/rule-engine BLOCK into the rule-engine blacklist, so blocks survive restarts (`rules.json`) and are re-applied to the kernel on the next start
+- Enforces BLOCK verdicts through an escalation policy (`blocking:` in `config.yaml`): a single BLOCK only inline-drops that packet and counts a strike against the source. Crossing `strikes_threshold` inside the rolling window triggers a **temp ban** — kernel DROP plus a rule-engine blacklist entry with a TTL, lifted automatically on expiry. Repeated temp bans escalate to a **permanent ban**, which is mirrored into `rules.json` and re-applied to the kernel on the next start
 - Removes all of its iptables rules on shutdown
 
-`Interceptor` reads `safe_ips` and `nfqueue_num` from `config.yaml`, so the `safe_ips` list silently has no effect if the config is missing — keep `config.yaml` present and committed.
+`Interceptor` reads `safe_ips` and `nfqueue_num` from `config.yaml`; a missing or unparseable file falls back to safe defaults (loopback protection included) rather than starting unprotected.
 
 A detection timeout drops only the in-flight packet (fail-closed); it never commits a permanent block, so a slow verdict cannot ban a legitimate IP.
 
@@ -211,7 +232,7 @@ A detection timeout drops only the in-flight packet (fail-closed); it never comm
 
 ## Training dataset preparation
 
-`DatasetLoader` (`networksecurity/data/dataset_loader.py`) loads NSL-KDD, CICIDS2017, and UNSW-NB15 as **labeled CSV** for supervised training of LUCID/Kitsune. It assumes each file is already a **header-bearing CSV** with the dataset's standard column names — it does **not** detect or convert headers, nor does it handle the raw headerless NSL-KDD `.txt` distribution. Preparing the files is the user's responsibility before calling `DatasetLoader`.
+`DatasetLoader` (`networksecurity/data/dataset_loader.py`) loads NSL-KDD, CICIDS2017, and UNSW-NB15 as **labeled CSV or Parquet** for supervised training of LUCID/Kitsune. It assumes each file is already a **header-bearing CSV** with the dataset's standard column names (a `.parquet` suffix is read as Parquet instead) — it does **not** detect or convert headers, nor does it handle the raw headerless NSL-KDD `.txt` distribution. Preparing the files is the user's responsibility before calling `DatasetLoader`.
 
 Required layout per dataset:
 
