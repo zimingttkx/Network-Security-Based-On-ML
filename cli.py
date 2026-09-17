@@ -137,7 +137,9 @@ def _api_request(path: str, method: str = "GET",
 def cmd_stop(args) -> None:
     """Stop a running interceptor via the API."""
     try:
-        _api_request("/api/v1/engine/stop")
+        # The endpoint only accepts POST; a GET would 405 and the CLI would
+        # falsely report the stop as sent on old servers, or just fail here.
+        _api_request("/api/v1/engine/stop", method="POST")
         print("Stop signal sent.")
     except Exception as e:  # noqa: BLE001
         print(f"Could not reach API: {e}")
