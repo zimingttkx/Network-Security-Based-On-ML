@@ -154,14 +154,36 @@ class Interceptor:
                 logger.exception("temp-ban sweeper failed")
                 continue
             for ip in lifted:
-                with self._blocked_lock:
-                    self._blocked.discard(ip)
-                    mirrored = ip in self._ban_mirrors
-                    self._ban_mirrors.discard(ip)
-                self._iptables.unblock_ip(ip)
-                if mirrored:
-                    self._pipeline.rule_engine.remove_blacklist(ip)
-                logger.info("temp ban expired for %s — unblocked", ip)
+                self._lift_temp_ban(ip)
+
+    def _lift_temp_ban(self, ip: str) -> None:
+        # expire_temp_bans() already flipped the record back to "observing",
+        # so a failure here has no retry: the policy forgets the ban the
+        # moment it hands the IP to the sweeper.  Each enforcement layer is
+        # therefore lifted best-effort — one layer failing (or one IP raising)
+        # must not strand later expiries or kill the sweeper task, which
+        # would leave every subsequent expired ban permanently in place
+        # with nothing left to lift it.
+        mirrored = False
+        try:
+            with self._blocked_lock:
+                self._blocked.discard(ip)
+                mirrored = ip in self._ban_mirrors
+                self._ban_mirrors.discard(ip)
+        except Exception:
+            logger.exception("temp-ban expiry: bookkeeping failed for %s", ip)
+        try:
+            self._iptables.unblock_ip(ip)
+        except Exception:
+            logger.exception("temp-ban expiry: kernel DROP lift failed for %s", ip)
+        if mirrored:
+            try:
+                self._pipeline.rule_engine.remove_blacklist(ip)
+            except Exception:
+                logger.exception(
+                    "temp-ban expiry: blacklist mirror lift failed for %s", ip,
+                )
+        logger.info("temp ban expired for %s — unblocked", ip)
 
     def begin_capture(self) -> None:
         """Start draining the NFQUEUE (blocks until stopped or SIGINT)."""
@@ -369,7 +391,19 @@ class Interceptor:
             if not state.get("timed_out") and not from_rule_engine:
                 should_enforce, rec = self._block_policy.record_block(packet.src_ip)
                 if should_enforce:
-                    if rec.state == "perm_banned":
+                    if not self._iptables.is_blockable(packet.src_ip):
+                        # The packet is dropped inline either way; only the
+                        # escalation layers are skipped.  Without this guard a
+                        # loopback/safe source would still be mirrored into
+                        # the blacklist and written to rules.json (perm path)
+                        # or tracked in _blocked — a persistent phantom block
+                        # the kernel refuses to enforce, and one that survives
+                        # restart.
+                        logger.warning(
+                            "escalation of %s skipped — loopback or safe-ip source",
+                            packet.src_ip,
+                        )
+                    elif rec.state == "perm_banned":
                         with self._blocked_lock:
                             self._blocked.add(packet.src_ip)
                             self._ban_mirrors.discard(packet.src_ip)

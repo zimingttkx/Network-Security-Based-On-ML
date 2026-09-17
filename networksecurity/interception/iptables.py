@@ -5,9 +5,49 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
-from ipaddress import ip_address
+from ipaddress import ip_network
 
 logger = logging.getLogger(__name__)
+
+
+def blockable(ip: str, safe_ips=()) -> bool:
+    """True when a kernel DROP may be installed for this source.
+
+    Loopback sources are definitionally local traffic — this host, its DNS
+    stub resolver (127.0.0.53), or an internal service.  Blocking any of
+    them is a self-DoS (observed live: the systemd-resolved stub got a
+    kernel DROP, silently killing host DNS), and no real remote attacker
+    arrives from 127.0.0.0/8 or ::1.  ``safe_ips`` is operator-declared
+    infrastructure (SSH gateway, monitoring, ...) that must stay reachable
+    for the box to be manageable.  Matching is network-aware in both
+    directions: a loopback CIDR (``127.0.0.0/8``) is refused too, and a
+    source inside a safe CIDR is refused.
+
+    Callers that mirror blocks into persistent layers (rule-engine
+    blacklist + rules.json, the interceptor's ``_blocked`` bookkeeping)
+    must apply the same test via ``IptablesManager.is_blockable()``,
+    otherwise a refused block still lands in rules.json and survives
+    restart as a phantom entry the kernel never enforced — and the API's
+    two block views silently diverge.
+    """
+    try:
+        net = ip_network(ip, strict=False)
+    except ValueError:
+        return False
+    if net.is_loopback:
+        return False
+    for safe in safe_ips:
+        try:
+            safe_net = ip_network(safe, strict=False)
+        except ValueError:
+            continue
+        # subnet_of raises TypeError across address families (e.g. an IPv4
+        # source vs a "::1" safe entry) — those can never match.
+        if safe_net.version != net.version:
+            continue
+        if net.subnet_of(safe_net):
+            return False
+    return True
 
 
 class IptablesManager:
@@ -111,17 +151,8 @@ class IptablesManager:
 
     def block_ip(self, ip: str) -> None:
         with self._lock:
-            # Loopback sources are definitionally local traffic — this host,
-            # its DNS stub resolver (127.0.0.53), or an internal service.
-            # Blocking any of them is a self-DoS (observed live: the
-            # systemd-resolved stub got a kernel DROP, silently killing host
-            # DNS), and no real remote attacker arrives from 127.0.0.0/8 or ::1.
-            try:
-                loopback = ip_address(ip).is_loopback
-            except ValueError:
-                loopback = False
-            if loopback:
-                logger.warning("block_ip(%s) refused — loopback source", ip)
+            if not blockable(ip, self._safe_ips):
+                logger.warning("block_ip(%s) refused — loopback or safe-ip source", ip)
                 return
             # Teardown may have already deleted the chain on another thread.
             # Inserting into a non-existent chain raises CalledProcessError,
@@ -133,7 +164,7 @@ class IptablesManager:
                     ip, self.CHAIN,
                 )
                 return
-            if ip in self._blocked or ip in self._safe_ips:
+            if ip in self._blocked:
                 return
             try:
                 self._run("iptables", "-I", self.CHAIN, "1", "-s", ip, "-j", "DROP")
@@ -142,6 +173,16 @@ class IptablesManager:
                 return
             self._blocked.add(ip)
         logger.info("blocked IP: %s", ip)
+
+    def is_blockable(self, ip: str) -> bool:
+        """True when block_ip(ip) would install (not refuse) a kernel DROP.
+
+        The interceptor consults this before writing its mirror layers
+        (rule-engine blacklist + rules.json, ``_blocked`` bookkeeping) so a
+        refused block never becomes a phantom persistent entry — see
+        blockable().
+        """
+        return blockable(ip, self._safe_ips)
 
     def unblock_ip(self, ip: str) -> None:
         with self._lock:
