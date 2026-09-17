@@ -62,6 +62,12 @@ class Interceptor:
         self._running: bool = False
         self._blocked: set[str] = set()
         self._blocked_lock: threading.Lock = threading.Lock()
+        # Temp bans mirror themselves into the rule engine's *in-memory*
+        # blacklist so packets are dropped even if the kernel DROP failed.
+        # Only entries added by THIS mirror are removed when the ban expires
+        # — an operator's own blacklist entry must survive a temp ban
+        # expiring, and the ban must never be able to "wash" it out.
+        self._ban_mirrors: set[str] = set()
         self._on_verdict: Callable[[PacketInfo, Verdict], None] | None = on_verdict
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
@@ -150,8 +156,11 @@ class Interceptor:
             for ip in lifted:
                 with self._blocked_lock:
                     self._blocked.discard(ip)
+                    mirrored = ip in self._ban_mirrors
+                    self._ban_mirrors.discard(ip)
                 self._iptables.unblock_ip(ip)
-                self._pipeline.rule_engine.remove_blacklist(ip)
+                if mirrored:
+                    self._pipeline.rule_engine.remove_blacklist(ip)
                 logger.info("temp ban expired for %s — unblocked", ip)
 
     def begin_capture(self) -> None:
@@ -213,7 +222,9 @@ class Interceptor:
         self._nfqueue.stop()
         self._teardown()
         self._pipeline.stop()
-        logger.info("Interceptor stopped.  %d IPs permanently blocked.", len(self._blocked))
+        with self._blocked_lock:
+            blocked_count = len(self._blocked)
+        logger.info("Interceptor stopped.  %d IPs permanently blocked.", blocked_count)
 
     # -- teardown helper ------------------------------------------------------
 
@@ -251,11 +262,24 @@ class Interceptor:
         """
         dropped_record = self._block_policy.unblock(ip)
         with self._blocked_lock:
+            self._ban_mirrors.discard(ip)
             if ip not in self._blocked:
                 return dropped_record
             self._blocked.discard(ip)
         self._iptables.unblock_ip(ip)
         return True
+
+    def note_operator_blacklist(self, ip: str) -> None:
+        """An operator explicitly blacklisted ``ip`` (API POST /rules/blacklist).
+
+        Ends any temp-ban mirror tracking for it: from this moment the
+        blacklist entry is the operator's own, and the expiry sweeper must not
+        remove it when the temp ban lifts.  Without this, an operator
+        blacklisting a source *during* its ML temp ban would silently lose
+        the entry at expiry.
+        """
+        with self._blocked_lock:
+            self._ban_mirrors.discard(ip)
 
     def status(self) -> dict:
         with self._blocked_lock:
@@ -332,12 +356,23 @@ class Interceptor:
             # iptables DROP + blacklist mirror happen once, on escalation.
             # Skip entirely if the inline decision timed out — we must not
             # count evidence on an unresolved verdict.
-            if not state.get("timed_out"):
+            #
+            # Only ML-detector BLOCKs feed the escalation policy.  Rule-engine
+            # verdicts are deterministic and already enforced inline on every
+            # packet (blacklist / rate limit / protocol filter), so strikes
+            # would escalate nothing — but they used to: an operator-blacklisted
+            # IP accumulated strikes until its temp ban "expired" and wiped the
+            # operator's entry, and rate-limited legitimate sources were
+            # escalated to permanent bans in rules.json.  The strike policy
+            # exists to absorb ML false positives, nothing else.
+            from_rule_engine = verdict.detector == self._pipeline.rule_engine.name
+            if not state.get("timed_out") and not from_rule_engine:
                 should_enforce, rec = self._block_policy.record_block(packet.src_ip)
                 if should_enforce:
                     if rec.state == "perm_banned":
                         with self._blocked_lock:
                             self._blocked.add(packet.src_ip)
+                            self._ban_mirrors.discard(packet.src_ip)
                         self._iptables.block_ip(packet.src_ip)
                         try:
                             self._pipeline.rule_engine.add_blacklist(packet.src_ip)
@@ -357,9 +392,14 @@ class Interceptor:
                         # Mirror into the rule engine's *in-memory* blacklist
                         # only: temp bans are reversible, so they must NOT
                         # survive in rules.json — the expiry sweeper lifts
-                        # them from both layers together.
+                        # them from both layers together.  Mirror ONLY if the
+                        # entry is ours: an operator-blacklisted IP must not
+                        # be "removed" from the blacklist when the ban lifts.
                         try:
-                            self._pipeline.rule_engine.add_blacklist(packet.src_ip)
+                            if packet.src_ip not in self._pipeline.rule_engine.get_blacklist():
+                                self._pipeline.rule_engine.add_blacklist(packet.src_ip)
+                                with self._blocked_lock:
+                                    self._ban_mirrors.add(packet.src_ip)
                         except Exception:
                             logger.exception(
                                 "failed to mirror temp ban of %s into rule engine",
@@ -370,7 +410,7 @@ class Interceptor:
                             packet.src_ip, self._block_policy.temp_ban_seconds,
                             rec.strikes, rec.temp_ban_count,
                         )
-            else:
+            elif state.get("timed_out"):
                 logger.warning(
                     "skipping permanent block for %s — verdict resolved after "
                     "inline-drop timeout", packet.src_ip,
