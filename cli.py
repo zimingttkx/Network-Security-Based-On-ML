@@ -51,7 +51,7 @@ def _build_pipeline() -> DetectionPipeline:
     ))
     for d in pipeline.detectors:
         if isinstance(d, KitsuneDetector):
-            d._kitsune.set_grace_periods(
+            d.set_grace_periods(
                 fm_grace_period=_engine_cfg["kitsune"]["fm_grace_period"],
                 ad_grace_period=_engine_cfg["kitsune"]["ad_grace_period"],
             )
@@ -122,10 +122,13 @@ def cmd_start(args) -> None:
 API_BASE = "http://127.0.0.1:8000"
 
 
-def _api_request(path: str) -> bytes:
+def _api_request(path: str, method: str = "GET",
+                 payload: dict | None = None) -> bytes:
     from networksecurity.utils.config import load_api_config
     token = load_api_config()["auth_token"]
-    req = urllib.request.Request(f"{API_BASE}{path}")
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(f"{API_BASE}{path}", data=data, method=method)
+    req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("X-API-Token", token)
     return urllib.request.urlopen(req).read()
@@ -158,21 +161,58 @@ def cmd_status(args) -> None:
 
 
 def cmd_block(args) -> None:
+    """Blacklist an IP — through the API when reachable, so the running
+    engine enforces it immediately.  Local rules.json editing is only a
+    fallback for "engine not running" and is announced loudly: editing the
+    file does NOT update a running engine's in-memory rule engine, and a
+    later engine-side save would silently overwrite the change."""
+    try:
+        _api_request("/api/v1/rules/blacklist", method="POST",
+                     payload={"ip": args.ip, "reason": "manual"})
+        print(f"Blocked (live engine): {args.ip}")
+        return
+    except Exception as e:  # noqa: BLE001
+        print(f"WARNING: API unreachable ({e})", file=sys.stderr)
+        print("WARNING: falling back to local rules.json — a RUNNING engine "
+              "will not see this change until restart.", file=sys.stderr)
     pipeline.rule_engine.add_blacklist(args.ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
-    print(f"Blocked: {args.ip}")
+    print(f"Blocked (local rules.json): {args.ip}")
 
 
 def cmd_unblock(args) -> None:
+    """Lift a blacklist entry.  The API path also removes the kernel DROP and
+    the escalation record the interceptor may have installed; the local
+    fallback cannot, so it warns explicitly about the half-unblocked state."""
+    try:
+        _api_request(f"/api/v1/rules/blacklist/{args.ip}", method="DELETE")
+        print(f"Unblocked (live engine): {args.ip}")
+        return
+    except Exception as e:  # noqa: BLE001
+        print(f"WARNING: API unreachable ({e})", file=sys.stderr)
+        print("WARNING: falling back to local rules.json — if the engine is "
+              "running, its kernel DROP / temp ban for this IP STAYS in place "
+              "until restart.", file=sys.stderr)
     pipeline.rule_engine.remove_blacklist(args.ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
-    print(f"Unblocked: {args.ip}")
+    print(f"Unblocked (local rules.json): {args.ip}")
 
 
 def cmd_whitelist(args) -> None:
+    """Whitelist an IP/CIDR — through the API when reachable, local fallback
+    with the same running-engine caveat as ``cmd_block``."""
+    try:
+        _api_request("/api/v1/rules/whitelist", method="POST",
+                     payload={"ip": args.ip})
+        print(f"Whitelisted (live engine): {args.ip}")
+        return
+    except Exception as e:  # noqa: BLE001
+        print(f"WARNING: API unreachable ({e})", file=sys.stderr)
+        print("WARNING: falling back to local rules.json — a RUNNING engine "
+              "will not see this change until restart.", file=sys.stderr)
     pipeline.rule_engine.add_whitelist(args.ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
-    print(f"Whitelisted: {args.ip}")
+    print(f"Whitelisted (local rules.json): {args.ip}")
 
 
 def cmd_rules(args) -> None:
