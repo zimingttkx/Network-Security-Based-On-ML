@@ -34,7 +34,7 @@ from networksecurity.engine.detector import BaseDetector, PacketInfo
 from networksecurity.engine.pipeline import DetectionPipeline
 from networksecurity.engine.rule_engine import RuleEngine
 from networksecurity.engine.verdict import Action, ThreatLevel, Verdict
-from networksecurity.interception.iptables import IptablesManager
+from networksecurity.interception.iptables import IptablesManager, blockable
 from networksecurity.interception.interceptor import Interceptor
 
 ok = True
@@ -55,23 +55,35 @@ class Blocker(BaseDetector):
 
 
 class StubIptables:
-    """Records block_ip calls; no kernel involvement."""
+    """Records block_ip calls; no kernel involvement.
 
-    def __init__(self):
+    Applies the real blockable() criteria so the Bug B mirror path is
+    exercised against the same loopback/safe-ips refusals the kernel
+    manager applies.
+    """
+
+    def __init__(self, safe_ips=None):
         self.blocked: list[str] = []
         self.setup_queue: int | None = None
+        self._safe_ips = safe_ips or []
 
     def setup_nfqueue(self, queue_num: int = 0) -> None:
         self.setup_queue = queue_num
 
     def block_ip(self, ip: str) -> None:
-        self.blocked.append(ip)
+        if not blockable(ip, self._safe_ips):
+            return
+        if ip not in self.blocked:
+            self.blocked.append(ip)
 
     def unblock_ip(self, ip: str) -> None:
         try:
             self.blocked.remove(ip)
         except ValueError:
             pass
+
+    def is_blockable(self, ip: str) -> bool:
+        return blockable(ip, self._safe_ips)
 
     def cleanup_all(self) -> None:
         self.blocked.clear()

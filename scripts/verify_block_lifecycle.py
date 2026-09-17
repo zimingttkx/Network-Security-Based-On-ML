@@ -26,6 +26,28 @@ Bug D4  `cli.py block/unblock/whitelist` edited only the CLI process's
         Fix: the three commands go through the management API and fall back
         to local editing with an explicit warning when it is unreachable.
 
+Bug E   One IP failing to unblock killed the temp-ban sweeper task (the
+        BlockPolicy had already forgotten the ban, so every later expiry
+        was stranded in kernel + blacklist with nothing left to lift it).
+        Fix: _lift_temp_ban() clears each enforcement layer best-effort;
+        a single IP's failure can no longer kill the loop.
+
+Bug F   loopback / safe-ips sources were refused a kernel DROP by
+        IptablesManager, but the escalation paths still mirrored them into
+        the blacklist and wrote them to rules.json — a persistent phantom
+        block the kernel never enforced.
+        Fix: blockable()/is_blockable() apply one network-aware test
+        everywhere; the interceptor skips kernel+mirror+persistence for
+        un-blockable sources (the packet is still dropped inline), and
+        app.py rejects such entries at the API boundary + sweeps them at
+        startup.
+
+Bug G   A detector raising in process_packet() took down the whole chain:
+        the interceptor's catch-all dropped EVERY packet (self-DoS).
+        Fix: per-detector fault isolation — a raising detector abstains
+        for that packet; after 5 consecutive exceptions the circuit
+        breaker skips it until restart (visible in status()).
+
 Exit 0 = all fixes verified; exit 1 = at least one check failed.
 """
 import contextlib
@@ -44,7 +66,9 @@ from networksecurity.engine.block_policy import BlockPolicy
 from networksecurity.engine.detector import BaseDetector, PacketInfo
 from networksecurity.engine.pipeline import DetectionPipeline
 from networksecurity.engine.rule_engine import RuleEngine
+from networksecurity.engine.verdict import Action
 from networksecurity.interception.interceptor import Interceptor
+from networksecurity.interception.iptables import blockable
 
 ok = True
 
@@ -67,18 +91,28 @@ class Blocker(BaseDetector):
 
 
 class StubIptables:
-    """Records block/unblock calls; no kernel involvement."""
+    """Records block/unblock calls; no kernel involvement.
 
-    def __init__(self):
+    Applies the real blockable() criteria so tests exercise the same
+    loopback/safe-ips refusals the kernel manager applies.
+    """
+
+    def __init__(self, safe_ips=None):
         self.blocked: list[str] = []
+        self._safe_ips = safe_ips or []
 
     def block_ip(self, ip: str) -> None:
+        if not blockable(ip, self._safe_ips):
+            return
         if ip not in self.blocked:
             self.blocked.append(ip)
 
     def unblock_ip(self, ip: str) -> None:
         with contextlib.suppress(ValueError):
             self.blocked.remove(ip)
+
+    def is_blockable(self, ip: str) -> bool:
+        return blockable(ip, self._safe_ips)
 
     def cleanup_all(self) -> None:
         self.blocked.clear()
@@ -316,6 +350,171 @@ finally:
     cli_mod.RULES_FILE = real_cli_rules
     cli_mod._api_request = real_api_request
     tmp_cli_rules.unlink(missing_ok=True)
+
+# ---------------------------------------------------------------- E
+print()
+print("=" * 60)
+print("E: one IP's expiry failure does not strand the sweeper or other IPs")
+print("=" * 60)
+
+
+class FlakyUnblockStub(StubIptables):
+    """Raises once on fail_ip's unblock, like a transient iptables error."""
+
+    def __init__(self, fail_ip: str):
+        super().__init__()
+        self.fail_ip = fail_ip
+        self.failed = False
+
+    def unblock_ip(self, ip: str) -> None:
+        if ip == self.fail_ip and not self.failed:
+            self.failed = True
+            raise RuntimeError("simulated iptables failure")
+        super().unblock_ip(ip)
+
+
+clockE = Clock()
+policyE = BlockPolicy(strikes_threshold=1, temp_ban_seconds=600.0,
+                      temp_ban_count_to_perm=99, now=clockE)
+engineE = RuleEngine()
+interE = make_interceptor(engineE, policyE)
+E1, E2 = "198.51.100.40", "198.51.100.41"
+interE._iptables = FlakyUnblockStub(E1)  # type: ignore[assignment]
+asyncio.run(send(interE, [pkt(E1, clockE() + 0.01), pkt(E2, clockE() + 0.02)]))
+check("E0a: both sources temp-banned",
+      (rE1 := policyE.get(E1)) is not None and rE1.state == "temp_banned"
+      and (rE2 := policyE.get(E2)) is not None and rE2.state == "temp_banned",
+      f"records={policyE.get(E1)}, {policyE.get(E2)}")
+check("E0b: both mirrors installed",
+      E1 in engineE.get_blacklist() and E2 in engineE.get_blacklist(),
+      f"blacklist={engineE.get_blacklist()}")
+
+clockE.advance(601.0)
+asyncio.run(run_sweeper_once(interE))
+# Reaching these checks at all proves the sweeper task survived: a raise
+# inside _temp_ban_sweeper propagates through run_sweeper_once's await.
+check("E1a: healthy IP's kernel DROP lifted in the same cycle",
+      E2 not in interE._iptables.blocked,
+      f"blocked={interE._iptables.blocked}")
+check("E1b: healthy IP's blacklist mirror lifted",
+      E2 not in engineE.get_blacklist())
+check("E1c: healthy IP's bookkeeping cleared",
+      E2 not in interE._blocked and E2 not in interE._ban_mirrors)
+check("E1d: failed IP's kernel DROP left visible for reconciliation",
+      E1 in interE._iptables.blocked)
+check("E1e: failed IP's mirror and bookkeeping still cleared best-effort",
+      E1 not in engineE.get_blacklist()
+      and E1 not in interE._blocked and E1 not in interE._ban_mirrors)
+
+# ---------------------------------------------------------------- F
+print()
+print("=" * 60)
+print("F: loopback / safe-ips sources never reach kernel, mirror, rules.json")
+print("=" * 60)
+
+# F1: loopback on the temp-ban path (threshold=1 -> first ML BLOCK enforces).
+clockF = Clock()
+policyF = BlockPolicy(strikes_threshold=1, temp_ban_seconds=600.0,
+                      temp_ban_count_to_perm=99, now=clockF)
+engineF = RuleEngine()
+interF = make_interceptor(engineF, policyF)
+LOOP = "127.0.0.53"
+dropped = asyncio.run(interF._handle(pkt(LOOP, clockF() + 0.01),
+                                     {"timed_out": False}))
+check("F1a: loopback packet still dropped inline", dropped is True)
+check("F1b: no kernel DROP for the loopback source",
+      LOOP not in interF._iptables.blocked)
+check("F1c: no blacklist mirror for the loopback source",
+      LOOP not in engineF.get_blacklist())
+check("F1d: no _blocked/_ban_mirrors bookkeeping",
+      LOOP not in interF._blocked and LOOP not in interF._ban_mirrors)
+
+# F2: loopback escalating all the way to a perm ban must not touch rules.json.
+tmp_rules_f = Path(__file__).resolve().parent.parent / "scripts" / ".verify_tmp_rules_f.json"
+tmp_rules_f.unlink(missing_ok=True)
+real_rules_f = interceptor_mod.RULES_FILE
+interceptor_mod.RULES_FILE = tmp_rules_f
+try:
+    policyF2 = BlockPolicy(strikes_threshold=1, temp_ban_seconds=600.0,
+                           temp_ban_count_to_perm=1, now=clockF)
+    engineF2 = RuleEngine()
+    interF2 = make_interceptor(engineF2, policyF2)
+    # Ban 1: temp (guarded away).  After expiry, re-offending with
+    # temp_ban_count_to_perm=1 escalates straight to perm.
+    asyncio.run(send(interF2, [pkt(LOOP, clockF() + 1.01)]))
+    clockF.advance(601.0)
+    asyncio.run(run_sweeper_once(interF2))
+    asyncio.run(send(interF2, [pkt(LOOP, clockF() + 1.02)]))
+    recF = policyF2.get(LOOP)
+    check("F2a: policy still escalated to perm_banned",
+          recF is not None and recF.state == "perm_banned", f"record={recF}")
+    check("F2b: perm ban wrote nothing to rules.json",
+          not tmp_rules_f.exists()
+          or LOOP not in json.loads(tmp_rules_f.read_text()).get("blacklist", []),
+          f"rules.json={tmp_rules_f.read_text().strip() if tmp_rules_f.exists() else '(missing)'}")
+    check("F2c: no kernel DROP / _blocked entry for the perm ban",
+          LOOP not in interF2._iptables.blocked and LOOP not in interF2._blocked)
+finally:
+    interceptor_mod.RULES_FILE = real_rules_f
+    tmp_rules_f.unlink(missing_ok=True)
+
+# F3: an interception.safe_ips entry is honored on the escalation paths.
+SAFE = "198.51.100.99"
+engineF3 = RuleEngine()
+interF3 = make_interceptor(engineF3, policyF)
+interF3._iptables = StubIptables(safe_ips=[SAFE])  # type: ignore[assignment]
+asyncio.run(send(interF3, [pkt(SAFE, clockF() + 2.01)]))
+check("F3a: no kernel DROP for the safe-ips source",
+      SAFE not in interF3._iptables.blocked)
+check("F3b: no blacklist mirror for the safe-ips source",
+      SAFE not in engineF3.get_blacklist())
+
+# ---------------------------------------------------------------- G
+print()
+print("=" * 60)
+print("G: a poisoned detector is isolated, not fatal to the chain")
+print("=" * 60)
+
+
+class Poison(BaseDetector):
+    """Raises for the first ``fails`` calls (None = forever), then abstains."""
+
+    def __init__(self, name: str, fails: int | None = None):
+        super().__init__(name=name)
+        self.calls = 0
+        self._fails = fails
+
+    async def process_packet(self, packet: PacketInfo):
+        self.calls += 1
+        if self._fails is None or self.calls <= self._fails:
+            raise RuntimeError("poisoned detector")
+        return None
+
+
+pipe_g = DetectionPipeline(rule_engine=RuleEngine())
+poison_always = Poison(name="Poison", fails=None)
+poison_flaky = Poison(name="Flaky", fails=4)
+pipe_g.add_detector(poison_always)
+pipe_g.add_detector(poison_flaky)
+pipe_g.add_detector(Blocker(name="Healthy"))
+
+verdicts = asyncio.run(
+    pipe_g.process_batch([pkt("192.0.2.55", 5_000.0 + i * 0.01) for i in range(6)])
+)
+check("G1: chain still decides BLOCK via the healthy detector on every packet",
+      all(v.action == Action.BLOCK and v.detector == "Healthy" for v in verdicts),
+      f"verdicts={[(v.detector, v.action.value) for v in verdicts]}")
+status_g = pipe_g.status()
+check("G2: always-raising detector tripped the breaker (5 consecutive failures)",
+      status_g["broken_detectors"] == ["Poison"],
+      f"broken={status_g['broken_detectors']}")
+check("G3: recovering detector never tripped (counter resets on success)",
+      "Flaky" not in status_g["broken_detectors"])
+check("G4: tripped detector is no longer invoked",
+      poison_always.calls == DetectionPipeline.FAILURE_THRESHOLD,
+      f"calls={poison_always.calls}")
+check("G5: recovering detector kept receiving packets",
+      poison_flaky.calls == 6, f"calls={poison_flaky.calls}")
 
 print()
 print("=" * 60)
