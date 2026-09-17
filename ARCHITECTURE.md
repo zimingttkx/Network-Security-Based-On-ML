@@ -15,7 +15,7 @@ NIPS is a **server-side Network Intrusion Prevention System** for Linux.
 ```
 ┌──────────────────────────────────────────────────────┐
 │  LAYER 4 — Management Interface                      │
-│  app.py (REST API)  +  cli.py (CLI)  +  index.html   │
+│  app.py (REST API)  +  cli.py (CLI)                  │
 │  Responsibilities: status, alerts, rule CRUD, start/stop │
 │  Constraints: read-only consumer of engine state.    │
 │  Must NOT generate traffic or simulate alerts.       │

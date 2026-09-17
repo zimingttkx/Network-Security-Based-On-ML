@@ -144,7 +144,7 @@ On `engine/start` the API/CLI read the `interception`, `engine`, `blocking`, and
 
 Full interactive documentation at `/docs`.
 
-**Authentication:** when `api.auth_token` is set in `config.yaml` (or the `NIPS_API_TOKEN` env var is present), every `/api/v1/*` call must carry the header `X-API-Token: <token>`. An empty token disables authentication (development only — the server logs a warning at startup). `/health` and the dashboard page stay open; the page's own `/api/v1/*` calls follow the same token rule.
+**Authentication:** when `api.auth_token` is set in `config.yaml` (or the `NIPS_API_TOKEN` env var is present), every `/api/v1/*` call must carry the header `X-API-Token: <token>`. An empty token disables authentication (development only — the server logs a warning at startup). `/health` stays open (liveness probes).
 
 ---
 
@@ -155,7 +155,6 @@ app.py                         # FastAPI application entry point
 cli.py                         # CLI management tool
 config/
   config.yaml                  # Engine/interception configuration
-templates/                     # Web status page templates
 networksecurity/
   engine/                      # Detection engine
     detector.py                # BaseDetector interface + PacketInfo

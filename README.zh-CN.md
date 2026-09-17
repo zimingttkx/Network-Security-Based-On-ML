@@ -109,7 +109,7 @@ python cli.py test --pcap sample.pcap  # 离线检测测试
 
 完整的交互式文档见 `/docs`。
 
-**认证：**在 `config.yaml` 中设置 `api.auth_token`（或环境变量 `NIPS_API_TOKEN`）后，所有 `/api/v1/*` 调用都必须携带请求头 `X-API-Token: <token>`。留空表示关闭认证（仅限开发环境，服务启动时会打 WARNING）。`/health` 与状态页保持开放；状态页自身的 `/api/v1/*` 请求同样遵守该 token 规则。
+**认证：**在 `config.yaml` 中设置 `api.auth_token`（或环境变量 `NIPS_API_TOKEN`）后，所有 `/api/v1/*` 调用都必须携带请求头 `X-API-Token: <token>`。留空表示关闭认证（仅限开发环境，服务启动时会打 WARNING）。`/health` 保持开放（用于存活探测）。
 
 ---
 
@@ -120,7 +120,6 @@ app.py                         # FastAPI 应用入口
 cli.py                         # CLI 管理工具
 config/
   config.yaml                  # 引擎/拦截配置
-templates/                     # Web 状态页模板
 networksecurity/
   engine/                      # 检测引擎
     detector.py                # BaseDetector 接口 + PacketInfo

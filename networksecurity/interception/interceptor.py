@@ -70,7 +70,7 @@ class Interceptor:
         # Health telemetry: monotonic timestamp of the last completed
         # detection.  Stays None until the first packet is handled; the API
         # surfaces it as detection_loop_stale_seconds so a hung detection
-        # loop (which fail-closes ALL traffic) is visible on the dashboard
+        # loop (which fail-closes ALL traffic) is visible via the status API
         # instead of presenting as a silent network outage.
         self._last_detect_mono: float | None = None
 

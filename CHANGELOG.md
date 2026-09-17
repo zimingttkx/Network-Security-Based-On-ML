@@ -22,13 +22,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Applied ruff auto-fix across the entire project and updated CONTRIBUTING.md.
 - Updated README to match the current codebase (CLI commands, API endpoints, architecture tree).
 
+### Removed
+
+- Web status page: the `/` dashboard route, `templates/` (`index.html`), and the static-file mount are gone — the management surface is now the REST API + CLI only. `jinja2` and `python-multipart` were dropped from the dependencies.
+
 ### Fixed
 
 - Kitsune: removed AfterImage wall-clock features that caused 100% false positives on long-running sessions; fixed KitNET output-layer normalization ordering; wired `threshold_percentile`; `is_ready` exposed as a property.
 - Rule engine: O(n) full-table scan replaced with O(1) LRU eviction in the rate limiter; counters and status snapshots taken under lock; rate-limit cap raised and eviction clarified.
 - Interception: loopback self-banning prevented, ban state kept in sync across layers, NFQUEUE queue numbers aligned, shutdown/close races and cross-thread data races fixed, fail-open hole closed; `Interceptor.unblock_ip` and the unblock endpoint now also clear kernel-level bans.
 - Data: PcapLoader IP-parsing scope fix (real pcaps no longer parse every IP to None); pcap loader rewritten to mirror the live parser and support more link layers; scapy import deferred to call time; Infinity values no longer leak through Parquet datasets.
-- API/app: rule-entry IP/CIDR validation, atomic `rules.json` writes, absolute rules path, alerts list lock, engine config wired into the API/CLI start path (fixes dashboard 500), XSS fix in frontend alerts (`textContent`), undefined `RULES_FILE_DEFAULT` reference.
+- API/app: rule-entry IP/CIDR validation, atomic `rules.json` writes, absolute rules path, alerts list lock, engine config wired into the API/CLI start path, undefined `RULES_FILE_DEFAULT` reference.
 - Added missing `Verdict` import and suppressed bandit false positives in CI.
 - Configured style check to exit zero and ignore non-critical rules.
 

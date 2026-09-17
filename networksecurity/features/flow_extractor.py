@@ -220,7 +220,7 @@ class FlowTracker:
         return result
 
     def status(self) -> dict:
-        """Tracker internals for dashboards/tests."""
+        """Tracker internals for tests/monitoring."""
         return {
             "active_flows": len(self._flows),
             "pending_buffered": len(self._pending),

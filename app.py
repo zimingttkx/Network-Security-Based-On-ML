@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import secrets
 import threading
@@ -10,11 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
 
 from networksecurity.engine import DetectionPipeline, RuleEngine
@@ -57,21 +53,14 @@ app.add_middleware(
 def require_token(x_api_token: str = Header(default="")) -> None:
     """Dependency guarding every /api/v1/* route.
 
-    /health and the dashboard page stay open (liveness probes, read-only
-    HTML).  Comparison uses secrets.compare_digest: a plain == short-
-    circuits, leaking the token prefix byte-by-byte through timing.
+    /health stays open (liveness probes).  Comparison uses
+    secrets.compare_digest: a plain == short-circuits, leaking the token
+    prefix byte-by-byte through timing.
     """
     if not API_AUTH_TOKEN:
         return  # auth disabled by config (development mode)
     if not secrets.compare_digest(x_api_token, API_AUTH_TOKEN):
         raise HTTPException(status_code=401, detail="invalid or missing X-API-Token")
-
-try:
-    app.mount("/static", StaticFiles(directory="static"), name="static")
-except RuntimeError:
-    pass
-
-templates = Jinja2Templates(directory="templates")
 
 # --- Engine state -----------------------------------------------------------
 
@@ -177,16 +166,7 @@ class WhitelistEntry(BaseModel):
         return _validate_ip_or_cidr(v)
 
 
-# --- Page routes -----------------------------------------------------------
-
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    # "request" is a required context key in current Starlette; without it
-    # TemplateResponse raises and the dashboard returns 500.
-    return templates.TemplateResponse(
-        "index.html", {"request": request, "page": "home"}
-    )
-
+# --- Health -----------------------------------------------------------------
 
 @app.get("/health")
 async def health():
@@ -213,7 +193,7 @@ async def engine_status():
     # Detection-loop health: seconds since the last packet completed
     # detection.  A hung loop fail-closes ALL traffic (fail-closed by
     # design), so surfacing staleness turns a silent network outage into a
-    # visible dashboard alert.  None = interception never started.
+    # visible alert.  None = interception never started.
     detect_stale = (
         _interceptor.status()["detection_loop_stale_seconds"]
         if _interceptor is not None and hasattr(_interceptor, "status")

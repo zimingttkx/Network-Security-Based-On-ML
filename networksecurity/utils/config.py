@@ -139,7 +139,7 @@ def load_blocking_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
 
 # API surface defaults.  auth_token "" = authentication DISABLED (local
 # development); the app logs a loud WARNING in that mode.  cors_origins
-# default only trusts the dashboard's own origin.
+# default only trusts localhost origins.
 _DEFAULT_API = {
     "auth_token": "",
     "cors_origins": ["http://localhost:8000", "http://127.0.0.1:8000"],
