@@ -73,9 +73,12 @@ NIC → iptables NFQUEUE target → nfqueue kernel queue
          → Verdict {action, confidence, reason}
      → if BLOCK:
          nf_packet.drop()            ← inline kernel drop (this packet never reaches app)
-         BlockPolicy.record_block()  ← strike counting; a single BLOCK installs NO kernel rule
-             → temp_banned: iptables DROP + in-memory blacklist entry (TTL, auto-lifted)
-             → perm_banned: iptables DROP + persisted blacklist entry (rules.json)
+         if detector is an ML detector (rule-engine verdicts do NOT escalate):
+             BlockPolicy.record_block()  ← strike counting; a single BLOCK installs NO kernel rule
+                 → temp_banned: iptables DROP + in-memory blacklist mirror (TTL, auto-lifted;
+                                only the mirror is removed — operator entries are never touched)
+                 → perm_banned: iptables DROP + persisted blacklist entry (rules.json;
+                                loaded back into the rule engine on restart, kernel DROP not reinstalled)
      → if ALLOW:
          nf_packet.accept()          ← packet delivered to application
 ```

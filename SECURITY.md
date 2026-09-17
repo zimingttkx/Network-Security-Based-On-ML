@@ -38,7 +38,7 @@ Response: acknowledgment within 72 hours, status update within 7 days.
 ## Security Design
 
 1. **Fail closed**: detection failures and timeouts drop the in-flight packet — packets are never silently accepted; a timeout never commits a permanent block
-2. **Graduated enforcement**: a single BLOCK verdict only inline-drops and counts a strike; kernel DROPs (temp bans) require crossing the strike threshold, and permanent bans require repeated escalation (`blocking:` in config.yaml)
+2. **Graduated enforcement (ML verdicts only)**: a single ML-detector BLOCK verdict only inline-drops and counts a strike; kernel DROPs (temp bans) require crossing the strike threshold, and permanent bans require repeated escalation (`blocking:` in config.yaml). Rule-engine verdicts (blacklist / rate limit / protocol filter) are enforced inline per packet and never escalate
 3. **Graceful shutdown**: iptables rules cleaned on exit
 4. **SSH protection**: port 22 whitelisted to prevent lockout
 5. **Root required**: interceptor needs root; API server runs unprivileged
@@ -51,5 +51,6 @@ Response: acknowledgment within 72 hours, status update within 7 days.
 2. Set `api.auth_token` (or `NIPS_API_TOKEN`) before exposing the API; keep the API bound to loopback (the bundled `docker-compose.yml` already publishes `127.0.0.1:8000` only) or behind an authenticated reverse proxy
 3. Whitelist your management IP before starting interception
 4. Validate offline first: run `python cli.py test --pcap <capture>.pcap` on a real capture before enabling live interception
-5. Keep dependencies updated
-6. Watch blocked-IP logs and `GET /api/v1/blocks` (live temp/perm ban state)
+5. **IPv4 only**: the IPS neither inspects nor blocks inbound IPv6 traffic. On dual-stack hosts, protect IPv6 separately (e.g. an `ip6tables` default-drop policy) or disable it
+6. Keep dependencies updated
+7. Watch blocked-IP logs and `GET /api/v1/blocks` (live temp/perm ban state)

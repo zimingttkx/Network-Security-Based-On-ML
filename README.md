@@ -220,8 +220,10 @@ The interceptor:
 - Installs iptables rules to redirect traffic into NFQUEUE
 - Leaves loopback traffic untouched — everything arriving on `lo` is ACCEPTed before the NFQUEUE rules, and loopback sources (`127.0.0.0/8`, `::1`) are never eligible for a permanent block (host-local traffic cannot be an attacker; blocking the DNS stub `127.0.0.53` would silently break host DNS)
 - Leaves SSH (port 22) untouched
-- Enforces BLOCK verdicts through an escalation policy (`blocking:` in `config.yaml`): a single BLOCK only inline-drops that packet and counts a strike against the source. Crossing `strikes_threshold` inside the rolling window triggers a **temp ban** — kernel DROP plus a rule-engine blacklist entry with a TTL, lifted automatically on expiry. Repeated temp bans escalate to a **permanent ban**, which is mirrored into `rules.json` and re-applied to the kernel on the next start
+- Enforces BLOCK verdicts through an escalation policy (`blocking:` in `config.yaml`) that applies **only to ML-detector BLOCKs**. Rule-engine verdicts (blacklist hit, rate limit, protocol filter) are deterministic and already enforced inline on every packet, so they never count strikes and cannot escalate — this also guarantees an operator's blacklist entry can never be modified by the ban lifecycle. A single ML BLOCK only inline-drops that packet and counts a strike against the source. Crossing `strikes_threshold` inside the rolling window triggers a **temp ban** — kernel DROP plus a rule-engine blacklist *mirror* with a TTL, lifted automatically on expiry (only the mirror is removed; an operator's own entry is never touched). Repeated temp bans escalate to a **permanent ban**, which is mirrored into `rules.json`; on the next start it is loaded back into the rule engine and enforced per-packet in userspace — the kernel DROP itself is **not** reinstalled
 - Removes all of its iptables rules on shutdown
+
+**IPv4 only.** Only IPv4 TCP/UDP traffic is redirected to NFQUEUE and parsed. Inbound IPv6 traffic is neither inspected nor blocked — it bypasses the IPS entirely. On dual-stack hosts, protect IPv6 separately (e.g. `ip6tables` policy) or disable it.
 
 `Interceptor` reads `safe_ips` and `nfqueue_num` from `config.yaml`; a missing or unparseable file falls back to safe defaults (loopback protection included) rather than starting unprotected.
 

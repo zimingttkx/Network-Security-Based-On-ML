@@ -186,8 +186,10 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 - 写入 iptables 规则，把流量重定向到 NFQUEUE
 - 回环流量完全不进检测流水线——`lo` 接口到达的包在 NFQUEUE 规则之前就被 ACCEPT；回环源地址（`127.0.0.0/8`、`::1`）永远不会被永久封禁（本机流量不可能是攻击者；封掉 DNS stub `127.0.0.53` 会静默瘫痪本机域名解析）
 - 不动 SSH（22 端口）
-- 通过升级策略（`config.yaml` 的 `blocking:`）执行 BLOCK 判决：单次 BLOCK 只内联丢弃当前包，并给源 IP 计一次 strike。滚动窗口内累计达到 `strikes_threshold` 触发**临时封禁**——内核 DROP 加规则引擎黑名单条目（带 TTL，到期自动解除）；反复触发临时封禁会升级为**永久封禁**，写入 `rules.json` 并在下次启动时重新应用到内核
+- 通过升级策略（`config.yaml` 的 `blocking:`）执行 BLOCK 判决，且**仅对 ML 检测器的 BLOCK 生效**。规则引擎的判决（黑名单命中、限速、协议过滤）是确定性的、已经逐包内联执行，因此不计 strike、不参与升级——这同时保证了操作员的黑名单条目永远不会被封禁生命周期改动。单次 ML BLOCK 只内联丢弃当前包，并给源 IP 计一次 strike。滚动窗口内累计达到 `strikes_threshold` 触发**临时封禁**——内核 DROP 加规则引擎黑名单*镜像*（带 TTL，到期自动解除；解除时只删除镜像，绝不触碰操作员自己的条目）；反复触发临时封禁会升级为**永久封禁**，写入 `rules.json`，下次启动时加载回规则引擎、在用户态逐包拦截——内核 DROP 本身**不会**被重新安装
 - 关闭时清除自己添加的所有 iptables 规则
+
+**仅支持 IPv4。** 只有 IPv4 的 TCP/UDP 流量会被重定向到 NFQUEUE 并被解析。IPv6 入站流量既不检测也不阻断——它会完全绕过本 IPS。在双栈（dual-stack）主机上，请另行防护 IPv6（例如用 `ip6tables` 设置策略）或直接禁用它。
 
 `Interceptor` 从 `config.yaml` 读取 `safe_ips` 和 `nfqueue_num`；配置文件缺失或无法解析时回退到安全默认值（包含回环防护），不会在无保护状态下启动。
 
