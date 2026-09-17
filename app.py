@@ -85,7 +85,7 @@ pipeline.add_detector(KitsuneDetector(
 # Kitsune grace periods must be set before the first packet is processed.
 for _d in pipeline.detectors:
     if isinstance(_d, KitsuneDetector):
-        _d._kitsune.set_grace_periods(
+        _d.set_grace_periods(
             fm_grace_period=_engine_cfg["kitsune"]["fm_grace_period"],
             ad_grace_period=_engine_cfg["kitsune"]["ad_grace_period"],
         )
@@ -268,6 +268,13 @@ async def get_blocks():
 async def add_blacklist(entry: BlacklistEntry):
     pipeline.rule_engine.add_blacklist(entry.ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
+    # Promote any temp-ban mirror for this IP to an operator entry, so the
+    # expiry sweeper cannot remove the blacklist entry when the ban lifts.
+    if _interceptor is not None and hasattr(_interceptor, "note_operator_blacklist"):
+        try:
+            _interceptor.note_operator_blacklist(entry.ip)
+        except Exception:
+            logger.exception("Failed to promote blacklist entry for %s", entry.ip)
     _record_alert(entry.ip, entry.reason, "block", "rule_engine")
     return {"status": "ok", "blacklist": pipeline.rule_engine.get_blacklist()}
 
