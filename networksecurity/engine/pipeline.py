@@ -33,7 +33,19 @@ class DetectionPipeline:
 
     If the chain finishes with no explicit verdict, the final fallback is
     ``ALLOW``.
+
+    Fault isolation: a detector that raises is treated as abstaining for
+    that packet, and after ``FAILURE_THRESHOLD`` consecutive exceptions it is
+    skipped entirely (circuit breaker) so one poison detector cannot take
+    down the whole chain — see process_packet().
     """
+
+    # Consecutive exceptions before a detector is skipped for the rest of
+    # the process lifetime.  Without this, one raising detector (corrupt
+    # model file, OOM) made every process_packet() raise, and the
+    # interceptor's catch-all then dropped EVERY packet — a self-DoS that
+    # looked like "the network is down".
+    FAILURE_THRESHOLD = 5
 
     def __init__(
         self,
@@ -47,6 +59,10 @@ class DetectionPipeline:
         self._lock = threading.Lock()
         self._total_processed: int = 0
         self._total_blocked: int = 0
+        # Per-detector consecutive-failure counts and the tripped set.  Only
+        # the detection event-loop thread mutates these; status() snapshots.
+        self._detector_failures: dict[str, int] = {}
+        self._broken_detectors: set[str] = set()
 
     # -- registration -------------------------------------------------------
 
@@ -85,7 +101,27 @@ class DetectionPipeline:
         pending_block: Verdict | None = None
 
         for detector in self._detectors:
-            verdict = await detector.process_packet(packet)
+            if detector.name in self._broken_detectors:
+                continue
+            try:
+                verdict = await detector.process_packet(packet)
+            except Exception:
+                fails = self._detector_failures.get(detector.name, 0) + 1
+                self._detector_failures[detector.name] = fails
+                if fails >= self.FAILURE_THRESHOLD:
+                    self._broken_detectors.add(detector.name)
+                    logger.error(
+                        "detector %s tripped the circuit breaker after %d "
+                        "consecutive failures — skipping it until restart",
+                        detector.name, fails,
+                    )
+                else:
+                    logger.exception(
+                        "detector %s failed (%d/%d consecutive) — abstaining",
+                        detector.name, fails, self.FAILURE_THRESHOLD,
+                    )
+                continue
+            self._detector_failures.pop(detector.name, None)
             if verdict is None:
                 continue
 
@@ -147,12 +183,15 @@ class DetectionPipeline:
                 "total_processed": self._total_processed,
                 "total_blocked": self._total_blocked,
                 "detectors": [d.name for d in self._detectors],
+                "broken_detectors": sorted(self._broken_detectors),
                 "rule_engine": self._rule_engine.stats(),
             }
 
     def reset(self) -> None:
         for d in self._detectors:
             d.reset()
+        self._detector_failures.clear()
+        self._broken_detectors.clear()
         with self._lock:
             self._total_processed = 0
             self._total_blocked = 0
