@@ -29,6 +29,7 @@ import inspect
 import os
 import tempfile
 
+from networksecurity.engine.block_policy import BlockPolicy
 from networksecurity.engine.detector import BaseDetector, PacketInfo
 from networksecurity.engine.pipeline import DetectionPipeline
 from networksecurity.engine.rule_engine import RuleEngine
@@ -116,7 +117,11 @@ pipeline = DetectionPipeline()
 pipeline.set_rule_engine(rule_engine)
 pipeline.add_detector(Blocker())
 
-inter = Interceptor(pipeline, queue_num=0)
+# Graduated enforcement (engine/block_policy.py, commit b78aaa6): a single
+# BLOCK only counts a strike — the kernel DROP + blacklist mirror happen on
+# threshold crossing.  threshold=1 keeps this check to one packet.
+policy = BlockPolicy(strikes_threshold=1, temp_ban_count_to_perm=99)
+inter = Interceptor(pipeline, queue_num=0, block_policy=policy)
 inter._iptables = StubIptables()  # type: ignore[assignment]
 
 pkt = PacketInfo(src_ip="203.0.113.66", dst_ip="10.0.0.1", src_port=4444,
@@ -151,22 +156,30 @@ print()
 print("=" * 60)
 print("Bug C: kernel redirect queue must match the userspace listener")
 print("=" * 60)
-inter2 = Interceptor(pipeline, queue_num=7)  # config.yaml nfqueue_num: 7
-stub2 = StubIptables()
-inter2._iptables = stub2  # type: ignore[assignment]
+import shutil
 
-_real_geteuid = os.geteuid
-os.geteuid = lambda: 0  # simulate root for setup()
-try:
-    inter2.setup()
-finally:
-    os.geteuid = _real_geteuid
-    inter2.stop()  # join the detection loop thread, clean state
+if shutil.which("iptables") is None:
+    # setup() rightfully refuses to start without the iptables binary —
+    # nothing kernel-side to validate on this host (e.g. macOS dev machine).
+    print("[SKIP] C1/C2: iptables not in PATH — kernel redirect checks "
+          "require a Linux host")
+else:
+    inter2 = Interceptor(pipeline, queue_num=7)  # config.yaml nfqueue_num: 7
+    stub2 = StubIptables()
+    inter2._iptables = stub2  # type: ignore[assignment]
 
-check("C1: setup() redirects the kernel to the configured queue (7)",
-      stub2.setup_queue == 7, "setup_nfqueue received queue %s" % stub2.setup_queue)
-check("C2: userspace listener bound to the same queue (7)",
-      inter2._nfqueue._queue_num == 7)
+    _real_geteuid = os.geteuid
+    os.geteuid = lambda: 0  # simulate root for setup()
+    try:
+        inter2.setup()
+    finally:
+        os.geteuid = _real_geteuid
+        inter2.stop()  # join the detection loop thread, clean state
+
+    check("C1: setup() redirects the kernel to the configured queue (7)",
+          stub2.setup_queue == 7, "setup_nfqueue received queue %s" % stub2.setup_queue)
+    check("C2: userspace listener bound to the same queue (7)",
+          inter2._nfqueue._queue_num == 7)
 
 print()
 print("=" * 60)
