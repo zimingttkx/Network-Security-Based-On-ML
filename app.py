@@ -120,7 +120,39 @@ def _record_alert(source_ip: str, reason: str, action: str, detector: str) -> No
             alerts.pop()
 
 
+def _blacklist_refusal(ip: str) -> str | None:
+    """Why ``ip`` must not enter the blacklist, or ``None`` if it may.
+
+    Reuses the kernel's own blockable() test so the persistent rule set can
+    never diverge from what iptables would enforce: a loopback or safe_ips
+    entry would sit in rules.json surviving every restart while the kernel
+    refuses to drop it — the rule LOOKS active but blocks nothing, the worst
+    failure mode for a rule, and the API's kernel vs rule-set views then
+    disagree forever.
+    """
+    from networksecurity.interception.iptables import blockable
+    from networksecurity.utils.config import load_interception_config
+    safe_ips = load_interception_config().get("safe_ips") or []
+    if not blockable(ip, safe_ips):
+        return (f"{ip!r} is loopback or within interception.safe_ips — "
+                f"the kernel would refuse this block")
+    return None
+
+
 pipeline.rule_engine.load_rules(RULES_FILE)
+
+# Drop entries the kernel would refuse anyway (loopback / safe_ips).  They
+# can only be here via older versions or hand-edited rules.json; left in
+# place they persist across restarts as phantom blocks.
+_rules_swept = False
+for _ip in list(pipeline.rule_engine.get_blacklist()):
+    _why = _blacklist_refusal(_ip)
+    if _why is not None:
+        pipeline.rule_engine.remove_blacklist(_ip)
+        logger.warning("startup sweep: %s", _why)
+        _rules_swept = True
+if _rules_swept:
+    pipeline.rule_engine.save_rules(RULES_FILE)
 
 # --- Pydantic models -------------------------------------------------------
 
@@ -154,7 +186,15 @@ class BlacklistEntry(BaseModel):
     @field_validator("ip")
     @classmethod
     def _ip_ok(cls, v: str) -> str:
-        return _validate_ip_or_cidr(v)
+        v = _validate_ip_or_cidr(v)
+        # Loopback / safe-ips entries would be persisted (rules.json survives
+        # restarts) while the kernel refuses to enforce them — a phantom
+        # block.  Reject at the boundary instead of accepting a divergent
+        # rule set.
+        refusal = _blacklist_refusal(v)
+        if refusal is not None:
+            raise ValueError(refusal)
+        return v
 
 
 class WhitelistEntry(BaseModel):
