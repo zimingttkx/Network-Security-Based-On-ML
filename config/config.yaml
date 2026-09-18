@@ -9,10 +9,12 @@ engine:
     learning_rate: 0.1
     threshold_percentile: 99.0  # RMSE percentile for anomaly threshold
 
-  # LUCID DDoS detector
+  # LUCID DDoS detector.  model_path empty = LUCID not deployed (the
+  # detector is not registered).  Point it at a trained .h5 to enable.
   lucid:
     time_window: 10.0           # flow time window (seconds)
     packets_per_flow: 10        # packets per flow sample
+    model_path: ""              # path to trained Keras model; "" disables LUCID
 
   # Rule engine
   rule_engine:

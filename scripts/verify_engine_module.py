@@ -54,6 +54,17 @@ def pkt(**kw) -> PacketInfo:
 # Checklist — lucid adapter
 # L1 disabled/untrained -> always None (abstain)
 # L2 dict interface fields complete (header_size by protocol)
+# Checklist — utils.config validation (B1)
+# C1 empty scalar (null) -> shipped default, never None into per-packet code
+# C2 safe_ips non-list-of-str -> default (loopback protection preserved)
+# C3 cors_origins "*" dropped / non-list -> default
+# C4 top-level non-mapping YAML -> every loader returns defaults
+# C5 malformed YAML -> defaults (no exception at import time)
+# C6 allowed_protocols non-int list -> [6, 17]
+# C7 blocking out-of-range values -> defaults
+# C8 lucid model_path default "" + packets_per_flow lower bound
+# C9 api host/port validated (port range)
+# C10 shipped config/config.yaml loads with documented values
 # ---------------------------------------------------------------------------
 
 async def main():
@@ -206,9 +217,123 @@ async def main():
     ok = d["header_size"] == 8 and d["payload_size"] == 60
     report("L2 lucid dict header_size by protocol", not ok, f"dict={d}")
 
+    # --- C1-C10: utils.config validation ------------------------------------
+    import tempfile as _tf
+
+    from networksecurity.utils.config import (
+        load_api_config,
+        load_blocking_config,
+        load_engine_config,
+        load_interception_config,
+        load_lucid_config,
+    )
+
+    _tmpdir = _tf.TemporaryDirectory()
+    _cfg_n = 0
+
+    def _cfg(text: str) -> Path:
+        nonlocal _cfg_n
+        _cfg_n += 1
+        p = Path(_tmpdir.name) / f"c{_cfg_n}.yaml"
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    # C1: empty (null) scalars must fall back, never reach per-packet code as None
+    p = _cfg("engine:\n  rule_engine:\n    rate_limit:\n      window_seconds:\n"
+             "      max_connections_per_window:\n  kitsune:\n    fm_grace_period:\n")
+    eng = load_engine_config(p)
+    ok = (eng["rule_engine"]["max_connections"] == 100
+          and eng["rule_engine"]["window_seconds"] == 1.0
+          and eng["kitsune"]["fm_grace_period"] == 5000)
+    report("C1 null config values fall back to defaults", not ok, f"engine={eng}")
+
+    # C2: safe_ips must be a list of strings (a bare string used to be iterated
+    # character-by-character, silently dropping loopback protection)
+    p = _cfg('interception:\n  safe_ips: "127.0.0.1"\n  nfqueue_num: -3\n')
+    ic = load_interception_config(p)
+    ok = ic["safe_ips"] == ["127.0.0.1", "::1"] and ic["nfqueue_num"] == 0
+    report("C2 safe_ips/nfqueue_num invalid -> default", not ok, f"interception={ic}")
+
+    # C3: cors_origins "*" dropped; non-list -> default
+    p = _cfg('api:\n  cors_origins:\n    - "*"\n    - "http://a.example"\n')
+    ap = load_api_config(p)
+    dropped = ap["cors_origins"] == ["http://a.example"]
+    p = _cfg('api:\n  cors_origins: "*"\n')
+    ap2 = load_api_config(p)
+    ok = dropped and ap2["cors_origins"] == ["http://localhost:8000",
+                                            "http://127.0.0.1:8000"]
+    report("C3 cors wildcard rejected", not ok,
+           f"list-with-star={ap['cors_origins']}, scalar-star={ap2['cors_origins']}")
+
+    # C4: top-level non-mapping YAML -> every loader returns defaults
+    p = _cfg("- just\n- a\n- list\n")
+    ok = (load_engine_config(p)["rule_engine"]["max_connections"] == 100
+          and load_interception_config(p)["safe_ips"] == ["127.0.0.1", "::1"]
+          and load_blocking_config(p)["strikes_threshold"] == 5
+          and load_api_config(p)["port"] == 8000
+          and load_lucid_config(p)["packets_per_flow"] == 10)
+    report("C4 top-level list -> all loaders default", not ok, "see assertion")
+
+    # C5: malformed YAML -> defaults, no exception
+    p = _cfg("engine: [unclosed\n  ::: bad\n")
+    try:
+        ok = load_engine_config(p)["kitsune"]["ad_grace_period"] == 50000
+        raised = False
+    except Exception as e:  # noqa: BLE001
+        ok, raised = False, e
+    report("C5 malformed YAML -> defaults", not ok, f"raised={raised}")
+
+    # C6: allowed_protocols must be a list of protocol numbers
+    p = _cfg('engine:\n  rule_engine:\n    allowed_protocols: ["tcp", 6]\n')
+    ok = load_engine_config(p)["rule_engine"]["allowed_protocols"] == [6, 17]
+    p = _cfg("engine:\n  rule_engine:\n    allowed_protocols: [6, 400]\n")
+    ok = ok and load_engine_config(p)["rule_engine"]["allowed_protocols"] == [6, 17]
+    report("C6 allowed_protocols invalid -> [6, 17]", not ok, "see assertion")
+
+    # C7: blocking bounds
+    p = _cfg("blocking:\n  strikes_threshold: 0\n  strikes_window: -1\n"
+             "  temp_ban_seconds: 600\n  temp_ban_count_to_perm: 'x'\n  table_max: 10\n")
+    bl = load_blocking_config(p)
+    ok = (bl["strikes_threshold"] == 5 and bl["strikes_window"] == 300.0
+          and bl["temp_ban_seconds"] == 600.0 and bl["temp_ban_count_to_perm"] == 3
+          and bl["table_max"] == 10)
+    report("C7 blocking out-of-range -> defaults", not ok, f"blocking={bl}")
+
+    # C8: lucid model_path defaults to "" (detector must stay unregistered)
+    p = _cfg("engine:\n  lucid:\n    packets_per_flow: 1\n    model_path: 42\n")
+    lu = load_lucid_config(p)
+    ok = lu["model_path"] == "" and lu["packets_per_flow"] == 10 and lu["time_window"] == 10.0
+    report("C8 lucid model_path/packets_per_flow validated", not ok, f"lucid={lu}")
+
+    # C9: api host/port validated
+    p = _cfg("api:\n  host: 127.0.0.1\n  port: 99999\n")
+    ap = load_api_config(p)
+    ok = ap["host"] == "127.0.0.1" and ap["port"] == 8000
+    report("C9 api host/port validated", not ok, f"api={ap}")
+
+    # C10: the shipped config/config.yaml still loads with documented values
+    shipped = Path(__file__).resolve().parent.parent / "config" / "config.yaml"
+    eng = load_engine_config(shipped)
+    ic = load_interception_config(shipped)
+    bl = load_blocking_config(shipped)
+    ap = load_api_config(shipped)
+    lu = load_lucid_config(shipped)
+    ok = (eng["kitsune"]["fm_grace_period"] == 5000
+          and eng["rule_engine"]["max_connections"] == 100
+          and eng["rule_engine"]["allowed_protocols"] == [6, 17]
+          and ic["nfqueue_num"] == 0 and "127.0.0.1" in ic["safe_ips"]
+          and bl["strikes_threshold"] == 5 and bl["table_max"] == 50000
+          and ap["port"] == 8000 and "*" not in ap["cors_origins"]
+          and lu["model_path"] == "" and lu["packets_per_flow"] == 10)
+    report("C10 shipped config.yaml loads clean", not ok,
+           f"engine={eng}, lucid={lu}, api={ap}")
+
     print("\n==== SUMMARY ====")
     for name, status in results:
         print(f"  {status:14s} {name}")
 
 
 asyncio.run(main())
+_failed = [name for name, status in results if status == "CONFIRMED-BUG"]
+print(f"\n{len(results) - len(_failed)}/{len(results)} PASS, {len(_failed)} CONFIRMED-BUG")
+sys.exit(1 if _failed else 0)
