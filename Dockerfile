@@ -16,6 +16,11 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . .
 
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash nips \
+    && chown -R nips:nips /app
+USER nips
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TF_CPP_MIN_LOG_LEVEL=2

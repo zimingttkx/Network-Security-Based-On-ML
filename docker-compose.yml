@@ -5,6 +5,7 @@
 services:
   api:
     build: .
+    image: network-security-ml:latest
     container_name: nips-api
     restart: unless-stopped
     ports:
@@ -15,6 +16,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - TF_CPP_MIN_LOG_LEVEL=2
+      # Example: set via docker run -e NIPS_API_TOKEN=your_secret_token
+      # - NIPS_API_TOKEN=${NIPS_API_TOKEN}
     volumes:
       - ./rules.json:/app/rules.json
     healthcheck:

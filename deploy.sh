@@ -1,9 +1,9 @@
 #!/bin/bash
-# Network Security ML - 部署脚本
+# NIPS — Network Intrusion Prevention System deployment
 
 set -e
 
-# 颜色输出
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -13,61 +13,71 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# 检查依赖
+# Check dependencies
 check_dependencies() {
-    log_info "检查依赖..."
-    command -v docker >/dev/null 2>&1 || { log_error "需要安装Docker"; exit 1; }
-    command -v docker-compose >/dev/null 2>&1 || { log_error "需要安装docker-compose"; exit 1; }
+    log_info "Checking dependencies..."
+    command -v docker >/dev/null 2>&1 || { log_error "Docker required"; exit 1; }
+    command -v docker compose >/dev/null 2>&1 || { log_error "docker compose plugin required"; exit 1; }
 }
 
-# 构建镜像
+# Build image
 build() {
-    log_info "构建Docker镜像..."
-    docker build -t network-security-ml:latest .
+    log_info "Building Docker image..."
+    docker compose build api
 }
 
-# 启动服务
+# Start services
 start() {
-    log_info "启动服务..."
-    docker-compose up -d
-    log_info "服务已启动: http://localhost:8000"
+    log_info "Starting services..."
+    
+    # Create empty rules.json if missing (bind-mount source must exist)
+    [ -f rules.json ] || touch rules.json
+    
+    docker compose up -d
+    log_info "API available at http://localhost:8000"
 }
 
-# 停止服务
+# Stop services
 stop() {
-    log_info "停止服务..."
-    docker-compose down
+    log_info "Stopping services..."
+    docker compose down
 }
 
-# 查看日志
+# View logs
 logs() {
-    docker-compose logs -f app
+    docker compose logs -f api
 }
 
-# 健康检查
+# Health check
 health() {
     curl -s http://localhost:8000/health | python -m json.tool
 }
 
-# 运行测试
+# Run verification tests
 test() {
-    log_info "运行测试..."
-    docker-compose exec api python -m pytest tests/ -v
+    log_info "Running verification tests..."
+    docker compose exec api python3.13 /app/scripts/verify_engine_module.py
+    docker compose exec api python3.13 /app/scripts/verify_interception_module.py
+    docker compose exec api python3.13 /app/scripts/verify_block_lifecycle.py
+    docker compose exec api python3.13 /app/scripts/verify_live_exposed_bugs.py
+    docker compose exec api python3.13 /app/scripts/verify_fpr_regression.py
+    docker compose exec api python3.13 /app/scripts/verify_features_module.py
+    docker compose exec api python3.13 /app/scripts/verify_data_module.py
 }
 
-# 帮助信息
+# Help
 usage() {
-    echo "用法: $0 {build|start|stop|restart|logs|health|test}"
-    echo "  build   - 构建Docker镜像"
-    echo "  start   - 启动服务"
-    echo "  stop    - 停止服务"
-    echo "  restart - 重启服务"
-    echo "  logs    - 查看日志"
-    echo "  health  - 健康检查"
-    echo "  test    - 运行测试"
+    echo "Usage: $0 {build|start|stop|restart|logs|health|test}"
+    echo "  build   - Build Docker image"
+    echo "  start   - Start services"
+    echo "  stop    - Stop services"
+    echo "  restart - Restart services"
+    echo "  logs    - View logs"
+    echo "  health  - Health check"
+    echo "  test    - Run verification tests"
 }
 
-# 主函数
+# Main
 case "$1" in
     build) check_dependencies; build ;;
     start) check_dependencies; start ;;
