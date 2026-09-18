@@ -18,11 +18,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import signal
 import sys
 import urllib.request
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from networksecurity.engine import DetectionPipeline
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector

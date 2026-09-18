@@ -194,7 +194,6 @@ class FlowTracker:
             flow = self._flows.pop(key, None)
             if flow is None:
                 continue
-            self._last_seen.pop(key, None)
             self._gen.pop(key, None)
             expired.append(flow)
         if expired:
