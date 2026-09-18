@@ -31,7 +31,7 @@ Incoming Traffic
 
 The rule engine handles known-bad traffic deterministically (blacklist, whitelist, rate limit, protocol allowlist). Anything that passes is scored by Kitsune, an unsupervised packet-level anomaly detector that trains on normal traffic and flags deviations by reconstruction error (RMSE).
 
-LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pipeline by default — it requires TensorFlow (`pip install nips[lucid]` or `pip install tensorflow`) and a trained model, and must be explicitly enabled. See `networksecurity/engine/lucid/`.
+LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pipeline by default — it requires TensorFlow (`pip install -e ".[lucid]"` or `pip install tensorflow`) and a trained model, and must be explicitly enabled. See `networksecurity/engine/lucid/`.
 
 ### Algorithms
 
@@ -66,7 +66,10 @@ pip install -r requirements.txt
 
 # Optional: the LUCID CNN detector needs TensorFlow, which is not part of the
 # default install (the adapter stays inactive without it).
-pip install tensorflow    # or: pip install nips[lucid]
+pip install -e ".[lucid]"     # or: pip install tensorflow
+
+# Optional: scapy is needed for offline pcap testing (cli.py test --pcap)
+pip install scapy
 ```
 
 ### 3. Run the API

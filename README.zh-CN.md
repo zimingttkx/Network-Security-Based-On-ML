@@ -31,12 +31,14 @@
 
 规则引擎确定性地处理已知恶意流量（黑名单、白名单、限速、协议白名单）。通过的数据包交给 Kitsune——一个无监督的包级异常检测器，先在正常流量上训练，再用重建误差（RMSE）偏离程度来标记异常。
 
-LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流水线，需要 TensorFlow（`pip install nips[lucid]` 或 `pip install tensorflow`）和训练好的模型，并显式启用。见 `networksecurity/engine/lucid/`。
+LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流水线，需要 TensorFlow（`pip install -e ".[lucid]"` 或 `pip install tensorflow`）和训练好的模型，并显式启用。见 `networksecurity/engine/lucid/`。
 
 ### 算法
 
 - **Kitsune (NDSS'18)** — AfterImage 增量统计（100 维特征）+ KitNET 自编码器集成。在线训练，无需标签。
 - **LUCID (IEEE TNSM 2020)** — 在 10 包流窗口（每包 11 维特征）上跑的 1D CNN。默认关闭，需要训练好的模型。
+
+> **关于协议过滤：** 规则引擎的协议白名单只包含 TCP(6) 和 UDP(17)。其他任何协议——包括 **ICMP(1)**——默认都会被拦截。也就是说，合法的 ICMP（ping、PMTUD、traceroute）同样会被丢弃，除非其源地址在白名单中。如果你运行的网络依赖 ICMP，请把相关源地址加入白名单，或在启用实时拦截前先收紧该策略。
 
 ---
 
@@ -64,7 +66,10 @@ pip install -r requirements.txt
 
 # 可选：LUCID CNN 检测器需要 TensorFlow，默认安装不包含它
 #（未安装时 LUCID 适配器保持未激活状态）。
-pip install tensorflow    # 或：pip install nips[lucid]
+pip install -e ".[lucid]"     # 或：pip install tensorflow
+
+# 可选：离线 pcap 测试（cli.py test --pcap）需要 scapy
+pip install scapy
 ```
 
 ### 3. 运行 API
@@ -85,7 +90,7 @@ python cli.py unblock 1.2.3.4        # 解封某个 IP
 python cli.py whitelist 10.0.0.0/8   # 将某个子网加入白名单
 python cli.py rules                  # 列出黑名单/白名单条目
 python cli.py alerts --last 20       # 查看最近告警（通过 API）
-python cli.py test --pcap sample.pcap  # 离线检测测试
+python cli.py test --pcap sample.pcap  # 离线检测测试（无需 root）
 ```
 
 ---
@@ -223,6 +228,20 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 为什么在 NSL-KDD 上检出率偏低：NSL-KDD 记录是**流级摘要**，不是真实抓包。把每条流映射成几个包，会丢掉 Kitsune 依赖的时序和突发模式。大流量型攻击（DoS、probe）比内容型攻击（R2L、U2R）更能保留映射后的特征——后者在包级看起来和正常 TCP 没有区别。把各攻击类别的数字当作这一局限性的说明，而不是实测准确率。
 
 规则引擎本身是精确的：黑名单/白名单、协议过滤、限速都是确定性的，且始终在 ML 阶段之前执行。
+
+### 用真实流量做离线测试
+
+有两条路径可以在**不需要** root 和 iptables 的情况下验证检测流水线的行为——适合在真实抓包上确认效果：
+
+- **真实 pcap（验证真实性能的首选）：** 抓包后离线跑过流水线。
+  ```bash
+  # 抓取 30 秒实时流量（抓包本身需要 root）
+  sudo python -c "from scapy.all import sniff, wrpcap; wrpcap('cap.pcap', sniff(iface='en0', timeout=30))"
+  # 离线检测——无需 root
+  python cli.py test --pcap cap.pcap
+  ```
+  这样能暴露**真实**的误报率（例如合法 ICMP 被协议过滤拦截），下面的合成模拟做不到这一点。注意 Kitsune 大约需要 55k 个正常包才会离开训练模式，所以短抓包主要测的是规则引擎。
+- **合成攻击模拟：** `scripts/attack_simulation.py` 生成带标签的流量并按攻击类别报告检出率。它的 ICMP/SSH 结果反映的是硬性协议规则和可分离的生成器分布，不是生产环境的准确率——快速模式下整体约 20% 的攻击检出率应视为下限，而非准确率声明。
 
 ---
 
