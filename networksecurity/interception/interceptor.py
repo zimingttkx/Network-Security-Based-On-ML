@@ -20,7 +20,7 @@ from pathlib import Path
 
 from networksecurity.engine.block_policy import BlockPolicy
 from networksecurity.engine.detector import PacketInfo
-from networksecurity.engine.pipeline import DetectionPipeline
+from networksecurity.engine.pipeline import DetectionPipeline, DetectionUnavailable
 from networksecurity.engine.verdict import Action, Verdict
 from networksecurity.interception.iptables import IptablesManager
 from networksecurity.interception.nfqueue_handler import NFQueueHandler
@@ -29,6 +29,11 @@ from networksecurity.interception.nfqueue_handler import NFQueueHandler
 # are intentionally NOT persisted (reversible by design); the API layer
 # saves the same file when operators edit rules manually.
 RULES_FILE = Path(__file__).resolve().parent.parent.parent / "rules.json"
+
+# Seconds between "detection unavailable" log lines.  In a total ML outage
+# every packet that the rule engine does not decide fail-closes, so an
+# unthrottled message would fill the disk at line rate.
+_UNAVAILABLE_LOG_INTERVAL = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +84,13 @@ class Interceptor:
         # loop (which fail-closes ALL traffic) is visible via the status API
         # instead of presenting as a silent network outage.
         self._last_detect_mono: float | None = None
+        # Fail-closed drops caused by a total ML outage.  Every packet that
+        # the rule engine does not decide raises DetectionUnavailable in that
+        # state, so the log line is throttled to one per
+        # _UNAVAILABLE_LOG_INTERVAL seconds and the count carries the real
+        # magnitude into status().
+        self._unavailable_drops: int = 0
+        self._last_unavail_log_mono: float = 0.0
 
     # -- public -------------------------------------------------------------
 
@@ -316,6 +328,7 @@ class Interceptor:
             "nfqueue_packets": self._nfqueue.packet_count,
             "nfqueue_dropped": self._nfqueue.dropped_count,
             "detection_loop_stale_seconds": stale,
+            "detection_unavailable_drops": self._unavailable_drops,
             "pipeline": self._pipeline.status(),
         }
 
@@ -327,7 +340,10 @@ class Interceptor:
         Schedules the async detection coroutine on the interceptor's
         dedicated event loop and waits for the result.  Returns ``True``
         to drop the packet.  On any detection failure the packet is
-        **dropped** (fail-closed), never silently accepted.
+        **dropped** (fail-closed), never silently accepted.  A total ML
+        outage arrives as ``DetectionUnavailable`` and is dropped the same
+        way, but logged at most once per ``_UNAVAILABLE_LOG_INTERVAL``
+        seconds because in that state it repeats on every packet.
 
         A timeout only drops *this* packet inline.  It must NOT commit a
         permanent iptables block: the detection verdict may still be
@@ -358,6 +374,21 @@ class Interceptor:
                     self._detect_timeout, packet.src_ip,
                 )
                 return True
+        except DetectionUnavailable:
+            # Total ML outage: the pipeline refuses to guess, so the packet
+            # is dropped.  Expected to repeat on every packet until a
+            # detector recovers, hence the throttled log + counter.
+            self._unavailable_drops += 1
+            now = time.monotonic()
+            if now - self._last_unavail_log_mono >= _UNAVAILABLE_LOG_INTERVAL:
+                self._last_unavail_log_mono = now
+                logger.error(
+                    "detection unavailable — dropping packets (fail-closed); "
+                    "%d dropped so far, broken_detectors=%s",
+                    self._unavailable_drops,
+                    self._pipeline.status()["broken_detectors"],
+                )
+            return True
         except Exception:
             logger.exception("detection error — dropping packet (fail-closed)")
             return True

@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from networksecurity.engine import Action, DetectionPipeline, PacketInfo
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
+from networksecurity.engine.pipeline import DetectionUnavailable
 from networksecurity.engine.rule_engine import RateLimiter, RuleEngine
 from networksecurity.engine.verdict import ThreatLevel
 
@@ -37,6 +38,11 @@ def pkt(**kw) -> PacketInfo:
 # P3 fallback ALLOW verdict when chain abstains
 # P4 counters consistent (total_processed/blocked)
 # P5 reset() clears counters and detectors
+# P6 every ML detector broken -> DetectionUnavailable (fail-closed, not ALLOW)
+# P7 abstain (None) and LOG verdicts count as executed -> ALLOW kept
+# P8 no ML detector registered -> ALLOW fallback kept
+# P9 deterministic rule-engine verdicts still returned during a total ML outage
+# P10 status() degraded / ml_unavailable reflect partial vs total ML loss
 # Checklist — rule_engine
 # R1 whitelist hit -> ALLOW confidence 1.0
 # R2 protocol filter blocks non-TCP/UDP (ICMP=1)
@@ -101,6 +107,100 @@ async def main():
     pl3 = DetectionPipeline()
     v3 = await pl3.process_packet(pkt())
     report("P3 fallback ALLOW", v3.action != Action.ALLOW, f"verdict={v3.action}")
+
+    # --- P6-P10: fail-closed when no ML detector could run -------------------
+    class AlwaysRaises(BaseDetector):
+        async def process_packet(self, packet):
+            raise RuntimeError("detector blew up")
+
+    class Abstains(BaseDetector):
+        async def process_packet(self, packet):
+            return None
+
+    class Logs(BaseDetector):
+        async def process_packet(self, packet):
+            return Verdict(Action.LOG, 0.0, reason="warming up", detector="Logs")
+
+    pl6 = DetectionPipeline()
+    pl6.add_detector(AlwaysRaises())
+    raised = 0
+    allowed = 0
+    for i in range(8):
+        try:
+            await pl6.process_packet(pkt(src_ip=f"6.6.6.{i}"))
+            allowed += 1
+        except DetectionUnavailable:
+            raised += 1
+    s6 = pl6.status()
+    # Every packet fail-closes from the first one: a raising detector means
+    # detection did not happen, so the ALLOW fallback must never be reached —
+    # the breaker tripping on packet 5 only stops the retries.
+    ok = (raised == 8 and allowed == 0
+          and s6["broken_detectors"] == ["AlwaysRaises"]
+          and s6["degraded"] and s6["ml_unavailable"])
+    report("P6 all ML broken -> DetectionUnavailable", not ok,
+           f"raised={raised}, allowed={allowed}, broken={s6['broken_detectors']}, "
+           f"degraded={s6['degraded']}, ml_unavailable={s6['ml_unavailable']}")
+
+    pl7 = DetectionPipeline()
+    pl7.add_detector(Abstains())
+    v7 = await pl7.process_packet(pkt())
+    pl7b = DetectionPipeline()
+    pl7b.add_detector(Logs())
+    v7b = await pl7b.process_packet(pkt())
+    ok = (v7.action == Action.ALLOW and v7.detector == "pipeline"
+          and not pl7.status()["degraded"]
+          and v7b.action == Action.LOG)
+    report("P7 abstain/LOG count as executed", not ok,
+           f"abstain={v7.action}/{v7b.action}, degraded={pl7.status()['degraded']}")
+
+    pl8 = DetectionPipeline()
+    v8 = await pl8.process_packet(pkt())
+    ok = (v8.action == Action.ALLOW and not pl8.status()["ml_unavailable"]
+          and not pl8.status()["degraded"])
+    report("P8 no ML registered keeps ALLOW", not ok,
+           f"verdict={v8.action}, ml_unavailable={pl8.status()['ml_unavailable']}")
+
+    # P9: a deterministic rule-engine decision must survive a total ML outage
+    pl9 = DetectionPipeline()
+    pl9.add_detector(AlwaysRaises())
+    pl9.rule_engine.add_blacklist("6.6.6.6")
+    pl9.rule_engine.add_whitelist("7.7.7.7")
+    # Trip the breaker on traffic the rules do not decide.
+    for _ in range(6):
+        try:
+            await pl9.process_packet(pkt(src_ip="8.8.8.8"))
+        except DetectionUnavailable:
+            pass
+    outage = pl9.status()["ml_unavailable"]
+    v9b = await pl9.process_packet(pkt(src_ip="6.6.6.6"))
+    v9w = await pl9.process_packet(pkt(src_ip="7.7.7.7"))
+    v9u = "verdict"
+    try:
+        await pl9.process_packet(pkt(src_ip="8.8.8.8"))
+    except DetectionUnavailable:
+        v9u = "raised"
+    ok = (outage and v9b.action == Action.BLOCK and v9b.reason == "blacklist"
+          and v9w.action == Action.ALLOW and v9w.reason == "whitelist"
+          and v9u == "raised")
+    report("P9 rule verdicts survive ML outage", not ok,
+           f"ml_unavailable={outage}, blacklist={v9b.action}/{v9b.reason}, "
+           f"whitelist={v9w.action}/{v9w.reason}, undecided={v9u}")
+
+    # P10: partial loss is degraded but still decides
+    pl10 = DetectionPipeline()
+    pl10.add_detector(AlwaysRaises())
+    pl10.add_detector(Abstains())
+    for i in range(5):
+        await pl10.process_packet(pkt(src_ip=f"10.10.10.{i}"))
+    v10 = await pl10.process_packet(pkt(src_ip="10.10.10.9"))
+    s10 = pl10.status()
+    ok = (s10["degraded"] and not s10["ml_unavailable"]
+          and s10["broken_detectors"] == ["AlwaysRaises"]
+          and v10.action == Action.ALLOW)
+    report("P10 partial ML loss degraded not unavailable", not ok,
+           f"degraded={s10['degraded']}, ml_unavailable={s10['ml_unavailable']}, "
+           f"broken={s10['broken_detectors']}, verdict={v10.action}")
 
     # --- R1-R4: rule engine ------------------------------------------------
     re = RuleEngine()

@@ -234,11 +234,12 @@ async def engine_status():
     # detection.  A hung loop fail-closes ALL traffic (fail-closed by
     # design), so surfacing staleness turns a silent network outage into a
     # visible alert.  None = interception never started.
-    detect_stale = (
-        _interceptor.status()["detection_loop_stale_seconds"]
+    inter_status = (
+        _interceptor.status()
         if _interceptor is not None and hasattr(_interceptor, "status")
-        else None
+        else {}
     )
+    detect_stale = inter_status.get("detection_loop_stale_seconds")
     pipe_status = pipeline.status()
     status = {
         "running": interceptor_running or pipeline.running,
@@ -246,6 +247,14 @@ async def engine_status():
         "uptime_seconds": (datetime.now(tz=timezone.utc) - start_time).total_seconds(),
         "detectors": pipe_status["detectors"],
         "broken_detectors": pipe_status["broken_detectors"],
+        # degraded: some ML detectors are out.  ml_unavailable: all of them
+        # are, so every packet the rule engine does not decide raises
+        # DetectionUnavailable and is dropped — detection_unavailable_drops
+        # counts those drops.
+        "degraded": pipe_status["degraded"],
+        "ml_unavailable": pipe_status["ml_unavailable"],
+        "detection_unavailable_drops": inter_status.get(
+            "detection_unavailable_drops"),
         "kitsune_trained": bool(
             hasattr(pipeline, "_detectors")
             and any(

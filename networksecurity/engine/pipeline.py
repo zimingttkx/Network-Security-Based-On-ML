@@ -12,6 +12,23 @@ from networksecurity.engine.verdict import Action, Verdict
 logger = logging.getLogger(__name__)
 
 
+class DetectionUnavailable(RuntimeError):
+    """No ML detector was able to run on a packet.
+
+    Raised instead of returning the ``ALLOW`` fallback when ML detectors are
+    registered but none of them executed — every one is either tripped by the
+    circuit breaker or raised on this packet.  The inline IPS is fail-closed:
+    the interceptor catches this and drops the in-flight packet.  Returning
+    ALLOW instead used to turn a total detector outage into a silent
+    fail-open, waving every packet through at confidence 0.5 while the only
+    visible symptom was a ``broken_detectors`` list nobody watched.
+
+    Not raised when the chain reaches a deterministic decision (a rule-engine
+    BLOCK/ALLOW, or any explicit ML verdict) — those are real verdicts, not
+    the absence of one.
+    """
+
+
 class DetectionPipeline:
     """Orchestrates multiple detectors in priority order.
 
@@ -31,8 +48,10 @@ class DetectionPipeline:
     chain regardless of this flag, because an explicit allow/observe
     decision is final.
 
-    If the chain finishes with no explicit verdict, the final fallback is
-    ``ALLOW``.
+    If the chain finishes with no explicit verdict the fallback is ``ALLOW``
+    — but only when at least one ML detector actually ran.  When ML
+    detectors are registered and none of them executed, ``process_packet``
+    raises ``DetectionUnavailable`` so the caller fail-closes (see above).
 
     Fault isolation: a detector that raises is treated as abstaining for
     that packet, and after ``FAILURE_THRESHOLD`` consecutive exceptions it is
@@ -89,6 +108,15 @@ class DetectionPipeline:
     def detectors(self) -> list[BaseDetector]:
         return self._detectors
 
+    def _ml_detectors(self) -> list[BaseDetector]:
+        """Registered detectors other than the rule engine.
+
+        The rule engine sits at index 0 and is deterministic; everything
+        behind it is a learning detector whose outage has to fail closed
+        rather than fall through to ALLOW.
+        """
+        return [d for d in self._detectors if d is not self._rule_engine]
+
     # -- processing ---------------------------------------------------------
 
     async def process_packet(self, packet: PacketInfo) -> Verdict:
@@ -99,6 +127,12 @@ class DetectionPipeline:
         # verdict even if a later detector overrides it; keep the strongest
         # (highest-confidence) BLOCK seen so far.
         pending_block: Verdict | None = None
+        # Did any ML detector actually run?  An abstain (None) or a LOG
+        # verdict still counts as "ran" — the detector was healthy and made a
+        # (negative) decision.  Only breaker-skips and exceptions leave it
+        # False, and that distinction is what separates "nothing detected"
+        # from "nothing could look".
+        ml_executed = False
 
         for detector in self._detectors:
             if detector.name in self._broken_detectors:
@@ -112,7 +146,9 @@ class DetectionPipeline:
                     self._broken_detectors.add(detector.name)
                     logger.error(
                         "detector %s tripped the circuit breaker after %d "
-                        "consecutive failures — skipping it until restart",
+                        "consecutive failures — skipping it until restart; "
+                        "once every ML detector is skipped the pipeline "
+                        "fail-closes (DetectionUnavailable -> packet dropped)",
                         detector.name, fails,
                     )
                 else:
@@ -122,6 +158,8 @@ class DetectionPipeline:
                     )
                 continue
             self._detector_failures.pop(detector.name, None)
+            if detector is not self._rule_engine:
+                ml_executed = True
             if verdict is None:
                 continue
 
@@ -140,6 +178,12 @@ class DetectionPipeline:
 
         if pending_block is not None:
             return pending_block
+
+        if not ml_executed and self._ml_detectors():
+            raise DetectionUnavailable(
+                "no ML detector could run on this packet "
+                f"(broken: {sorted(self._broken_detectors) or 'all raised'})"
+            )
 
         return Verdict(
             action=Action.ALLOW,
@@ -178,12 +222,21 @@ class DetectionPipeline:
 
     def status(self) -> dict:
         with self._lock:
+            broken = sorted(self._broken_detectors)
+            ml = self._ml_detectors()
+            down = [d.name for d in ml if d.name in self._broken_detectors]
             return {
                 "running": self._running,
                 "total_processed": self._total_processed,
                 "total_blocked": self._total_blocked,
                 "detectors": [d.name for d in self._detectors],
-                "broken_detectors": sorted(self._broken_detectors),
+                "broken_detectors": broken,
+                # degraded: some ML coverage lost.  ml_unavailable: every
+                # registered ML detector is tripped, so any packet that the
+                # rule engine does not decide raises DetectionUnavailable and
+                # is dropped — a full outage, not a partial one.
+                "degraded": bool(down),
+                "ml_unavailable": bool(ml) and len(down) == len(ml),
                 "rule_engine": self._rule_engine.stats(),
             }
 
