@@ -163,9 +163,10 @@ These rules are non-negotiable. Any code violating them will be rejected in PR r
 
 ### Simulation Code Location
 
-- **Only allowed in**: `tests/` directory
+- **Only allowed in**: `scripts/` (benchmarks, evaluation, regression checks) — and `tests/` if one is ever added
 - **Strictly forbidden in**: `networksecurity/engine/`, `networksecurity/interception/`, `networksecurity/features/`
-- **Keywords that trigger rejection**: `mock`, `simulate`, `fake`, `demo_data`, `generate_packet`, `random.randint` (except kitnet weight init), `np.random.randn` (except autoencoder weight init)
+- **Keywords scanned by CI**: `mock`, `simulate`, `fake`, `demo_data`, `generate_packet`, `test_traffic`
+- **Rejected in review (not CI-scanned)**: `random.randint` / `np.random.randn` / `np.random.uniform` outside kitnet/autoencoder weight init
 
 ---
 
@@ -191,7 +192,7 @@ LUCID requires **offline supervised training** on labeled DDoS datasets:
 ## Adding a New Detector
 
 1. Create a new module in `networksecurity/engine/<name>/`
-2. Implement `BaseDetector.process_packet(packet: PacketInfo) -> Optional[Verdict]`
+2. Implement `async def process_packet(self, packet: PacketInfo) -> Verdict | None`
 3. Wire it into `DetectionPipeline` via `pipeline.add_detector()`
 4. Add an adapter if the underlying algorithm has a different interface (see `detector_adapter.py` in kitsune/lucid)
 

@@ -21,9 +21,9 @@ All items must be checked. Unchecked items will result in rejection.
 
 ### No Simulation Code
 
-- [ ] Searched new code for `mock`, `simulate`, `fake`, `demo_data`, `generate_packet` — zero hits in `networksecurity/`
+- [ ] Searched new code for `mock`, `simulate`, `fake`, `demo_data`, `generate_packet`, `test_traffic` — zero hits in `networksecurity/`
 - [ ] No `np.random.randn()` or `random.randint()` in feature extraction or detection logic
-- [ ] All test mocks live in `tests/`, not in `networksecurity/`
+- [ ] All simulation/test code lives in `scripts/`, not in `networksecurity/`
 
 ### Real Blocking
 

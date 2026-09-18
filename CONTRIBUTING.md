@@ -127,12 +127,13 @@ Every PR author must verify these items before submitting. Reviewers will reject
 
 ### No Simulation
 
-Search your code for these keywords. If any appear in `networksecurity/engine/`, `networksecurity/interception/`, or `networksecurity/features/`, remove them before submitting:
+Search your code for these keywords. If any appear in `networksecurity/engine/`, `networksecurity/interception/`, or `networksecurity/features/`, remove them before submitting (**CI scans for exactly these**):
 
 ```
 mock  simulate  fake  demo_data  generate_packet  test_traffic
-np.random.randn(  random.randint(  np.random.uniform(
 ```
+
+Reviewer-enforced (not CI-scanned): `np.random.randn(`, `random.randint(`, `np.random.uniform(` in feature extraction or detection logic.
 
 Exceptions:
 - `afterimage.py`: none allowed
@@ -219,6 +220,9 @@ pip install -r requirements.txt
 
 # Linux only — live interception
 pip install NetfilterQueue
+
+# Offline pcap testing (cli.py test --pcap)
+pip install scapy
 ```
 
 ---

@@ -169,9 +169,9 @@ if not self.is_trained:
 
 ## Simulation Code
 
-Simulation code belongs **only** in `tests/`. Never in `networksecurity/`.
+Simulation code belongs **only** in `scripts/` (benchmarks, evaluation, regression checks). Never in `networksecurity/`.
 
-If you need a mock for testing, put it in `tests/conftest.py` or a `tests/mocks/` directory. Do not add a `simulate=True` parameter to production functions.
+Do not add a `simulate=True` parameter to production functions — keep generation logic in the script that needs it.
 
 ## Directory Changes
 
