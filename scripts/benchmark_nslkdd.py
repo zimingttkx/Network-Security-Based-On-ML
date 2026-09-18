@@ -120,8 +120,11 @@ def load_nslkdd(path: Path) -> list[tuple[dict, str]]:
                 continue
             parts = [p.strip() for p in line.split(",")]
             if len(parts) < 42:
-                continue
+                raise ValueError(f"row has {len(parts)} columns, expected 42")
             label = parts[41]
+            # Validate label is one of the known NSL-KDD attack types or "benign"
+            if label not in ("benign", "normal") and label not in ATTACK_TYPES:
+                raise ValueError(f"unknown label {label!r} in row")
             records.append((_parse_csv_row(parts[:41]), label))
     else:
         # CSV format — first row may be a header.  Skip if it looks text-like.
@@ -141,8 +144,11 @@ def load_nslkdd(path: Path) -> list[tuple[dict, str]]:
                 continue
             parts = [p.strip() for p in line.split(",")]
             if len(parts) < 42:
-                continue
+                raise ValueError(f"row has {len(parts)} columns, expected 42")
             label = parts[41]
+            # Validate label is one of the known NSL-KDD attack types or "benign"
+            if label not in ("benign", "normal") and label not in ATTACK_TYPES:
+                raise ValueError(f"unknown label {label!r} in row")
             records.append((_parse_csv_row(parts[:41]), label))
 
     return records
@@ -269,8 +275,14 @@ async def run_benchmark() -> dict:
     print(f"  Test  normal: {len(test_normal)}   attack: {len(test_attack)}")
 
     # --- Build pipeline ---
+    if not train_normal:
+        raise ValueError("train set has no normal samples — cannot train Kitsune")
+    
     pipeline = DetectionPipeline()
     pipeline.add_detector(KitsuneDetector())
+
+    # Global monotonic timestamp across all flows (not per-flow base)
+    global_ts = 0.0
     kitsune: KitsuneDetector = next(
         d for d in pipeline.detectors if isinstance(d, KitsuneDetector)
     )
@@ -280,7 +292,8 @@ async def run_benchmark() -> dict:
     train_packets = 0
     t0 = time.monotonic()
     for feat, label in train_normal[:30_000]:  # 30k flows → ~150k packets
-        pkts = flow_to_packets(feat, label, count=5)
+        pkts = flow_to_packets(feat, label, count=5, base_ts=global_ts)
+        global_ts += 1.0  # advance globally
         for pkt in pkts:
             await pipeline.process_packet(pkt)
             train_packets += 1
@@ -299,7 +312,8 @@ async def run_benchmark() -> dict:
 
     # Test normal flows
     for feat, label in test_normal[:3000]:
-        pkts = flow_to_packets(feat, label, count=3)
+        pkts = flow_to_packets(feat, label, count=3, base_ts=global_ts)
+        global_ts += 1.0
         for pkt in pkts:
             verdict = await pipeline.process_packet(pkt)
             total_packets += 1
@@ -313,7 +327,8 @@ async def run_benchmark() -> dict:
         attack_type = ATTACK_TYPES.get(label, "unknown")
         if attack_type not in per_attack_counts:
             per_attack_counts[attack_type] = {"detected": 0, "total": 0}
-        pkts = flow_to_packets(feat, label, count=3)
+        pkts = flow_to_packets(feat, label, count=3, base_ts=global_ts)
+        global_ts += 1.0
         for pkt in pkts:
             verdict = await pipeline.process_packet(pkt)
             total_packets += 1

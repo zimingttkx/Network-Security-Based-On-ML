@@ -191,7 +191,7 @@ class Benchmark:
 
         # --- Phase 2: Pure rule-engine throughput (no ML) ---
         print("\n--- Phase 2: Rule-engine throughput ---")
-        self.pipeline.rule_engine.add_blacklist("10.0.0.0/8")  # block everything
+        self.pipeline.rule_engine.add_blacklist("0.0.0.0/0")  # block everything
         count = 0
         t0 = time.monotonic()
         while (time.monotonic() - t0) < 5.0:
@@ -201,7 +201,7 @@ class Benchmark:
         elapsed = time.monotonic() - t0
         rule_qps = count / max(0.001, elapsed)
         print(f"  {count} packets in {elapsed:.1f}s → {rule_qps:.0f} pkt/s")
-        self.pipeline.rule_engine.remove_blacklist("10.0.0.0/8")
+        self.pipeline.rule_engine.remove_blacklist("0.0.0.0/0")
 
         # --- Phase 3: Kitsune training throughput ---
         print("\n--- Phase 3: Kitsune training throughput ---")
