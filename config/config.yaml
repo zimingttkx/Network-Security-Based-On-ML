@@ -20,6 +20,10 @@ engine:
   rule_engine:
     rate_limit:
       window_seconds: 1.0
+      # A "connection" is a new session attempt: a TCP SYN (ACK clear) or a
+      # UDP datagram.  Packets of an established TCP session (ACK/data/FIN)
+      # do not consume the budget, so a bulk transfer cannot rate-limit its
+      # own legitimate peer.
       max_connections_per_window: 100
     allowed_protocols: [6, 17]  # TCP, UDP
 
@@ -36,7 +40,7 @@ interception:
 # escalate to permanent (persisted blacklist).
 blocking:
   strikes_threshold: 5          # BLOCKs inside strikes_window before a temp ban
-  strikes_window: 300.0         # seconds; the strike counter restarts after it
+  strikes_window: 300.0         # seconds; rolling window, old strikes fall off
   temp_ban_seconds: 600.0       # temp-ban TTL
   temp_ban_count_to_perm: 3     # completed temp bans before permanent escalation
   table_max: 50000              # LRU cap on tracked escalation records

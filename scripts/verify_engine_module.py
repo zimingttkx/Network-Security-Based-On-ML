@@ -328,6 +328,131 @@ async def main():
     report("C10 shipped config.yaml loads clean", not ok,
            f"engine={eng}, lucid={lu}, api={ap}")
 
+    # --- E1-E7: rule_engine tiers, atomic save, sliding-window strikes -------
+    import json as _json
+
+    from networksecurity.engine.block_policy import BlockPolicy
+
+    # E1: ephemeral (temp-ban) mirrors match but are never persisted
+    e1 = RuleEngine()
+    e1.add_ephemeral_blacklist("7.7.7.7")
+    v = await e1.process_packet(pkt(src_ip="7.7.7.7"))
+    matched = bool(v and v.action == Action.BLOCK and v.reason == "blacklist")
+    with _tf.TemporaryDirectory() as td:
+        rp = Path(td) / "rules.json"
+        e1.save_rules(rp)
+        saved = _json.loads(rp.read_text())
+    ok = (matched and e1.get_blacklist() == [] and saved["blacklist"] == []
+          and e1.get_ephemeral_blacklist() == ["7.7.7.7"]
+          and e1.stats()["ephemeral_blacklist_size"] == 1)
+    report("E1 ephemeral blacklist matches but never persists", not ok,
+           f"matched={matched}, get_blacklist={e1.get_blacklist()}, saved={saved}")
+
+    # E1b: promotion moves the mirror into the persistent tier
+    promoted = e1.promote_ephemeral("7.7.7.7")
+    ok = (promoted and e1.get_blacklist() == ["7.7.7.7"]
+          and e1.get_ephemeral_blacklist() == [])
+    report("E1b promote_ephemeral moves tier", not ok,
+           f"persistent={e1.get_blacklist()}, ephemeral={e1.get_ephemeral_blacklist()}")
+
+    # E2: host-bits CIDR ("10.0.0.5/24") must still match the network
+    e2 = RuleEngine()
+    e2.add_blacklist("10.0.0.5/24")
+    v = await e2.process_packet(pkt(src_ip="10.0.0.9"))
+    report("E2 non-strict CIDR matches network", not (v and v.action == Action.BLOCK),
+           f"verdict={v}")
+
+    # E3: concurrent savers must not race on a shared temp path
+    e3 = RuleEngine()
+    e3.add_blacklist("3.3.3.3")
+    save_errors = []
+    with _tf.TemporaryDirectory() as td:
+        rp = Path(td) / "rules.json"
+
+        def saver():
+            try:
+                for _ in range(50):
+                    e3.save_rules(rp)
+            except Exception as exc:  # noqa: BLE001
+                save_errors.append(exc)
+
+        st = [threading.Thread(target=saver) for _ in range(8)]
+        for t in st:
+            t.start()
+        for t in st:
+            t.join()
+        try:
+            final = _json.loads(rp.read_text())
+            parsed_ok = final == {"blacklist": ["3.3.3.3"], "whitelist": []}
+        except Exception as exc:  # noqa: BLE001
+            final, parsed_ok = exc, False
+        leftovers = sorted(p.name for p in Path(td).glob("rules.json.*"))
+    ok = not save_errors and parsed_ok and not leftovers
+    report("E3 8-thread concurrent save_rules atomic", not ok,
+           f"errors={save_errors[:2]}, final={final}, leftovers={leftovers}")
+
+    # E4: sliding (not tumbling) strike window
+    t = [0.0]
+    bp = BlockPolicy(strikes_threshold=3, strikes_window=300.0,
+                     temp_ban_seconds=600.0, now=lambda: t[0])
+    seen = []
+    for now in (0.0, 299.0, 301.0, 302.0):
+        t[0] = now
+        enforce, rec = bp.record_block("1.2.3.4")
+        seen.append((now, rec.strikes, rec.state, enforce))
+    ok = (rec.state == "temp_banned" and rec.strikes == 3
+          and list(rec.strike_times) == [299.0, 301.0, 302.0]
+          and seen[2][1] == 2 and not seen[2][3])
+    report("E4 strike window slides instead of resetting", not ok, f"seen={seen}")
+
+    # E5: LRU eviction must not drop a record carrying a live ban
+    t = [0.0]
+    bp5 = BlockPolicy(strikes_threshold=5, strikes_window=300.0, table_max=3,
+                      now=lambda: t[0])
+    for _ in range(5):
+        bp5.record_block("9.9.9.9")            # -> temp_banned
+    for ip in ("8.8.8.8", "6.6.6.6", "5.5.5.5"):
+        bp5.record_block(ip)                    # observing, forces evictions
+    surv = bp5.get("9.9.9.9")
+    ok = surv is not None and surv.state == "temp_banned" and len(bp5._records) <= 3
+    report("E5 eviction skips active bans", not ok,
+           f"9.9.9.9={surv.state if surv else None}, table={list(bp5._records)}")
+
+    # E6: rate limit counts new connections only (TCP SYN / UDP datagrams)
+    e6 = RuleEngine(window_seconds=1000.0, max_connections=3)
+    acks = [await e6.process_packet(pkt(src_ip="4.4.4.4", tcp_flags=0x10,
+                                        timestamp=100.0 + i))
+            for i in range(20)]
+    syns = [await e6.process_packet(pkt(src_ip="4.4.4.4", tcp_flags=0x02,
+                                        timestamp=200.0 + i))
+            for i in range(5)]
+    synack = await e6.process_packet(pkt(src_ip="4.4.4.4", tcp_flags=0x12,
+                                         timestamp=300.0))
+    ack_blocks = sum(1 for v in acks if v and v.action == Action.BLOCK)
+    syn_blocks = sum(1 for v in syns if v and v.action == Action.BLOCK)
+    ok = (ack_blocks == 0 and syn_blocks == 2 and synack is None)
+    report("E6 rate limit counts SYN/UDP only", not ok,
+           f"ack_blocks={ack_blocks}, syn_blocks={syn_blocks}, synack={synack}")
+
+    e6b = RuleEngine(window_seconds=1000.0, max_connections=3)
+    udps = [await e6b.process_packet(pkt(src_ip="4.4.4.5", protocol=17,
+                                         timestamp=100.0 + i))
+            for i in range(5)]
+    udp_blocks = sum(1 for v in udps if v and v.action == Action.BLOCK)
+    report("E6b UDP datagrams still counted", udp_blocks != 2,
+           f"udp_blocks={udp_blocks}")
+
+    # E7: remove_* report whether the entry existed (API 404 semantics)
+    e7 = RuleEngine()
+    e7.add_blacklist("2.2.2.2")
+    e7.add_whitelist("1.1.1.1")
+    ok = (e7.remove_blacklist("2.2.2.2") is True
+          and e7.remove_blacklist("2.2.2.2") is False
+          and e7.remove_whitelist("1.1.1.1") is True
+          and e7.remove_whitelist("1.1.1.1") is False
+          and e7.remove_ephemeral_blacklist("x") is False)
+    report("E7 remove_* return presence", not ok, "see assertion")
+
     print("\n==== SUMMARY ====")
     for name, status in results:
         print(f"  {status:14s} {name}")

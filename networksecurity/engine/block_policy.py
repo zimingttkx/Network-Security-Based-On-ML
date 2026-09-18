@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
@@ -39,18 +39,31 @@ class BlockRecord:
     """Escalation state for one source IP."""
 
     ip: str
-    strikes: int = 0                 # BLOCKs inside the current window
-    window_start: float = 0.0        # timestamp the strike window opened
+    # Timestamps of the BLOCKs inside the rolling window.  The previous
+    # ``strikes`` counter plus a ``window_start`` was a tumbling window: once
+    # a BLOCK arrived more than ``strikes_window`` after ``window_start`` the
+    # whole counter was wiped, discarding strikes that were still recent
+    # evidence.  Measured with threshold=3/window=300 and BLOCKs at
+    # t=0,299,301,302: tumbling reset at t=301 and only reached 2 strikes by
+    # t=302, so the configured escalation never fired even though three BLOCKs
+    # landed inside 300s.  Keeping the timestamps lets old strikes fall off
+    # one at a time.
+    strike_times: deque[float] = field(default_factory=deque)
     state: BlockState = "observing"
     temp_ban_until: float | None = None
     temp_ban_count: int = 0          # completed temp bans -> perm escalation
     first_seen: float = 0.0
     last_seen: float = 0.0
 
+    @property
+    def strikes(self) -> int:
+        """BLOCKs currently inside the rolling window."""
+        return len(self.strike_times)
+
     def to_dict(self) -> dict:
         return {
             "ip": self.ip,
-            "strikes": self.strikes,
+            "strikes": len(self.strike_times),
             "state": self.state,
             "temp_ban_until": self.temp_ban_until,
             "temp_ban_count": self.temp_ban_count,
@@ -102,19 +115,18 @@ class BlockPolicy:
         with self._lock:
             rec = self._records.get(ip)
             if rec is None:
-                rec = BlockRecord(ip=ip, first_seen=now, window_start=now)
+                rec = BlockRecord(ip=ip, first_seen=now)
                 self._insert(rec)
             rec.last_seen = now
             self._records.move_to_end(ip)
 
-            # Strike window semantics: a counter older than the window means
-            # stale evidence, so the counter restarts rather than compounding
-            # (a source with one anomaly a day never escalates).
-            if now - rec.window_start > self.strikes_window:
-                rec.window_start = now
-                rec.strikes = 0
-
-            rec.strikes += 1
+            # Sliding window: strikes older than the window are stale evidence
+            # and fall off individually, so a source with one anomaly a day
+            # never accumulates towards a ban.
+            cutoff = now - self.strikes_window
+            while rec.strike_times and rec.strike_times[0] <= cutoff:
+                rec.strike_times.popleft()
+            rec.strike_times.append(now)
 
             if rec.state == "perm_banned":
                 return False, rec
@@ -130,7 +142,7 @@ class BlockPolicy:
                     return True, rec
                 return False, rec
 
-            if rec.strikes >= self.strikes_threshold:
+            if len(rec.strike_times) >= self.strikes_threshold:
                 if rec.temp_ban_count >= self.temp_ban_count_to_perm:
                     # Served the full temp-ban quota already and it is back
                     # on the threshold: no more rotation, permanent ban.
@@ -163,8 +175,7 @@ class BlockPolicy:
                         and rec.temp_ban_until <= now):
                     rec.state = "observing"
                     rec.temp_ban_until = None
-                    rec.window_start = now
-                    rec.strikes = 0
+                    rec.strike_times.clear()
                     lifted.append(rec.ip)
         return lifted
 
@@ -188,21 +199,31 @@ class BlockPolicy:
     # -- internals -----------------------------------------------------------
 
     def _insert(self, rec: BlockRecord) -> None:
-        """Insert a record, evicting the LRU entry over capacity.
+        """Insert a record, evicting an LRU *observing* entry over capacity.
 
-        Eviction only drops *observing* records' eligibility; an evicted
-        temp_banned/perm_banned IP's enforcement (iptables + blacklist)
-        lives outside this table and is unaffected.  The new record itself
-        is never an eviction candidate (table_max >= 1 guarantees room once
-        the evictions run before the insert).
+        Only observing records are safe to evict.  A temp_banned/perm_banned
+        record is the sole holder of the ban's TTL and escalation count: drop
+        it and the kernel DROP plus blacklist mirror stay installed forever
+        with nothing left to lift them.  The candidate scan is O(n) but only
+        runs at capacity.  If the table is entirely active bans there is no
+        safe victim, so the oldest active record is dropped with a WARNING
+        naming the IP whose enforcement now needs a manual lift.
         """
-        while len(self._records) >= self.table_max:
-            _, evicted = self._records.popitem(last=False)
-            if evicted is not rec and evicted.state != "observing":
-                logger.debug(
-                    "evicted active record %s (state=%s) — enforcement persists",
-                    evicted.ip, evicted.state,
-                )
+        if len(self._records) >= self.table_max:
+            victim = next((ip for ip, r in self._records.items()
+                           if r is not rec and r.state == "observing"), None)
+            if victim is None:
+                victim = next((ip for ip, r in self._records.items()
+                               if r is not rec), None)
+                if victim is not None:
+                    logger.warning(
+                        "block table full (%d records, all carrying live bans); "
+                        "evicting %s (state=%s) — its enforcement must be lifted "
+                        "manually", len(self._records), victim,
+                        self._records[victim].state,
+                    )
+            if victim is not None:
+                del self._records[victim]
         self._records[rec.ip] = rec
 
 

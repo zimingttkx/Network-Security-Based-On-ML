@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import ipaddress
-import os
 import json
 import logging
+import os
+import tempfile
 import threading
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from pathlib import Path
 
 from networksecurity.engine.detector import BaseDetector, PacketInfo
 from networksecurity.engine.verdict import Action, ThreatLevel, Verdict
+
+logger = logging.getLogger(__name__)
+
+# A parsed CIDR rule (v4 or v6).
+_Net = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
 class RateLimiter:
@@ -71,9 +77,21 @@ class RuleEngine(BaseDetector):
 
     Stages (short-circuit on first match):
     1. Whitelist  -> ALLOW
-    2. Blacklist  -> BLOCK
-    3. Rate limit -> BLOCK
-    4. None       -> pass to next detector
+    2. Protocol   -> BLOCK (anything outside ``allowed_protocols``)
+    3. Blacklist  -> BLOCK (persistent + ephemeral, see below)
+    4. Rate limit -> BLOCK (new connections only: TCP SYN and UDP datagrams)
+    5. None       -> pass to next detector
+
+    Two blacklist tiers with different provenance:
+
+    ``_blacklist`` holds operator entries and permanent bans.  It is what
+    ``save_rules`` persists, so it survives a restart.
+
+    ``_ephemeral_blacklist`` holds temp-ban mirrors installed by the block
+    policy.  They have a TTL and are lifted by the expiry sweeper, so
+    persisting them would resurrect expired bans after every restart — they
+    are kept in a separate set that ``get_blacklist``/``save_rules`` never
+    touch.  Matching checks the union.
     """
 
     def __init__(self, window_seconds: float = 1.0, max_connections: int = 1000,
@@ -81,6 +99,14 @@ class RuleEngine(BaseDetector):
         super().__init__(name="RuleEngine")
         self._whitelist: set[str] = set()
         self._blacklist: set[str] = set()
+        self._ephemeral_blacklist: set[str] = set()
+        # Pre-parsed CIDR entries.  Parsing every "/"-containing rule on every
+        # packet made match cost linear in table size (ip_network() alone is
+        # ~4us), so the lists are rebuilt on mutation and matching only does
+        # address-in-network tests.
+        self._wl_nets: list[_Net] = []
+        self._bl_nets: list[_Net] = []
+        self._bl_eph_nets: list[_Net] = []
         # Protocols allowed through.  Inline IPS: only TCP(6) and UDP(17)
         # are passed; everything else (ICMP, etc.) is blocked by default.
         # Overridable via config.yaml -> engine.rule_engine.allowed_protocols.
@@ -101,6 +127,12 @@ class RuleEngine(BaseDetector):
         # _is_blacklisted/_is_whitelisted and force a fail-closed drop of all
         # traffic.
         self._lock = threading.Lock()
+        # Serializes save_rules on its own lock: a fixed "<name>.tmp" sidecar
+        # made two concurrent savers race on the same path (one os.replace'd
+        # the file the other was still writing -> FileNotFoundError), and
+        # taking self._lock for the whole write would stall per-packet
+        # matching behind disk I/O.
+        self._save_lock = threading.Lock()
 
     # -- public API ---------------------------------------------------------
 
@@ -126,7 +158,7 @@ class RuleEngine(BaseDetector):
                            reason=f"protocol {packet.protocol} not allowed",
                            detector=self.name)
 
-        # 3. Blacklist check
+        # 3. Blacklist check (persistent + ephemeral temp-ban mirrors)
         if self._is_blacklisted(packet.src_ip):
             with self._lock:
                 self._blocked_count += 1
@@ -134,8 +166,11 @@ class RuleEngine(BaseDetector):
                            threat_level=ThreatLevel.HIGH,
                            reason="blacklist", detector=self.name)
 
-        # 4. Rate limit
-        if not self._rate_limiter.check(packet.src_ip, packet.timestamp):
+        # 4. Rate limit — new connections only.  Counting every packet of an
+        # established TCP session filled the bucket with a single bulk
+        # transfer, so a legitimate peer got blocked mid-stream.
+        if (self._counts_toward_rate(packet)
+                and not self._rate_limiter.check(packet.src_ip, packet.timestamp)):
             with self._lock:
                 self._blocked_count += 1
             return Verdict(action=Action.BLOCK, confidence=0.9,
@@ -144,36 +179,107 @@ class RuleEngine(BaseDetector):
 
         return None  # pass
 
+    @staticmethod
+    def _counts_toward_rate(packet: PacketInfo) -> bool:
+        """True for TCP SYN (ACK clear) and UDP datagrams.
+
+        A "connection" for rate-limit purposes is a new session attempt:
+        TCP handshake openers and connectionless UDP packets.  Pure ACKs,
+        data segments and FIN/RST carry no new session and must not consume
+        the budget.
+        """
+        if packet.protocol == 17:  # UDP
+            return True
+        if packet.protocol == 6:   # TCP: SYN set, ACK clear
+            return packet.tcp_flags & 0x12 == 0x02
+        return False
+
     # -- whitelist / blacklist management -----------------------------------
 
     def add_whitelist(self, entry: str) -> None:
         with self._lock:
             self._whitelist.add(entry)
+            self._wl_nets = self._parse_nets(self._whitelist, "whitelist")
 
     def add_blacklist(self, entry: str) -> None:
         with self._lock:
             self._blacklist.add(entry)
+            self._bl_nets = self._parse_nets(self._blacklist, "blacklist")
 
-    def remove_whitelist(self, entry: str) -> None:
+    def remove_whitelist(self, entry: str) -> bool:
+        """Drop *entry*; return False when it was not present."""
         with self._lock:
+            if entry not in self._whitelist:
+                return False
             self._whitelist.discard(entry)
+            self._wl_nets = self._parse_nets(self._whitelist, "whitelist")
+            return True
 
-    def remove_blacklist(self, entry: str) -> None:
+    def remove_blacklist(self, entry: str) -> bool:
+        """Drop a persistent *entry*; return False when it was not present."""
         with self._lock:
+            if entry not in self._blacklist:
+                return False
             self._blacklist.discard(entry)
+            self._bl_nets = self._parse_nets(self._blacklist, "blacklist")
+            return True
 
     def get_whitelist(self) -> list[str]:
         with self._lock:
             return sorted(self._whitelist)
 
     def get_blacklist(self) -> list[str]:
+        """Persistent blacklist only — this is what gets saved to disk."""
         with self._lock:
             return sorted(self._blacklist)
+
+    # -- ephemeral (temp-ban) blacklist -------------------------------------
+
+    def add_ephemeral_blacklist(self, entry: str) -> None:
+        """Mirror a temp ban into matching without making it persistent."""
+        with self._lock:
+            self._ephemeral_blacklist.add(entry)
+            self._bl_eph_nets = self._parse_nets(self._ephemeral_blacklist,
+                                                 "ephemeral blacklist")
+
+    def remove_ephemeral_blacklist(self, entry: str) -> bool:
+        """Lift a temp-ban mirror; return False when it was not present."""
+        with self._lock:
+            if entry not in self._ephemeral_blacklist:
+                return False
+            self._ephemeral_blacklist.discard(entry)
+            self._bl_eph_nets = self._parse_nets(self._ephemeral_blacklist,
+                                                 "ephemeral blacklist")
+            return True
+
+    def get_ephemeral_blacklist(self) -> list[str]:
+        with self._lock:
+            return sorted(self._ephemeral_blacklist)
+
+    def promote_ephemeral(self, entry: str) -> bool:
+        """Move *entry* from the ephemeral tier to the persistent one.
+
+        Used when a temp ban escalates to permanent: the mirror stops being
+        TTL-bound and becomes savable.  Returns False if there was no mirror
+        to promote (the caller still gets a persistent entry).
+        """
+        with self._lock:
+            found = entry in self._ephemeral_blacklist
+            self._ephemeral_blacklist.discard(entry)
+            self._bl_eph_nets = self._parse_nets(self._ephemeral_blacklist,
+                                                 "ephemeral blacklist")
+            self._blacklist.add(entry)
+            self._bl_nets = self._parse_nets(self._blacklist, "blacklist")
+            return found
 
     # -- persistence ---------------------------------------------------------
 
     def load_rules(self, path: Path) -> None:
-        """Restore blacklist/whitelist from a JSON file."""
+        """Restore blacklist/whitelist from a JSON file.
+
+        Only the persistent tiers are stored, so loading never resurrects an
+        expired temp ban.
+        """
         if not path.exists():
             return
         try:
@@ -183,46 +289,85 @@ class RuleEngine(BaseDetector):
             for ip in data.get("whitelist", []):
                 self.add_whitelist(ip)
         except Exception:
-            logger = logging.getLogger(__name__)
             logger.exception("Failed to load rules from %s", path)
 
     def save_rules(self, path: Path) -> None:
-        """Persist blacklist/whitelist to a JSON file (atomic).
+        """Persist the persistent blacklist/whitelist to a JSON file (atomic).
 
-        Writes go to a temp file in the same directory followed by
-        ``os.replace``: a crash mid-write used to leave a truncated
-        rules.json, and load_rules swallows parse errors — so every saved
-        block (including permanent bans escalated by the block policy)
-        would silently vanish on the next restart.
+        Writes go to a uniquely named temp file in the destination directory,
+        are flushed and fsync'd, then ``os.replace``'d into place.  A crash
+        mid-write used to leave a truncated rules.json, and load_rules
+        swallows parse errors — so every saved block (including permanent
+        bans escalated by the block policy) would silently vanish on the next
+        restart.  The unique name plus ``_save_lock`` also fixes concurrent
+        savers racing on one shared ".tmp" path.
         """
         data = {
             "blacklist": self.get_blacklist(),
             "whitelist": self.get_whitelist(),
         }
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(data, indent=2))
-        os.replace(tmp_path, path)
+        payload = json.dumps(data, indent=2)
+        path = Path(path)
+        with self._save_lock:
+            fd, tmp_name = tempfile.mkstemp(dir=str(path.parent),
+                                            prefix=path.name + ".",
+                                            suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(payload)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_name, path)
+            except BaseException:
+                # Never leave a stray sidecar behind on a failed save.
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
+
+    # -- matching ------------------------------------------------------------
 
     def _is_whitelisted(self, ip: str) -> bool:
         with self._lock:
-            return ip in self._whitelist or any(
-                self._ip_in_network(ip, entry)
-                for entry in self._whitelist if "/" in entry
-            )
+            if ip in self._whitelist:
+                return True
+            return self._in_nets(ip, self._wl_nets)
 
     def _is_blacklisted(self, ip: str) -> bool:
         with self._lock:
-            return ip in self._blacklist or any(
-                self._ip_in_network(ip, entry)
-                for entry in self._blacklist if "/" in entry
-            )
+            if ip in self._blacklist or ip in self._ephemeral_blacklist:
+                return True
+            return (self._in_nets(ip, self._bl_nets)
+                    or self._in_nets(ip, self._bl_eph_nets))
 
     @staticmethod
-    def _ip_in_network(ip: str, network: str) -> bool:
+    def _in_nets(ip: str, nets: list[_Net]) -> bool:
+        if not nets:
+            return False
         try:
-            return ipaddress.ip_address(ip) in ipaddress.ip_network(network)
+            addr = ipaddress.ip_address(ip)
         except ValueError:
             return False
+        return any(addr in net for net in nets)
+
+    @staticmethod
+    def _parse_nets(entries: set[str], tier: str) -> list[_Net]:
+        """Pre-parse the CIDR members of *entries*; skip and log invalid ones.
+
+        ``strict=False``: operators write "10.0.0.5/24" meaning "the /24
+        containing 10.0.0.5".  With the strict default that raises ValueError
+        (host bits set) and the rule silently never matched anything.
+        """
+        nets: list[_Net] = []
+        for entry in entries:
+            if "/" not in entry:
+                continue
+            try:
+                nets.append(ipaddress.ip_network(entry, strict=False))
+            except ValueError:
+                logger.warning("ignoring invalid %s CIDR entry %r", tier, entry)
+        return nets
 
     @property
     def blocked_count(self) -> int:
@@ -238,6 +383,7 @@ class RuleEngine(BaseDetector):
             return {
                 "whitelist_size": len(self._whitelist),
                 "blacklist_size": len(self._blacklist),
+                "ephemeral_blacklist_size": len(self._ephemeral_blacklist),
                 "blocked_count": self._blocked_count,
                 "packet_count": self._packet_count,
             }
