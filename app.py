@@ -21,6 +21,9 @@ from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
 app = FastAPI(
     title="NIPS — Network Intrusion Prevention System",
     version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # CORS + auth come from config (api block).  "*" origins are gone: this API
@@ -128,7 +131,17 @@ _interceptor_thread: threading.Thread | None = None
 
 alerts: list[dict] = []
 _alerts_lock: threading.Lock = threading.Lock()
+_start_lock: threading.Lock = threading.Lock()
 start_time: datetime = datetime.now(tz=timezone.utc)
+
+
+# --- Validation ------------------------------------------------------------
+
+from networksecurity.utils.validation import (
+    blacklist_refusal,
+    sweep_refused_entries,
+    validate_ip_or_cidr,
+)
 
 
 def _record_alert(source_ip: str, reason: str, action: str, detector: str) -> None:
@@ -145,22 +158,10 @@ def _record_alert(source_ip: str, reason: str, action: str, detector: str) -> No
 
 
 def _blacklist_refusal(ip: str) -> str | None:
-    """Why ``ip`` must not enter the blacklist, or ``None`` if it may.
-
-    Reuses the kernel's own blockable() test so the persistent rule set can
-    never diverge from what iptables would enforce: a loopback or safe_ips
-    entry would sit in rules.json surviving every restart while the kernel
-    refuses to drop it — the rule LOOKS active but blocks nothing, the worst
-    failure mode for a rule, and the API's kernel vs rule-set views then
-    disagree forever.
-    """
-    from networksecurity.interception.iptables import blockable
+    """Why ``ip`` must not enter the blacklist, or ``None`` if it may."""
     from networksecurity.utils.config import load_interception_config
     safe_ips = load_interception_config().get("safe_ips") or []
-    if not blockable(ip, safe_ips):
-        return (f"{ip!r} is loopback or within interception.safe_ips — "
-                f"the kernel would refuse this block")
-    return None
+    return blacklist_refusal(ip, safe_ips)
 
 
 pipeline.rule_engine.load_rules(RULES_FILE)
@@ -169,12 +170,8 @@ pipeline.rule_engine.load_rules(RULES_FILE)
 # can only be here via older versions or hand-edited rules.json; left in
 # place they persist across restarts as phantom blocks.
 _rules_swept = False
-for _ip in list(pipeline.rule_engine.get_blacklist()):
-    _why = _blacklist_refusal(_ip)
-    if _why is not None:
-        pipeline.rule_engine.remove_blacklist(_ip)
-        logger.warning("startup sweep: %s", _why)
-        _rules_swept = True
+for _ip in sweep_refused_entries(pipeline.rule_engine):
+    _rules_swept = True
 if _rules_swept:
     pipeline.rule_engine.save_rules(RULES_FILE)
 
@@ -210,12 +207,12 @@ class BlacklistEntry(BaseModel):
     @field_validator("ip")
     @classmethod
     def _ip_ok(cls, v: str) -> str:
-        v = _validate_ip_or_cidr(v)
+        v = validate_ip_or_cidr(v)
         # Loopback / safe-ips entries would be persisted (rules.json survives
         # restarts) while the kernel refuses to enforce them — a phantom
         # block.  Reject at the boundary instead of accepting a divergent
         # rule set.
-        refusal = _blacklist_refusal(v)
+        refusal = blacklist_refusal(v)
         if refusal is not None:
             raise ValueError(refusal)
         return v
@@ -227,7 +224,17 @@ class WhitelistEntry(BaseModel):
     @field_validator("ip")
     @classmethod
     def _ip_ok(cls, v: str) -> str:
-        return _validate_ip_or_cidr(v)
+        v = validate_ip_or_cidr(v)
+        # Reject default routes (0.0.0.0/0, ::/0) — whitelisting the entire
+        # internet is not a feature, it's a misconfiguration that defeats
+        # every detection layer.  The error message makes this explicit.
+        try:
+            net = ipaddress.ip_network(v, strict=False)
+            if net.prefixlen == 0:
+                raise ValueError(f"{v!r} is a default route — whitelist cannot cover entire internet")
+        except ValueError:
+            pass  # single IP, OK
+        return v
 
 
 # --- Health -----------------------------------------------------------------
@@ -388,6 +395,7 @@ async def remove_blacklist(ip: str):
 async def add_whitelist(entry: WhitelistEntry):
     pipeline.rule_engine.add_whitelist(entry.ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
+    _record_alert(entry.ip, "whitelist", "allow", "rule_engine")
     return {"status": "ok", "whitelist": pipeline.rule_engine.get_whitelist()}
 
 
@@ -408,91 +416,101 @@ async def engine_start():
     if _interceptor is not None and getattr(_interceptor, "running", False):
         return {"status": "already_running"}
 
-    # Validate environment synchronously before spawning background thread.
-    import os
-    import shutil
+    # Thread-safe start: acquire lock, check again, spawn thread.  This
+    # prevents a fast stop() -> start() cycle from having a stale thread rip
+    # out the NEW interceptor's iptables rules (fail-open window).
+    async def _start_locked():
+        with _start_lock:
+            if _interceptor is not None and getattr(_interceptor, "running", False):
+                return {"status": "already_running"}
+            
+            # Validate environment synchronously before spawning background thread.
+            import os
+            import shutil
 
-    if os.geteuid() != 0:
-        raise HTTPException(
-            status_code=403,
-            detail="Live interception requires root privileges.",
-        )
-    if not shutil.which("iptables"):
-        raise HTTPException(
-            status_code=400,
-            detail="iptables not found — Linux required for live interception.",
-        )
+            if os.geteuid() != 0:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Live interception requires root privileges.",
+                )
+            if not shutil.which("iptables"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="iptables not found — Linux required for live interception.",
+                )
 
-    try:
-        from networksecurity.interception import Interceptor
-    except ImportError:
-        raise HTTPException(
-            status_code=500,
-            detail="Interceptor unavailable — install NetfilterQueue on Linux",
-        )
+            try:
+                from networksecurity.interception import Interceptor
+            except ImportError:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Interceptor unavailable — install NetfilterQueue on Linux",
+                )
 
-    # Load interception config so safe_ips / queue num from config.yaml are
-    # actually applied (previously ignored; config.yaml was dead).
-    from networksecurity.utils.config import load_interception_config, load_blocking_config
-    inter_cfg = load_interception_config()
-    blocking_cfg = load_blocking_config()
+            # Load interception config so safe_ips / queue num from config.yaml are
+            # actually applied (previously ignored; config.yaml was dead).
+            from networksecurity.utils.config import load_interception_config, load_blocking_config
+            inter_cfg = load_interception_config()
+            blocking_cfg = load_blocking_config()
 
-    from networksecurity.engine.block_policy import BlockPolicy
-    policy = BlockPolicy(
-        strikes_threshold=blocking_cfg["strikes_threshold"],
-        strikes_window=blocking_cfg["strikes_window"],
-        temp_ban_seconds=blocking_cfg["temp_ban_seconds"],
-        temp_ban_count_to_perm=blocking_cfg["temp_ban_count_to_perm"],
-        table_max=blocking_cfg["table_max"],
-    )
+            from networksecurity.engine.block_policy import BlockPolicy
+            policy = BlockPolicy(
+                strikes_threshold=blocking_cfg["strikes_threshold"],
+                strikes_window=blocking_cfg["strikes_window"],
+                temp_ban_seconds=blocking_cfg["temp_ban_seconds"],
+                temp_ban_count_to_perm=blocking_cfg["temp_ban_count_to_perm"],
+                table_max=blocking_cfg["table_max"],
+            )
 
-    started = threading.Event()
+            started = threading.Event()
 
-    local_interceptor = Interceptor(
-        pipeline,
-        queue_num=inter_cfg.get("nfqueue_num", 0),
-        safe_ips=inter_cfg.get("safe_ips"),
-        on_verdict=lambda pkt, v: _record_alert(
-            pkt.src_ip, v.reason, v.action.value, v.detector
-        ),
-        block_policy=policy,
-    )
+            local_interceptor = Interceptor(
+                pipeline,
+                queue_num=inter_cfg.get("nfqueue_num", 0),
+                safe_ips=inter_cfg.get("safe_ips"),
+                on_verdict=lambda pkt, v: _record_alert(
+                    pkt.src_ip, v.reason, v.action.value, v.detector
+                ) if v.action.value == "block" else None,
+                block_policy=policy,
+            )
 
-    # Reuse the Interceptor's own setup so the detection event loop is
-    # created correctly (a missing loop would make _on_packet fail-closed and
-    # drop every packet).  setup() installs iptables + creates the loop but
-    # does NOT block on capture, so this handler can return promptly; a
-    # background thread then drains the queue.
-    try:
-        local_interceptor.setup()
-        started.set()
-        _interceptor = local_interceptor
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Failed to set up interception")
-        raise HTTPException(status_code=500, detail=f"Setup failed: {e}")
+            # Reuse the Interceptor's own setup so the detection event loop is
+            # created correctly (a missing loop would make _on_packet fail-closed and
+            # drop every packet).  setup() installs iptables + creates the loop but
+            # does NOT block on capture, so this handler can return promptly; a
+            # background thread then drains the queue.
+            try:
+                local_interceptor.setup()
+                started.set()
+                _interceptor = local_interceptor
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Failed to set up interception")
+                raise HTTPException(status_code=500, detail=f"Setup failed: {e}")
 
-    def _run(instance):
-        try:
-            instance.begin_capture()
-        except Exception:
-            logger.exception("Interceptor thread crashed")
-        finally:
-            # Tear down ONLY the instance this thread owns.  Capturing the
-            # local reference (not the module-global) prevents a fast
-            # stop() -> start() cycle from having this stale thread rip out
-            # the NEW interceptor's iptables rules (fail-open window).
-            instance._running = False
-            instance._iptables.cleanup_all()
+            def _run(instance):
+                try:
+                    instance.begin_capture()
+                except Exception:
+                    logger.exception("Interceptor thread crashed")
+                finally:
+                    # Tear down ONLY the instance this thread owns.  Capturing the
+                    # local reference (not the module-global) prevents a fast
+                    # stop() -> start() cycle from having this stale thread rip out
+                    # the NEW interceptor's iptables rules (fail-open window).
+                    instance._running = False
+                    instance._iptables.cleanup_all()
 
-    _interceptor_thread = threading.Thread(
-        target=_run, args=(local_interceptor,), daemon=True
-    )
-    _interceptor_thread.start()
+            _interceptor_thread = threading.Thread(
+                target=_run, args=(local_interceptor,), daemon=True
+            )
+            _interceptor_thread.start()
 
-    return {
-        "status": "started" if started.is_set() else "start_pending",
-        "pipeline": pipeline.status(),
-    }
+            return {
+                "status": "started" if started.is_set() else "start_pending",
+                "pipeline": pipeline.status(),
+            }
+
+    return await _start_locked()
 
 
 @app.post("/api/v1/engine/stop", dependencies=[Depends(require_token)])
@@ -504,15 +522,32 @@ async def engine_stop():
         return {"status": "not_running"}
 
     try:
-        _interceptor.stop()
+        await _shutdown()
     except Exception:
         logger.exception("Error stopping interceptor")
     pipeline.rule_engine.save_rules(RULES_FILE)
-    _interceptor = None
     return {"status": "stopped"}
 
 
 # --- Main ------------------------------------------------------------------
 
+async def _shutdown():
+    """Cleanup on shutdown: stop interceptor, clean up iptables."""
+    global _interceptor
+    if _interceptor is not None:
+        try:
+            _interceptor.stop()
+        except Exception:
+            logger.exception("Error stopping interceptor at shutdown")
+        finally:
+            _interceptor._iptables.cleanup_all()
+            _interceptor = None
+
+
+@app.on_event("shutdown")
+async def fastapi_shutdown():
+    await _shutdown()
+
+
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)

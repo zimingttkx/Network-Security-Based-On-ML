@@ -26,10 +26,20 @@ from pathlib import Path
 
 from networksecurity.engine import DetectionPipeline
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
+from networksecurity.utils.validation import validate_ip_or_cidr
 
 # --- Persistence paths ------------------------------------------------------
 
 RULES_FILE = Path(__file__).resolve().parent / "rules.json"
+
+
+def _validate_ip(args) -> str:
+    """Validate IP/CIDR, fallback to local rules.json with warning."""
+    try:
+        return validate_ip_or_cidr(args.ip)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _build_pipeline() -> DetectionPipeline:
@@ -250,6 +260,21 @@ def cmd_rules(args) -> None:
         print(f"  {ip}")
 
 
+def cmd_unwhitelist(args) -> None:
+    """Remove an entry from whitelist."""
+    try:
+        _api_request(f"/api/v1/rules/whitelist/{args.ip}", method="DELETE")
+        print(f"Unwhitelisted (live engine): {args.ip}")
+        return
+    except Exception as e:  # noqa: BLE001
+        print(f"WARNING: API unreachable ({e})", file=sys.stderr)
+        print("WARNING: falling back to local rules.json — a RUNNING engine "
+              "will not see this change until restart.", file=sys.stderr)
+    pipeline.rule_engine.remove_whitelist(args.ip)
+    pipeline.rule_engine.save_rules(RULES_FILE)
+    print(f"Unwhitelisted (local rules.json): {args.ip}")
+
+
 def cmd_alerts(args) -> None:
     limit = args.last or 20
     try:
@@ -309,7 +334,10 @@ def main() -> None:
     p = sub.add_parser("unblock", help="Remove IP from blacklist")
     p.add_argument("ip")
     p = sub.add_parser("whitelist", help="Add IP/CIDR to whitelist")
-    p.add_argument("ip")
+    p.add_argument("--ip", required=True, help="IP or CIDR to add")
+    
+    p = sub.add_parser("unwhitelist", help="Remove IP/CIDR from whitelist")
+    p.add_argument("--ip", required=True, help="IP or CIDR to remove")
 
     p = sub.add_parser("alerts", help="Show recent alerts")
     p.add_argument("--last", type=int, default=20)
@@ -329,6 +357,7 @@ def main() -> None:
         "block": cmd_block,
         "unblock": cmd_unblock,
         "whitelist": cmd_whitelist,
+        "unwhitelist": cmd_unwhitelist,
         "rules": cmd_rules,
         "alerts": cmd_alerts,
         "test": cmd_test,
