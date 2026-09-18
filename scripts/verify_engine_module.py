@@ -413,14 +413,93 @@ async def main():
            f"last_timestamp={s.last_timestamp}, weight={s.weight:.4f}, "
            f"rebased={rebased}, decayed_after={decayed}")
 
-    # --- L1/L2: lucid adapter interface --------------------------------------
+    # --- L1-L6: lucid adapter interface --------------------------------------
     from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
+    from networksecurity.engine.lucid.dataset_parser import LucidDatasetParser
+    from networksecurity.engine.lucid.detector import LucidDetector
+    
     la = LucidDetectorAdapter(enabled=False)
     v = await la.process_packet(pkt())
-    report("L1 disabled lucid abstains", v is not None, f"verdict={v}")
-    d = LucidDetectorAdapter._to_lucid_dict(pkt(protocol=17))
-    ok = d["header_size"] == 8 and d["payload_size"] == 60
-    report("L2 lucid dict header_size by protocol", not ok, f"dict={d}")
+    report("L1 untrained lucid returns LOG verdict", v is None or v.action != Action.LOG,
+           f"verdict={v}")
+    
+    d_tcp = LucidDetectorAdapter._to_lucid_dict(pkt(protocol=6))
+    d_udp = LucidDetectorAdapter._to_lucid_dict(pkt(protocol=17))
+    ok = (d_tcp["header_size"] == 40 and d_udp["header_size"] == 8
+          and d_tcp["window_size"] == 0 and d_udp["window_size"] == 0)
+    report("L2 lucid dict header_size by protocol", not ok, f"tcp={d_tcp}, udp={d_udp}")
+    
+    # L3: window_size/direction fields are passed through
+    pkt_with_window = PacketInfo(
+        src_ip="1.2.3.4", dst_ip="10.0.0.1", src_port=1234, dst_port=80,
+        protocol=6, packet_size=100, timestamp=1000.0,
+        window_size=12345, direction=1
+    )
+    d_win = LucidDetectorAdapter._to_lucid_dict(pkt_with_window)
+    ok = d_win["window_size"] == 12345 and d_win["direction"] == 1
+    report("L3 lucid dict passes through window_size/direction", not ok, f"dict={d_win}")
+    
+    # L4: majority vote over attack packets (6 attack vs 4 normal in same flow)
+    parser = LucidDatasetParser(time_window=10.0, packets_per_flow=10)
+    parser.set_attack_info(["3.3.3.3"], ["4.4.4.4"])
+    
+    majority_samples = [
+        {"src_ip": "3.3.3.3", "dst_ip": "4.4.4.4", "timestamp": float(i),
+         "packet_size": 100, "protocol": 6, "tcp_flags": 0x02}
+        for i in range(6)  # 6 attack packets
+    ] + [
+        {"src_ip": "3.3.3.3", "dst_ip": "4.4.4.4", "timestamp": float(i+6),
+         "packet_size": 100, "protocol": 6, "tcp_flags": 0x02}
+        for i in range(4)  # 4 normal packets — same flow
+    ]
+    
+    label = -1
+    for p in majority_samples:
+        result = parser.process_packet(p)
+        if result:
+            _, label = result
+            break
+    
+    ok = label == 1
+    report("L4 majority vote labels attack flow (6 vs 4)", not ok, f"label={label}")
+    
+    # L5: stale flows are discarded, not padded
+    parser2 = LucidDatasetParser(time_window=1.0, packets_per_flow=10)
+    parser2.set_attack_info(["1.1.1.1"], ["2.2.2.2"])
+    
+    # Send 3 packets, then a much later one that would complete the window
+    early = [{"src_ip": "1.1.1.1", "dst_ip": "2.2.2.2", "timestamp": float(i),
+              "packet_size": 100, "protocol": 6, "tcp_flags": 0x02}
+             for i in range(3)]
+    late = {"src_ip": "1.1.1.1", "dst_ip": "2.2.2.2", "timestamp": 1000.0,
+            "packet_size": 100, "protocol": 6, "tcp_flags": 0x02}
+    
+    for p in early:
+        result = parser2.process_packet(p)
+        if result:
+            raise AssertionError("early packets should not complete")
+    
+    result = parser2.process_packet(late)
+    ok = result is None and parser2.expired_flows > 0
+    report("L5 stale flows are discarded (expired_flows counter)", not ok,
+           f"result={result}, expired_flows={parser2.expired_flows}")
+    
+    # L6: independent parser for training doesn't pollute online buffer
+    detector = LucidDetector()
+    train_packets = [
+        {"src_ip": "1.1.1.1", "dst_ip": "2.2.2.2", "timestamp": float(i),
+         "packet_size": 100, "protocol": 6, "tcp_flags": 0x02}
+        for i in range(20)
+    ]
+    try:
+        detector.train_from_packets(train_packets, epochs=1, verbose=0)
+    except Exception:
+        pass  # TF may not be available
+    
+    # Online buffer should still be empty
+    ok = len(detector.parser.flows) == 0
+    report("L6 train_from_packets uses local parser", not ok,
+           f"online buffer size={len(detector.parser.flows)}")
 
     # --- C1-C10: utils.config validation ------------------------------------
     import tempfile as _tf

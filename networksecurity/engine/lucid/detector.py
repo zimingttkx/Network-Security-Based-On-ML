@@ -106,8 +106,12 @@ class LucidDetector:
             epochs: number of training epochs.
             validation_split: validation set ratio.
         """
-        # Parse packets
-        X, y = self.parser.parse_batch(packets)
+        # Use a local parser instance so we don't pollute the online buffer.
+        local_parser = LucidDatasetParser(
+            time_window=self.time_window,
+            packets_per_flow=self.packets_per_flow,
+        )
+        X, y = local_parser.parse_batch(packets)
         
         if len(X) == 0:
             raise ValueError("Not enough packets to generate training samples")
@@ -124,6 +128,41 @@ class LucidDetector:
             X_val, y_val = None, None
         
         return self.train(X_train, y_train, X_val, y_val, epochs, verbose)
+    
+    def load_model(self, path: str) -> bool:
+        """Load a pre-trained Keras model from ``path``.
+        
+        Returns True on success, False if the file doesn't exist or the
+        loaded model's input shape is incompatible.  We validate the shape
+        here rather than letting it fail at inference time.
+        """
+        try:
+            import tensorflow as tf
+            tf.get_logger().setLevel('ERROR')
+            
+            model = tf.keras.models.load_model(path)
+            input_shape = model.input_shape
+            
+            if not (input_shape is not None and len(input_shape) == 3):
+                logger.warning("loaded model has unexpected input_shape %r", input_shape)
+                return False
+            
+            timesteps = input_shape[1]
+            n_features = input_shape[2]
+            if timesteps != self.params['time_steps'] or n_features != self.params['n_features']:
+                logger.warning(
+                    "model input_shape=%s doesn't match detector params=%s; skipping load",
+                    input_shape, (self.params['time_steps'], self.params['n_features'])
+                )
+                return False
+            
+            self.cnn.model = model
+            self.is_trained = True
+            logger.info("LUCID model loaded from %s with input_shape=%s", path, input_shape)
+            return True
+        except Exception:
+            logger.exception("failed to load LUCID model from %s", path)
+            return False
     
     def process_packet(self, packet: dict) -> LucidResult | None:
         """
@@ -147,12 +186,9 @@ class LucidDetector:
         self.total_detections += 1
         
         if not self.is_trained:
-            if not getattr(self, "_warned_untrained", False):
-                logger.warning(
-                    "LUCID detector called but model is not trained. "
-                    "Run detector.train() or detector.load() first."
-                )
-                self._warned_untrained = True
+            # Return LOG verdict (not None) so the pipeline counts this detector
+            # as having run and doesn't raise DetectionUnavailable when all ML
+            # detectors are untrained/disabled.
             return LucidResult(
                 is_ddos=False,
                 confidence=0.0,
@@ -160,22 +196,47 @@ class LucidDetector:
                 detection_time_ms=0.0,
             )
         
-        # Predict
-        sample_batch = sample.reshape(1, self.packets_per_flow, -1)
-        proba = self.cnn.predict_proba(sample_batch)[0]
-        is_ddos = proba[1] > 0.5
-        
-        if is_ddos:
-            self.ddos_detections += 1
-        
-        detection_time = (time.time() - start_time) * 1000
-        
-        return LucidResult(
-            is_ddos=is_ddos,
-            confidence=float(proba[1]),
-            packets_analyzed=self.packets_per_flow,
-            detection_time_ms=detection_time
-        )
+        try:
+            # Predict with shape validation
+            n_samples = sample.shape[0]
+            expected_timesteps = self.params['time_steps']
+            expected_features = self.params['n_features']
+            
+            if sample.ndim != 3 or sample.shape[1] != expected_timesteps or sample.shape[2] != expected_features:
+                logger.warning(
+                    "sample shape=%s doesn't match model input_shape=(None,%d,%d); returning LOG",
+                    sample.shape, expected_timesteps, expected_features
+                )
+                return LucidResult(
+                    is_ddos=False,
+                    confidence=0.0,
+                    packets_analyzed=self.packets_per_flow,
+                    detection_time_ms=0.0,
+                )
+            
+            sample_batch = sample.reshape(1, self.packets_per_flow, -1)
+            proba = self.cnn.predict_proba(sample_batch)[0]
+            is_ddos = proba[1] > 0.5
+            
+            if is_ddos:
+                self.ddos_detections += 1
+            
+            detection_time = (time.time() - start_time) * 1000
+            
+            return LucidResult(
+                is_ddos=is_ddos,
+                confidence=float(proba[1]),
+                packets_analyzed=self.packets_per_flow,
+                detection_time_ms=detection_time
+            )
+        except Exception:
+            logger.exception("LUCID inference failed")
+            return LucidResult(
+                is_ddos=False,
+                confidence=0.0,
+                packets_analyzed=self.packets_per_flow,
+                detection_time_ms=0.0,
+            )
     
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Batch prediction (sklearn-compatible)."""
@@ -209,11 +270,16 @@ class LucidDetector:
         self.total_detections = 0
         self.ddos_detections = 0
     
-    def save(self, path: str):
-        """Save the model."""
-        self.cnn.save(path)
+    def save(self, path: str) -> bool:
+        """Save the model to ``path``."""
+        try:
+            self.cnn.save(path)
+            logger.info("LUCID model saved to %s", path)
+            return True
+        except Exception:
+            logger.exception("failed to save LUCID model to %s", path)
+            return False
     
-    def load(self, path: str):
-        """Load the model."""
-        self.cnn.load(path)
-        self.is_trained = True
+    def load(self, path: str) -> bool:
+        """Load a pre-trained Keras model from ``path``."""
+        return self.load_model(path)

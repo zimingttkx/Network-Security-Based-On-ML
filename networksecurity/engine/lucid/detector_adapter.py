@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from networksecurity.engine.detector import BaseDetector, PacketInfo
@@ -39,33 +40,53 @@ class LucidDetectorAdapter(BaseDetector):
             packets_per_flow=packets_per_flow,
         )
         self._enabled = enabled
+        self._inference_lock = asyncio.Lock()
+    
+    async def load_model(self, path: str) -> bool:
+        """Load a pre-trained Keras model from ``path``."""
+        return await asyncio.to_thread(self._lucid.load_model, path)
 
     # -- BaseDetector interface ---------------------------------------------
 
     async def process_packet(self, packet: PacketInfo) -> Verdict | None:
         if not self._enabled or not self._lucid.is_trained:
-            return None  # not trained / disabled -> pass to next detector
-        self._packet_count += 1
-
-        # LucidDetector.process_packet expects a dict
-        result = self._lucid.process_packet(self._to_lucid_dict(packet))
-        if result is None:
-            return None  # flow not complete yet
-
-        if result.is_ddos:
+            # Return LOG verdict (not None) so the pipeline counts this detector
+            # as having run and doesn't raise DetectionUnavailable when all ML
+            # detectors are untrained/disabled.
             return Verdict(
-                action=Action.BLOCK,
-                confidence=result.confidence,
-                threat_level=ThreatLevel.HIGH,
-                reason=f"LUCID DDoS detected (conf={result.confidence:.2f})",
+                action=Action.LOG,
+                confidence=0.0,
+                threat_level=ThreatLevel.LOW,
+                reason="LUCID not trained",
                 detector=self.name,
-                metadata=result.to_dict(),
             )
-
-        return None
-
-    # -- helpers ------------------------------------------------------------
-
+        
+        self._packet_count += 1
+        
+        try:
+            lucid_dict = self._to_lucid_dict(packet)
+            sample = await asyncio.to_thread(self._lucid.parser.process_packet, lucid_dict)
+            if sample is None:
+                return None
+            
+            feature_matrix, label = sample
+            result = await asyncio.to_thread(self._lucid._detect, feature_matrix)
+            
+            if result.is_ddos:
+                return Verdict(
+                    action=Action.BLOCK,
+                    confidence=result.confidence,
+                    threat_level=ThreatLevel.HIGH,
+                    reason=f"LUCID DDoS detected (conf={result.confidence:.2f})",
+                    detector=self.name,
+                    metadata=result.to_dict(),
+                )
+            
+            return None
+        except Exception:
+            logger.exception("LUCID inference failed")
+            return None
+    
     @property
     def is_trained(self) -> bool:
         return self._enabled and self._lucid.is_trained
@@ -88,9 +109,9 @@ class LucidDetectorAdapter(BaseDetector):
             "packet_size": p.packet_size,
             "timestamp": p.timestamp,
             "tcp_flags": p.tcp_flags,
-            "direction": 0,
+            "direction": p.direction,
             "payload_size": p.payload_size or max(0, p.packet_size - 40),
             "header_size": 40 if p.protocol == 6 else (8 if p.protocol == 17 else 20),
-            "window_size": 65535,
+            "window_size": p.window_size,
             "ttl": p.ttl,
         }

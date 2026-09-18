@@ -95,10 +95,33 @@ for _d in pipeline.detectors:
 # pipeline but stays inactive until a trained model is provided, so it does
 # not silently no-op as an "active" detector.
 try:
-    from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
-    pipeline.add_detector(LucidDetectorAdapter(enabled=False))
+    from networksecurity.utils.config import load_lucid_config
+    
+    _lucid_cfg = load_lucid_config()
+    _model_path = _lucid_cfg.get("model_path", "")
+    
+    if _model_path:
+        from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
+        
+        _lucid_adapter = LucidDetectorAdapter(
+            time_window=_lucid_cfg["time_window"],
+            packets_per_flow=_lucid_cfg["packets_per_flow"],
+            enabled=True,
+        )
+        
+        # Load the model before registering the detector
+        _loaded = asyncio.run(_lucid_adapter.load_model(_model_path))
+        if not _loaded:
+            logger.warning("LUCID model at %r failed to load; detector disabled", _model_path)
+            _lucid_adapter._enabled = False
+        
+        pipeline.add_detector(_lucid_adapter)
+    else:
+        pipeline.add_detector(LucidDetectorAdapter(enabled=False))
 except ImportError:
     pass
+except Exception:
+    logger.exception("failed to initialize LUCID detector")
 
 _interceptor: object | None = None  # Interceptor | None
 _interceptor_thread: threading.Thread | None = None
