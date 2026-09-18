@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import secrets
 import threading
@@ -420,6 +421,7 @@ async def engine_start():
     # prevents a fast stop() -> start() cycle from having a stale thread rip
     # out the NEW interceptor's iptables rules (fail-open window).
     async def _start_locked():
+        global _interceptor
         with _start_lock:
             if _interceptor is not None and getattr(_interceptor, "running", False):
                 return {"status": "already_running"}
