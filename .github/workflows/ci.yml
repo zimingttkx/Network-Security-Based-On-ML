@@ -69,6 +69,21 @@ jobs:
       - name: Detect simulation code in production modules
         run: |
           echo "Scanning networksecurity/ for forbidden keywords..."
+          
+          # Check directory exists
+          if [ ! -d "networksecurity" ]; then
+            echo "::error::networksecurity/ directory not found"
+            exit 1
+          fi
+          
+          # Count Python files to ensure we're scanning something
+          FILE_COUNT=$(find networksecurity/ -name "*.py" -type f 2>/dev/null | wc -l)
+          if [ "$FILE_COUNT" -lt 1 ]; then
+            echo "::error::No Python files found in networksecurity/"
+            exit 1
+          fi
+          echo "Found $FILE_COUNT Python files to scan"
+          
           FORBIDDEN="mock simulate fake demo_data generate_packet test_traffic"
           VIOLATIONS=0
           for kw in $FORBIDDEN; do
@@ -232,6 +247,30 @@ jobs:
         run: |
           python scripts/verify_fpr_regression.py
 
+      - name: Unit test — engine module (50 checks)
+        run: |
+          python scripts/verify_engine_module.py
+
+      - name: Unit test — interception module (33 checks)
+        run: |
+          python scripts/verify_interception_module.py
+
+      - name: Unit test — block lifecycle (6 bugs verified)
+        run: |
+          python scripts/verify_block_lifecycle.py
+
+      - name: Unit test — live exposed bugs (C/G groups)
+        run: |
+          python scripts/verify_live_exposed_bugs.py
+
+      - name: Unit test — features module (bounded memory)
+        run: |
+          python scripts/verify_features_module.py
+
+      - name: Unit test — data module (one-hot alignment)
+        run: |
+          python scripts/verify_data_module.py
+
   # ── 攻击仿真冒烟测试 ─────────────────────────────────────────────────
   smoke-attack:
     runs-on: ubuntu-latest
@@ -261,8 +300,7 @@ jobs:
           async def quick_test():
               p = DetectionPipeline()
               k = KitsuneDetector()
-              k._kitsune.fm_grace = 500
-              k._kitsune.ad_grace = 1000
+              k.set_grace_periods(fm_grace_period=500, ad_grace_period=1000)
               p.add_detector(k)
 
               # feed normal traffic
