@@ -35,8 +35,8 @@ LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pip
 
 ### Algorithms
 
-- **Kitsune (NDSS'18)** — AfterImage incremental statistics (100 features) + a KitNET autoencoder ensemble. Trains online, no labels needed.
-- **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model.
+- **Kitsune (NDSS'18)** — AfterImage incremental statistics (90 features) + a KitNET autoencoder ensemble. Trains online, no labels needed. When link-layer headers are absent (live NFQUEUE), the MAC channel uses a `(protocol, ttl)` proxy key so it never collapses to zero variance. Grace periods (`fm_grace_period`, `ad_grace_period`) allow warmup before detection starts; during this time packets are logged but not blocked.
+- **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model and `engine.lucid.model_path` set in config.
 
 > **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17) only. Any other protocol — including **ICMP(1)** — is blocked by default. This means legitimate ICMP (ping, PMTUD, traceroute) is also dropped unless its source is whitelisted. If you run on a network that relies on ICMP, either whitelist the relevant sources or constrain the policy before enabling live interception.
 
@@ -72,22 +72,32 @@ pip install -e ".[lucid]"     # or: pip install tensorflow
 pip install scapy
 ```
 
-### 3. Run the API
+### 3. Configure
+
+`config/config.yaml` drives both the engine and live interception:
+
+- `engine.kitsune.*`: grace periods, threshold percentile, learning_rate (passed to AfterImage)
+- `engine.lucid.model_path`: set a path to enable LUCID; empty string disables it
+- `api.auth_token`: set to enable authentication; empty string disables auth (development mode)
+- `interception.safe_ips`: add IPs that must never be blocked (loopback included by default)
+
+### 4. Run the API
 
 ```bash
 python app.py
-# API docs at http://localhost:8000/docs
+# No docs at /docs — disabled in production. Use http://localhost:8000/redoc for OpenAPI schema.
 ```
 
-### 4. CLI
+### 5. CLI
 
 ```bash
 python cli.py start                  # start live interception (Linux, root)
 python cli.py stop                   # stop live interception (via API)
 python cli.py status                 # engine status
-python cli.py block 1.2.3.4          # block an IP
-python cli.py unblock 1.2.3.4        # unblock an IP
-python cli.py whitelist 10.0.0.0/8   # whitelist a subnet
+python cli.py block 1.2.3.4          # block an IP (POST /api/v1/rules/blacklist)
+python cli.py unblock 1.2.3.4        # unblock an IP (DELETE /api/v1/rules/blacklist/{ip})
+python cli.py whitelist 10.0.0.0/8   # whitelist a subnet (rejects /0 default routes)
+python cli.py unwhitelist 10.0.0.0/8 # remove from whitelist
 python cli.py rules                  # list blacklist/whitelist entries
 python cli.py alerts --last 20       # show recent alerts (via API)
 python cli.py test --pcap sample.pcap  # offline detection test (no root needed)
@@ -259,7 +269,7 @@ Two scripts measure behavior on your own hardware — numbers below are not vali
 
 Why detection on NSL-KDD is weak here: NSL-KDD records are **flow-level summaries**, not packet captures. Mapping each flow to a few packets throws away the timing and burst patterns that Kitsune learns from. Volumetric attacks (DoS, probe) survive the mapping better than content attacks (R2L, U2R), which look like ordinary TCP at the packet level. Treat the per-attack numbers as a statement of that limitation, not a measured accuracy claim.
 
-The rule engine itself is exact: blacklist/whitelist, protocol filtering, and rate limiting are deterministic and always applied before the ML stage.
+The rule engine itself is exact: blacklist/whitelist, protocol filtering, and rate limiting are deterministic and always applied before the ML stage. Rate limit counts only TCP SYN (ACK clear) and UDP datagrams; established TCP sessions (ACK/data/FIN) do not consume the budget.
 
 ### Offline testing with real traffic
 
@@ -275,6 +285,49 @@ Two paths exercise the detection pipeline **without** root or iptables — usefu
   This surfaces the **real** false-positive rate (e.g. legitimate ICMP being blocked by the protocol filter), which the synthetic sim below does not. Note Kitsune needs ~55k normal packets before it leaves training mode, so short captures mostly exercise the rule engine.
 - **Synthetic attack simulation:** `scripts/attack_simulation.py` generates labeled traffic and reports per-attack detection rates. Its ICMP/SSH results reflect the hard protocol rule and a separable generator distribution, not production accuracy — treat the overall ~20% attack detection in fast mode as a floor, not a claim.
 
+#### Fail-closed behavior
+
+When all ML detectors are broken or untrained, the pipeline raises `DetectionUnavailable` and drops every packet that the rule engine does not decide. This is intentional: a silent network outage is safer than allowing unknown traffic when the anomaly detector is unavailable. The status API exposes `detection_unavailable_drops` and `broken_detectors` so operators can see this state.
+
+---
+
+## Deployment
+
+### Docker
+
+```bash
+# Build and start
+bash deploy.sh build
+bash deploy.sh start
+
+# Verify tests pass (runs all verify_* scripts in container)
+bash deploy.sh test
+
+# View logs
+bash deploy.sh logs
+
+# Stop
+bash deploy.sh stop
+```
+
+**Notes:**
+- `deploy.sh` runs 7 verification scripts (`verify_engine_module`, `verify_interception_module`, `verify_block_lifecycle`, `verify_live_exposed_bugs`, `verify_fpr_regression`, `verify_features_module`, `verify_data_module`) instead of `pytest`.
+- The container runs as non-root user `nips` for security. Bind-mount `rules.json` from the host — it must exist before `docker compose up` or you'll get an `IsADirectoryError`.
+- `rules.json` contains only **persistent** blacklist entries (operator-added + escalated permanent bans). Temp-ban mirrors live in the ephemeral tier and are never written to disk.
+
+### Linux host
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run API server
+python app.py
+
+# Or use CLI directly (requires root for live interception)
+sudo python cli.py start
+```
+
 ---
 
 ## Documentation
@@ -284,7 +337,7 @@ Two paths exercise the detection pipeline **without** root or iptables — usefu
 - [CODE_STYLE.md](CODE_STYLE.md) — coding conventions, import rules, system call validation
 - [SECURITY.md](SECURITY.md) — vulnerability reporting, deployment best practices
 - [CHANGELOG.md](CHANGELOG.md) — release history
-- API reference: `http://localhost:8000/docs` (Swagger)
+- API reference: `http://localhost:8000/redoc` (OpenAPI schema; /docs disabled in production)
 
 ---
 
