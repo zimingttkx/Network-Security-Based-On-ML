@@ -140,10 +140,23 @@ class DatasetLoader:
         # train_test_split below, which fits get_dummies on the training split
         # and applies the same columns to the test split (aligning dimensions).
         if X.shape[1] > 0:
-            X = pd.get_dummies(X, drop_first=True)
+            # Normalize column names (strip + lower) so train/test always agree.
+            X.columns = [c.strip().lower() for c in X.columns]
+            # Drop high-cardinality object columns before one-hot (prevents explosion).
+            for col in X.select_dtypes(include=["object"]).columns:
+                if X[col].nunique() > 50 or X[col].nunique() / len(X) > 0.5:
+                    logger.warning("dropping high-cardinality column %r (%d unique)",
+                                   col, X[col].nunique())
+                    X = X.drop(columns=[col])
+            X = pd.get_dummies(X, drop_first=False)  # NO drop_first — train/test MUST align
         # CICIDS2017 is known to carry Infinity in Flow Duration/Packets rates;
         # fillna(0) does not touch inf, which would crash sklearn/Keras downstream.
         X = X.replace([np.inf, -np.inf], np.nan).fillna(0).astype(np.float32)
+
+        # Warn when the target is all attack (y == 1), which breaks stratification
+        # and many loss functions.
+        if len(y) > 0 and y.sum() == len(y):
+            logger.warning("target column is ALL ATTACK (all 1s) — training may fail")
 
         return X.values, y
 
@@ -172,9 +185,11 @@ class DatasetLoader:
         X_test = test.drop(columns=[target])
 
         if X_train.shape[1] > 0:
-            X_train = pd.get_dummies(X_train, drop_first=True)
-        if X_test.shape[1] > 0:
-            X_test = pd.get_dummies(X_test, drop_first=True)
+            # Normalize column names (strip + lower) so train/test always agree.
+            X_train.columns = [c.strip().lower() for c in X_train.columns]
+            X_test.columns = [c.strip().lower() for c in X_test.columns]
+            X_train = pd.get_dummies(X_train, drop_first=False)  # NO drop_first
+            X_test = pd.get_dummies(X_test, drop_first=False)  # NO drop_first
         # Align test columns to the training set (union, fill missing with 0).
         # If train encoded to zero columns (no features left), fall back to an
         # empty zero-column frame so reindex does not fail.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import heapq
 import itertools
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 
 from networksecurity.engine.detector import PacketInfo
@@ -37,7 +37,7 @@ class FlowFeatures:
             float(self.protocol),
             float(self.src_port) / 65535.0,
             float(self.dst_port) / 65535.0,
-            float(self.tcp_flags_or) / 255.0,
+            float(self.tcp_flags_or) / 63.0,  # TCP flags are 6-bit
         ]
 
     @staticmethod
@@ -77,7 +77,6 @@ class FlowTracker:
         # evicted (buffered for emission) instead.
         self._max_flows = max(1, max_flows)
         self._flows: "OrderedDict[tuple, FlowFeatures]" = OrderedDict()
-        self._last_seen: dict[tuple, float] = {}
         # Min-heap of (deadline, gen, key); ``gen`` disambiguates re-inserted
         # keys so stale entries are identified by comparing against the
         # key's current generation (see _sweep_expired).
@@ -90,7 +89,7 @@ class FlowTracker:
         # buffer itself is capped: under a flood the sweeper can produce more
         # evictions than the caller consumes, and an uncapped list here was
         # measured at >500 MB RSS.
-        self._pending: list[FlowFeatures] = []
+        self._pending: deque[FlowFeatures] = deque()
         self._pending_max = max(1, self._max_flows // 2)
         self._pending_dropped = 0
 
@@ -138,7 +137,6 @@ class FlowTracker:
             self._flows.move_to_end(key)  # LRU refresh
 
         flow = self._flows[key]
-        self._last_seen[key] = now
         # (Re)schedule this flow's idle deadline: bump its generation so any
         # older heap entry for the same key becomes a no-op when reached.
         gen = next(self._heap_tie)
@@ -154,7 +152,7 @@ class FlowTracker:
         # duration go negative (would yield nonsensical negative duration and
         # absurd pkt_rate). The flow's clock is monotonic relative to its start.
         flow.duration = max(0.0, now - flow.start_time)
-        flow.pkt_rate = flow.packet_count / max(0.001, flow.duration)
+        flow.pkt_rate = flow.packet_count / max(1, flow.duration) if flow.duration > 0 else 0.0
         flow.mean_pkt_size = flow.byte_count / max(1, flow.packet_count)
         flow.tcp_flags_or |= packet.tcp_flags
 
@@ -173,7 +171,7 @@ class FlowTracker:
 
         # 2) Emit a previously buffered idle-expired flow.
         if self._pending:
-            return self._pending.pop(0)
+            return self._pending.popleft()
 
         return None
 
@@ -213,7 +211,6 @@ class FlowTracker:
     def flush(self) -> list[FlowFeatures]:
         result = list(self._flows.values()) + list(self._pending)
         self._flows.clear()
-        self._last_seen.clear()
         self._expiry_heap.clear()
         self._gen.clear()
         self._pending.clear()
