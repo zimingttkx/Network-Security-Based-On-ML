@@ -239,11 +239,13 @@ async def engine_status():
         if _interceptor is not None and hasattr(_interceptor, "status")
         else None
     )
+    pipe_status = pipeline.status()
     status = {
         "running": interceptor_running or pipeline.running,
         "interception_active": interceptor_running,
         "uptime_seconds": (datetime.now(tz=timezone.utc) - start_time).total_seconds(),
-        "detectors": pipeline.status()["detectors"],
+        "detectors": pipe_status["detectors"],
+        "broken_detectors": pipe_status["broken_detectors"],
         "kitsune_trained": bool(
             hasattr(pipeline, "_detectors")
             and any(

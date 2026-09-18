@@ -9,6 +9,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Management-API token authentication: when `api.auth_token` (or the `NIPS_API_TOKEN` env var) is set, every `/api/v1/*` route requires the `X-API-Token` header; an empty token disables auth with a startup warning. Wildcard CORS was removed in favor of an explicit origin allowlist.
 - BLOCK-verdict escalation policy (`engine/block_policy.py`): strikes per source IP inside a rolling window escalate to a temp ban (kernel DROP + in-memory blacklist entry with a TTL, auto-lifted by an expiry sweeper) and, after repeated temp bans, to a permanent ban persisted to `rules.json`. A single anomaly no longer installs a permanent kernel DROP.
 - `GET /api/v1/blocks` endpoint exposing the live escalation state, plus `kernel_blocked_ips` and `detection_loop_stale_seconds` fields on `/api/v1/status`.
+- `broken_detectors` (circuit-breaker state) exposed on `/api/v1/status`, as documented in SECURITY.md.
 - Parquet support in `DatasetLoader`: `.parquet` files are read as Parquet; CSV remains the default.
 - Real-data evaluation scripts: UNSW-NB15 pcap reconstruction (`scripts/build_unsw_pcap.py`) and end-to-end per-category evaluation (`scripts/evaluate_pcap.py`); cross-module regression scripts (`scripts/verify_*.py`) including a post-training FPR regression assertion in CI (`scripts/verify_fpr_regression.py`).
 - Large-scale attack simulation script (`scripts/attack_simulation.py`) for benchmarking detection efficacy across attack categories.
