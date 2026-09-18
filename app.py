@@ -221,11 +221,11 @@ async def engine_status():
     interceptor_running = (
         _interceptor is not None and getattr(_interceptor, "running", False)
     )
-    # Kernel-level permanent blocks (iptables DROPs installed by the
-    # interceptor on BLOCK verdicts).  Distinct view from the rule engine's
-    # blacklist before any verdict fires; after the forward-sync in
-    # _handle() the two sets converge, but this keeps the true firewall
-    # state visible for reconciliation.
+    # Kernel-level blocks: every iptables DROP the interceptor installed,
+    # temp bans included.  Distinct from the rule engine's blacklist, which
+    # reports the *persistent* tier only — a temp ban mirrors into the
+    # ephemeral tier, so it shows up here and in /api/v1/blocks but not in
+    # /api/v1/rules.
     kernel_blocked = (
         _interceptor.blocked_ips
         if _interceptor is not None and hasattr(_interceptor, "blocked_ips")
@@ -260,6 +260,11 @@ async def engine_status():
         # which were therefore dropped fail-closed.  A rising count here means
         # wire traffic is being discarded before detection ever sees it.
         "nfqueue_parse_failed": inter_status.get("nfqueue_parse_failed"),
+        # Blocks the kernel refused and temp-ban lifts that failed.  Both are
+        # retried by the sweeper, so a list that never drains means the
+        # firewall and our view of it have diverged.
+        "pending_enforce": inter_status.get("pending_enforce"),
+        "pending_lift": inter_status.get("pending_lift"),
         "kitsune_trained": bool(
             hasattr(pipeline, "_detectors")
             and any(

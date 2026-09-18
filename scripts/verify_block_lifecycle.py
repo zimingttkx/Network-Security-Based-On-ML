@@ -14,10 +14,11 @@ Bug D2  Rate-limit false positives escalated the same way: a legitimate
 Bug D3  Temp-ban expiry removed the rule-engine blacklist entry
         unconditionally, so a mirror installed by the ban erased any
         pre-existing (operator) entry for the same IP.
-        Fix: temp bans mirror only when the entry is new, track mirror
-        provenance in Interceptor._ban_mirrors, and the sweeper removes
-        only mirrored entries.  An operator blacklisting a source mid-ban
-        (API POST /rules/blacklist) promotes the entry via
+        Fix: temp bans mirror into the rule engine's *ephemeral* blacklist
+        tier — matched like any blacklist entry, never written to rules.json,
+        and the tier itself is the provenance record, so expiry can only ever
+        remove what the ban installed.  An operator blacklisting a source
+        mid-ban (API POST /rules/blacklist) promotes the entry via
         note_operator_blacklist() so the sweeper leaves it alone.
 
 Bug D4  `cli.py block/unblock/whitelist` edited only the CLI process's
@@ -29,8 +30,11 @@ Bug D4  `cli.py block/unblock/whitelist` edited only the CLI process's
 Bug E   One IP failing to unblock killed the temp-ban sweeper task (the
         BlockPolicy had already forgotten the ban, so every later expiry
         was stranded in kernel + blacklist with nothing left to lift it).
-        Fix: _lift_temp_ban() clears each enforcement layer best-effort;
-        a single IP's failure can no longer kill the loop.
+        Fix: _lift_temp_ban() never raises out of the sweeper.  When the
+        kernel DROP is still installed the ephemeral mirror is deliberately
+        KEPT (removing it would hide an enforced ban from every reporting
+        layer) and the IP is queued in _pending_lift, which the sweeper
+        retries every cycle until the rule really is gone.
 
 Bug F   loopback / safe-ips sources were refused a kernel DROP by
         IptablesManager, but the escalation paths still mirrored them into
@@ -93,23 +97,29 @@ class Blocker(BaseDetector):
 class StubIptables:
     """Records block/unblock calls; no kernel involvement.
 
-    Applies the real blockable() criteria so tests exercise the same
-    loopback/safe-ips refusals the kernel manager applies.
+    Applies the real blockable() criteria and the real return contract so
+    tests exercise the same loopback/safe-ips refusals — and the same
+    "did the kernel rule really change state" signal — that the iptables
+    manager produces.
     """
 
     def __init__(self, safe_ips=None):
         self.blocked: list[str] = []
         self._safe_ips = safe_ips or []
 
-    def block_ip(self, ip: str) -> None:
+    def block_ip(self, ip: str) -> bool:
         if not blockable(ip, self._safe_ips):
-            return
+            return False
         if ip not in self.blocked:
             self.blocked.append(ip)
+        return True
 
-    def unblock_ip(self, ip: str) -> None:
-        with contextlib.suppress(ValueError):
+    def unblock_ip(self, ip: str) -> bool:
+        try:
             self.blocked.remove(ip)
+        except ValueError:
+            return False
+        return True
 
     def is_blockable(self, ip: str) -> bool:
         return blockable(ip, self._safe_ips)
@@ -145,30 +155,70 @@ def make_interceptor(rule_engine: RuleEngine, policy: BlockPolicy,
     return inter
 
 
+# _handle() takes a monotonic deadline: a verdict that resolves after it is
+# not allowed to commit a ban (the packet was already inline-dropped).  inf
+# means "never timed out", -1.0 means "already expired".
+NO_DEADLINE = float("inf")
+
+
 async def send(inter: Interceptor, packets: list[PacketInfo]) -> None:
     for p in packets:
-        await inter._handle(p, {"timed_out": False})
+        await inter._handle(p, NO_DEADLINE)
+
+
+class _CycleDone(Exception):
+    """Raised into the sweeper once a full cycle has completed."""
+
+
+class _AsyncioProxy:
+    """Stands in for the asyncio module with only ``sleep`` replaced.
+
+    _lift_temp_ban()/_enforce_ban() offload iptables and save_rules through
+    asyncio.to_thread, so the patch has to keep the rest of the module
+    reachable rather than swapping in a bare namespace.
+    """
+
+    def __init__(self, real, sleep):
+        self._real = real
+        self.sleep = sleep
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
 
 async def run_sweeper_once(inter: Interceptor) -> None:
-    """Run _temp_ban_sweeper() long enough to process one expiry cycle."""
+    """Run exactly one _temp_ban_sweeper() cycle, awaiting it to completion.
+
+    The periodic 30s wait is turned into a yield; the second one aborts the
+    loop, so the first expire -> lift -> retry pass runs in full (including
+    its to_thread round-trips) and nothing else does.  An exception escaping
+    the sweeper propagates through the await — which is exactly what check E
+    relies on to prove one bad IP cannot kill the task.
+    """
     real_asyncio = interceptor_mod.asyncio
+    cycles = {"n": 0}
 
     async def fast_sleep(delay, *a, **k):
-        if delay >= 30.0:            # the sweeper's periodic wait: yield, don't sleep
+        if delay >= 30.0:
+            cycles["n"] += 1
+            if cycles["n"] > 1:
+                raise _CycleDone
             await real_asyncio.sleep(0)
             return
         await real_asyncio.sleep(delay, *a, **k)
 
-    interceptor_mod.asyncio = types.SimpleNamespace(sleep=fast_sleep)
+    interceptor_mod.asyncio = _AsyncioProxy(real_asyncio, fast_sleep)
     task = real_asyncio.create_task(inter._temp_ban_sweeper())
     try:
-        for _ in range(5):
-            await real_asyncio.sleep(0)
+        # Only the sentinel and cancellation are swallowed — anything else the
+        # sweeper lets escape has to reach the caller (that is check E).
+        await task
+    except (_CycleDone, asyncio.CancelledError):
+        pass
     finally:
-        task.cancel()
         interceptor_mod.asyncio = real_asyncio
-        with contextlib.suppress(asyncio.CancelledError):
+        task.cancel()
+        with contextlib.suppress(_CycleDone, asyncio.CancelledError):
             await task
 
 
@@ -228,20 +278,29 @@ asyncio.run(send(inter3, [pkt(VICTIM, clock3() + i * 0.01) for i in range(5)]))
 check("D3a: 5 ML BLOCKs escalated to a temp ban",
       (r := policy3.get(VICTIM)) is not None and r.state == "temp_banned",
       f"record={policy3.get(VICTIM)}")
-check("D3b: temp ban mirrored into the rule-engine blacklist",
-      VICTIM in engine3.get_blacklist())
+check("D3b: temp ban mirrored into the rule engine's EPHEMERAL tier",
+      VICTIM in engine3.get_ephemeral_blacklist(),
+      f"ephemeral={engine3.get_ephemeral_blacklist()}")
+check("D3b2: temp ban never reached the persistent blacklist",
+      VICTIM not in engine3.get_blacklist(),
+      f"blacklist={engine3.get_blacklist()} — a temp ban in the persistent "
+      f"tier is what got written to rules.json and survived restart")
 check("D3c: kernel DROP installed",
       VICTIM in inter3._iptables.blocked)
 
 clock3.advance(601.0)
 asyncio.run(run_sweeper_once(inter3))
-check("D3d: sweeper removed the mirror from the blacklist",
-      VICTIM not in engine3.get_blacklist(),
-      f"blacklist={engine3.get_blacklist()}")
+check("D3d: sweeper removed the ephemeral mirror",
+      VICTIM not in engine3.get_ephemeral_blacklist(),
+      f"ephemeral={engine3.get_ephemeral_blacklist()}")
 check("D3e: sweeper lifted the kernel DROP",
       VICTIM not in inter3._iptables.blocked)
-check("D3f: mirror provenance cleaned up",
-      VICTIM not in inter3._ban_mirrors)
+check("D3f: no retry bookkeeping left behind",
+      VICTIM not in inter3._blocked
+      and VICTIM not in inter3._pending_lift
+      and VICTIM not in inter3._pending_enforce,
+      f"blocked={inter3._blocked} pending_lift={inter3._pending_lift} "
+      f"pending_enforce={inter3._pending_enforce}")
 
 # ---------------------------------------------------------------- D3 (promote)
 print()
@@ -259,6 +318,11 @@ asyncio.run(send(inter4, [pkt(MIDBAN, clock4() + i * 0.01) for i in range(5)]))
 # Operator blacklists the source while the temp ban is active (API POST).
 engine4.add_blacklist(MIDBAN)
 inter4.note_operator_blacklist(MIDBAN)
+check("D3f2: promotion moved the mirror out of the ephemeral tier",
+      MIDBAN in engine4.get_blacklist()
+      and MIDBAN not in engine4.get_ephemeral_blacklist(),
+      f"blacklist={engine4.get_blacklist()} "
+      f"ephemeral={engine4.get_ephemeral_blacklist()}")
 
 clock4.advance(601.0)
 asyncio.run(run_sweeper_once(inter4))
@@ -297,11 +361,41 @@ try:
           f"record={rec5}")
     check("D5b: perm ban present in the rule-engine blacklist",
           BAD in engine5.get_blacklist())
+    check("D5b2: promotion left the ephemeral tier empty for that IP",
+          BAD not in engine5.get_ephemeral_blacklist(),
+          f"ephemeral={engine5.get_ephemeral_blacklist()}")
     check("D5c: perm ban persisted into rules.json",
           tmp_rules.exists() and BAD in json.loads(tmp_rules.read_text()).get("blacklist", []),
           f"rules.json={tmp_rules.read_text().strip() if tmp_rules.exists() else '(missing)'}")
     check("D5d: kernel DROP installed for the perm ban",
           BAD in inter5._iptables.blocked)
+
+    # A promotion that has to *move* an existing mirror: the temp ban is
+    # still live, so the ephemeral entry is in place.  (A second packet from
+    # a temp-banned source cannot reach this path — the rule engine's own
+    # blacklist hit short-circuits it — so drive the enforcement directly.)
+    clock5b = Clock()
+    policy5b = BlockPolicy(strikes_threshold=1, temp_ban_seconds=600.0,
+                           temp_ban_count_to_perm=99, now=clock5b)
+    engine5b = RuleEngine()
+    inter5b = make_interceptor(engine5b, policy5b)
+    LIVE = "198.51.100.31"
+    asyncio.run(send(inter5b, [pkt(LIVE, clock5b() + 0.01)]))
+    check("D5e-pre: temp ban installed the ephemeral mirror",
+          LIVE in engine5b.get_ephemeral_blacklist()
+          and LIVE not in engine5b.get_blacklist(),
+          f"ephemeral={engine5b.get_ephemeral_blacklist()} "
+          f"blacklist={engine5b.get_blacklist()}")
+    asyncio.run(inter5b._enforce_ban(LIVE, True))
+    check("D5e: promotion MOVES the mirror instead of duplicating it",
+          LIVE in engine5b.get_blacklist()
+          and LIVE not in engine5b.get_ephemeral_blacklist()
+          and LIVE in json.loads(tmp_rules.read_text()).get("blacklist", []),
+          f"blacklist={engine5b.get_blacklist()} "
+          f"ephemeral={engine5b.get_ephemeral_blacklist()} "
+          f"rules.json={tmp_rules.read_text().strip()} — an entry left in both "
+          f"tiers is one the expiry sweeper can still delete out from under "
+          f"the persisted ban")
 finally:
     interceptor_mod.RULES_FILE = real_rules_file
     tmp_rules.unlink(missing_ok=True)
@@ -359,18 +453,23 @@ print("=" * 60)
 
 
 class FlakyUnblockStub(StubIptables):
-    """Raises once on fail_ip's unblock, like a transient iptables error."""
+    """Always raises on fail_ip's unblock, like a wedged iptables rule.
+
+    Failing only once is not enough any more: the sweeper retries
+    _pending_lift inside the same cycle, so a transient error would be
+    absorbed before the checks ran and prove nothing about the retry path.
+    """
 
     def __init__(self, fail_ip: str):
         super().__init__()
         self.fail_ip = fail_ip
         self.failed = False
 
-    def unblock_ip(self, ip: str) -> None:
-        if ip == self.fail_ip and not self.failed:
+    def unblock_ip(self, ip: str) -> bool:
+        if ip == self.fail_ip:
             self.failed = True
             raise RuntimeError("simulated iptables failure")
-        super().unblock_ip(ip)
+        return super().unblock_ip(ip)
 
 
 clockE = Clock()
@@ -385,9 +484,10 @@ check("E0a: both sources temp-banned",
       (rE1 := policyE.get(E1)) is not None and rE1.state == "temp_banned"
       and (rE2 := policyE.get(E2)) is not None and rE2.state == "temp_banned",
       f"records={policyE.get(E1)}, {policyE.get(E2)}")
-check("E0b: both mirrors installed",
-      E1 in engineE.get_blacklist() and E2 in engineE.get_blacklist(),
-      f"blacklist={engineE.get_blacklist()}")
+check("E0b: both ephemeral mirrors installed",
+      E1 in engineE.get_ephemeral_blacklist()
+      and E2 in engineE.get_ephemeral_blacklist(),
+      f"ephemeral={engineE.get_ephemeral_blacklist()}")
 
 clockE.advance(601.0)
 asyncio.run(run_sweeper_once(interE))
@@ -396,15 +496,33 @@ asyncio.run(run_sweeper_once(interE))
 check("E1a: healthy IP's kernel DROP lifted in the same cycle",
       E2 not in interE._iptables.blocked,
       f"blocked={interE._iptables.blocked}")
-check("E1b: healthy IP's blacklist mirror lifted",
-      E2 not in engineE.get_blacklist())
+check("E1b: healthy IP's ephemeral mirror lifted",
+      E2 not in engineE.get_ephemeral_blacklist())
 check("E1c: healthy IP's bookkeeping cleared",
-      E2 not in interE._blocked and E2 not in interE._ban_mirrors)
+      E2 not in interE._blocked and E2 not in interE._pending_lift,
+      f"blocked={interE._blocked} pending_lift={interE._pending_lift}")
 check("E1d: failed IP's kernel DROP left visible for reconciliation",
       E1 in interE._iptables.blocked)
-check("E1e: failed IP's mirror and bookkeeping still cleared best-effort",
-      E1 not in engineE.get_blacklist()
-      and E1 not in interE._blocked and E1 not in interE._ban_mirrors)
+check("E1e: failed IP keeps its mirror + bookkeeping and is queued for retry",
+      E1 in engineE.get_ephemeral_blacklist()
+      and E1 in interE._blocked
+      and E1 in interE._pending_lift,
+      f"ephemeral={engineE.get_ephemeral_blacklist()} "
+      f"blocked={interE._blocked} pending_lift={interE._pending_lift} — "
+      f"dropping the mirror while the kernel still blocks hides an enforced "
+      f"ban from every reporting layer")
+
+# A later cycle with the rule finally removable must drain the retry queue.
+recovered = StubIptables()
+recovered.blocked.append(E1)
+interE._iptables = recovered  # type: ignore[assignment]
+asyncio.run(interE._retry_pending())
+check("E2: a successful retry drains _pending_lift and the mirror together",
+      E1 not in interE._pending_lift
+      and E1 not in interE._blocked
+      and E1 not in engineE.get_ephemeral_blacklist(),
+      f"pending_lift={interE._pending_lift} blocked={interE._blocked} "
+      f"ephemeral={engineE.get_ephemeral_blacklist()}")
 
 # ---------------------------------------------------------------- F
 print()
@@ -419,15 +537,21 @@ policyF = BlockPolicy(strikes_threshold=1, temp_ban_seconds=600.0,
 engineF = RuleEngine()
 interF = make_interceptor(engineF, policyF)
 LOOP = "127.0.0.53"
-dropped = asyncio.run(interF._handle(pkt(LOOP, clockF() + 0.01),
-                                     {"timed_out": False}))
+dropped = asyncio.run(interF._handle(pkt(LOOP, clockF() + 0.01), NO_DEADLINE))
 check("F1a: loopback packet still dropped inline", dropped is True)
 check("F1b: no kernel DROP for the loopback source",
       LOOP not in interF._iptables.blocked)
-check("F1c: no blacklist mirror for the loopback source",
-      LOOP not in engineF.get_blacklist())
-check("F1d: no _blocked/_ban_mirrors bookkeeping",
-      LOOP not in interF._blocked and LOOP not in interF._ban_mirrors)
+check("F1c: no blacklist mirror in either tier for the loopback source",
+      LOOP not in engineF.get_blacklist()
+      and LOOP not in engineF.get_ephemeral_blacklist(),
+      f"blacklist={engineF.get_blacklist()} "
+      f"ephemeral={engineF.get_ephemeral_blacklist()}")
+check("F1d: no _blocked / retry bookkeeping",
+      LOOP not in interF._blocked
+      and LOOP not in interF._pending_enforce
+      and LOOP not in interF._pending_lift,
+      f"blocked={interF._blocked} pending_enforce={interF._pending_enforce} "
+      f"pending_lift={interF._pending_lift}")
 
 # F2: loopback escalating all the way to a perm ban must not touch rules.json.
 tmp_rules_f = Path(__file__).resolve().parent.parent / "scripts" / ".verify_tmp_rules_f.json"
@@ -466,8 +590,11 @@ interF3._iptables = StubIptables(safe_ips=[SAFE])  # type: ignore[assignment]
 asyncio.run(send(interF3, [pkt(SAFE, clockF() + 2.01)]))
 check("F3a: no kernel DROP for the safe-ips source",
       SAFE not in interF3._iptables.blocked)
-check("F3b: no blacklist mirror for the safe-ips source",
-      SAFE not in engineF3.get_blacklist())
+check("F3b: no blacklist mirror in either tier for the safe-ips source",
+      SAFE not in engineF3.get_blacklist()
+      and SAFE not in engineF3.get_ephemeral_blacklist(),
+      f"blacklist={engineF3.get_blacklist()} "
+      f"ephemeral={engineF3.get_ephemeral_blacklist()}")
 
 # ---------------------------------------------------------------- G
 print()
@@ -515,6 +642,41 @@ check("G4: tripped detector is no longer invoked",
       f"calls={poison_always.calls}")
 check("G5: recovering detector kept receiving packets",
       poison_flaky.calls == 6, f"calls={poison_flaky.calls}")
+
+# ---------------------------------------------------------------- H
+print()
+print("=" * 60)
+print("H: a verdict that lands after the inline-drop deadline commits no ban")
+print("=" * 60)
+clockH = Clock()
+policyH = BlockPolicy(strikes_threshold=1, temp_ban_seconds=600.0,
+                      temp_ban_count_to_perm=99, now=clockH)
+engineH = RuleEngine()
+interH = make_interceptor(engineH, policyH)
+LATE, INTIME = "198.51.100.60", "198.51.100.61"
+EXPIRED_DEADLINE = -1.0          # already past when _handle checks it
+
+late_drop = asyncio.run(interH._handle(pkt(LATE, clockH() + 0.01),
+                                       EXPIRED_DEADLINE))
+check("H1a: the late packet is still dropped inline", late_drop is True)
+check("H1b: no strike recorded on an unresolved verdict",
+      policyH.get(LATE) is None, f"record={policyH.get(LATE)}")
+check("H1c: no kernel DROP, mirror or rules-side state",
+      LATE not in interH._iptables.blocked
+      and LATE not in interH._blocked
+      and LATE not in engineH.get_ephemeral_blacklist()
+      and LATE not in engineH.get_blacklist(),
+      f"blocked={interH._iptables.blocked} "
+      f"ephemeral={engineH.get_ephemeral_blacklist()}")
+
+intime_drop = asyncio.run(interH._handle(pkt(INTIME, clockH() + 0.02),
+                                         NO_DEADLINE))
+check("H2a: an in-time verdict still escalates (threshold=1)",
+      intime_drop is True
+      and INTIME in interH._iptables.blocked
+      and INTIME in engineH.get_ephemeral_blacklist(),
+      f"blocked={interH._iptables.blocked} "
+      f"ephemeral={engineH.get_ephemeral_blacklist()}")
 
 print()
 print("=" * 60)

@@ -16,6 +16,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future
 from pathlib import Path
 
 from networksecurity.engine.block_policy import BlockPolicy
@@ -46,9 +47,17 @@ class Interceptor:
 
     - **Inline drop**: the nfqueue callback calls ``nf_packet.drop()``
       so the malicious packet never reaches the application.
-    - **Permanent block**: a follow-up iptables DROP rule is added
-      for the source IP so subsequent packets are dropped in kernel
-      without going through the pipeline.
+    - **Escalated ban** (see ``BlockPolicy``): an iptables DROP rule for the
+      source IP, so subsequent packets are dropped in kernel without paying
+      for detection.  A temp ban additionally mirrors into the rule engine's
+      *ephemeral* blacklist tier — matching sees it, ``save_rules`` never
+      writes it, and the expiry sweeper lifts both together.  A perm ban
+      promotes the mirror into the persistent tier and saves it.
+
+    The kernel rule is always installed *first*: the mirrors are what the API
+    reports and what survives restart, so committing them before the DROP
+    exists would advertise a block that nothing enforces.  When the kernel
+    refuses, the IP goes to ``_pending_enforce`` and the sweeper retries.
     """
 
     def __init__(
@@ -67,17 +76,22 @@ class Interceptor:
         self._running: bool = False
         self._blocked: set[str] = set()
         self._blocked_lock: threading.Lock = threading.Lock()
-        # Temp bans mirror themselves into the rule engine's *in-memory*
-        # blacklist so packets are dropped even if the kernel DROP failed.
-        # Only entries added by THIS mirror are removed when the ban expires
-        # — an operator's own blacklist entry must survive a temp ban
-        # expiring, and the ban must never be able to "wash" it out.
-        self._ban_mirrors: set[str] = set()
+        # IPs whose kernel DROP was refused or failed at escalation time.  The
+        # evidence is already recorded in the BlockPolicy, so waiting for
+        # another packet from that source could mean never enforcing the ban;
+        # the sweeper retries these every cycle instead.  No mirror layer is
+        # committed until the kernel rule exists — a blacklist entry with
+        # nothing enforcing it is a phantom that survives restart.
+        self._pending_enforce: set[str] = set()
+        # IPs whose temp ban expired but whose kernel DROP could not be
+        # lifted.  Their ephemeral mirror is deliberately kept so the rule
+        # layer agrees with what the kernel is actually doing.
+        self._pending_lift: set[str] = set()
         self._on_verdict: Callable[[PacketInfo, Verdict], None] | None = on_verdict
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._detect_timeout: float = 5.0
-        self._expiry_task: asyncio.Task | None = None
+        self._expiry_future: Future | None = None
         # Health telemetry: monotonic timestamp of the last completed
         # detection.  Stays None until the first packet is handled; the API
         # surfaces it as detection_loop_stale_seconds so a hung detection
@@ -142,59 +156,167 @@ class Interceptor:
         self._loop_thread = threading.Thread(target=_run_loop, daemon=True)
         self._loop_thread.start()
 
-        # Same queue for the kernel redirect and the userspace listener —
-        # letting these drift (e.g. config.yaml nfqueue_num != 0) would send
-        # every packet to a queue nobody reads, where the kernel queue
-        # timeout freezes all traffic.
-        self._iptables.setup_nfqueue(self._queue_num)
-        self._nfqueue.set_callback(self._on_packet)
-        self._running = True
-        self._pipeline.start()
-        # Expired temp bans must be lifted even if the source stops sending
-        # (nobody left to trigger lazy cleanup), so run the sweeper on the
-        # detection loop — the same thread that processes verdicts.
-        self._expiry_task = self._loop.create_task(self._temp_ban_sweeper())
+        try:
+            # Same queue for the kernel redirect and the userspace listener —
+            # letting these drift (e.g. config.yaml nfqueue_num != 0) would send
+            # every packet to a queue nobody reads, where the kernel queue
+            # timeout freezes all traffic.
+            self._iptables.setup_nfqueue(self._queue_num)
+            self._nfqueue.set_callback(self._on_packet)
+            self._running = True
+            self._pipeline.start()
+            # Expired temp bans must be lifted even if the source stops sending
+            # (nobody left to trigger lazy cleanup), so run the sweeper on the
+            # detection loop — the same thread that processes verdicts.  The
+            # loop is already running on its own thread, so schedule through
+            # run_coroutine_threadsafe: touching an asyncio.Task from here
+            # would race the loop, and the returned Future is thread-safe to
+            # cancel during teardown.
+            self._expiry_future = asyncio.run_coroutine_threadsafe(
+                self._temp_ban_sweeper(), self._loop,
+            )
+        except Exception:
+            # A half-initialised interceptor is worse than none: the kernel
+            # redirect may already be live with no listener draining the queue,
+            # which stalls every matched packet until the nfqueue timeout.
+            logger.exception("Interceptor setup failed — rolling back")
+            self._teardown()
+            raise
         logger.info("Interceptor set up — NFQUEUE + iptables active")
 
     async def _temp_ban_sweeper(self) -> None:
-        """Periodically lift expired temp bans from every enforcement layer."""
+        """Lift expired temp bans and retry enforcement the kernel refused."""
         while True:
             await asyncio.sleep(30.0)
             try:
                 lifted = self._block_policy.expire_temp_bans()
             except Exception:
                 logger.exception("temp-ban sweeper failed")
-                continue
+                lifted = []
             for ip in lifted:
-                self._lift_temp_ban(ip)
+                await self._lift_temp_ban(ip)
+            await self._retry_pending()
 
-    def _lift_temp_ban(self, ip: str) -> None:
-        # expire_temp_bans() already flipped the record back to "observing",
-        # so a failure here has no retry: the policy forgets the ban the
-        # moment it hands the IP to the sweeper.  Each enforcement layer is
-        # therefore lifted best-effort — one layer failing (or one IP raising)
-        # must not strand later expiries or kill the sweeper task, which
-        # would leave every subsequent expired ban permanently in place
-        # with nothing left to lift it.
-        mirrored = False
+    async def _retry_pending(self) -> None:
+        """Re-attempt blocks and lifts that failed against the kernel.
+
+        Both directions matter: a block that never landed leaves an attacker
+        only inline-dropped (every packet pays the full detection cost), and a
+        lift that never landed leaves a legitimate source banned forever with
+        nothing scheduled to come back for it — expire_temp_bans() has already
+        forgotten the ban by then.
+        """
+        with self._blocked_lock:
+            enforce = sorted(self._pending_enforce)
+            lift = sorted(self._pending_lift)
+        for ip in enforce:
+            rec = self._block_policy.get(ip)
+            if rec is None or rec.state == "observing":
+                # The ban is gone (operator unblock, LRU eviction of a
+                # record that was already lifted) — nothing left to enforce.
+                with self._blocked_lock:
+                    self._pending_enforce.discard(ip)
+                continue
+            await self._enforce_ban(ip, rec.state == "perm_banned")
+        for ip in lift:
+            await self._lift_temp_ban(ip)
+
+    async def _enforce_ban(self, ip: str, permanent: bool) -> None:
+        """Install the kernel DROP first, then commit the mirror layers.
+
+        The ordering is the point: the mirrors are what the API reports and
+        what rules.json persists, so committing them first would advertise a
+        block that nothing enforces.  When the kernel refuses or the insert
+        fails, the IP is queued for the sweeper and no mirror is written.
+        """
+        if not self._iptables.is_blockable(ip):
+            # The packet is dropped inline either way; only the escalation
+            # layers are skipped.  Without this guard a loopback/safe source
+            # would still be mirrored into the blacklist and written to
+            # rules.json — a persistent phantom block the kernel refuses to
+            # enforce, and one that survives restart.
+            logger.warning(
+                "escalation of %s skipped — loopback or safe-ip source", ip,
+            )
+            return
+
+        # iptables shells out; keep the subprocess off the detection loop so a
+        # slow fork/exec does not stall every other in-flight packet.
         try:
+            blocked = await asyncio.to_thread(self._iptables.block_ip, ip)
+        except Exception:
+            logger.exception("kernel DROP for %s raised", ip)
+            blocked = False
+        if not blocked:
             with self._blocked_lock:
-                self._blocked.discard(ip)
-                mirrored = ip in self._ban_mirrors
-                self._ban_mirrors.discard(ip)
-        except Exception:
-            logger.exception("temp-ban expiry: bookkeeping failed for %s", ip)
+                self._pending_enforce.add(ip)
+            logger.warning(
+                "kernel DROP for %s not installed — queued for retry, "
+                "no mirror committed", ip,
+            )
+            return
+
+        with self._blocked_lock:
+            self._blocked.add(ip)
+            self._pending_enforce.discard(ip)
+
+        rule_engine = self._pipeline.rule_engine
         try:
-            self._iptables.unblock_ip(ip)
+            if permanent:
+                # promote_ephemeral moves any temp-ban mirror into the savable
+                # tier in one step, so the entry can never sit in both.
+                await asyncio.to_thread(rule_engine.promote_ephemeral, ip)
+                await asyncio.to_thread(rule_engine.save_rules, RULES_FILE)
+            else:
+                # Temp bans are reversible, so they live only in the ephemeral
+                # tier: matching sees them, save_rules() never writes them, and
+                # the expiry sweeper lifts them without being able to wash out
+                # an operator's own persistent entry for the same IP.
+                await asyncio.to_thread(rule_engine.add_ephemeral_blacklist, ip)
         except Exception:
-            logger.exception("temp-ban expiry: kernel DROP lift failed for %s", ip)
-        if mirrored:
+            logger.exception("failed to commit the blacklist mirror for %s", ip)
+
+    async def _lift_temp_ban(self, ip: str) -> None:
+        """Lift an expired temp ban from every enforcement layer.
+
+        Each layer is lifted best-effort so one IP raising cannot kill the
+        sweeper task — that would strand every later expiry in kernel +
+        blacklist with nothing left to lift it.  The one exception is a kernel
+        DROP that is still installed: the ephemeral mirror is kept and the IP
+        is queued for a retry, because removing the mirror while the kernel
+        still blocks would hide an enforced ban from every reporting layer.
+        """
+        with self._blocked_lock:
+            had_kernel_block = ip in self._blocked
+
+        kernel_clear = True
+        if had_kernel_block:
             try:
-                self._pipeline.rule_engine.remove_blacklist(ip)
+                kernel_clear = bool(
+                    await asyncio.to_thread(self._iptables.unblock_ip, ip))
             except Exception:
-                logger.exception(
-                    "temp-ban expiry: blacklist mirror lift failed for %s", ip,
-                )
+                logger.exception("temp-ban expiry: kernel DROP lift failed for %s", ip)
+                kernel_clear = False
+
+        if not kernel_clear:
+            with self._blocked_lock:
+                self._pending_lift.add(ip)
+            logger.error(
+                "temp ban for %s expired but the kernel DROP is still installed "
+                "— mirror kept, will retry", ip,
+            )
+            return
+
+        with self._blocked_lock:
+            self._blocked.discard(ip)
+            self._pending_lift.discard(ip)
+            self._pending_enforce.discard(ip)
+        try:
+            self._pipeline.rule_engine.remove_ephemeral_blacklist(ip)
+        except Exception:
+            logger.exception(
+                "temp-ban expiry: blacklist mirror lift failed for %s", ip,
+            )
         logger.info("temp ban expired for %s — unblocked", ip)
 
     def begin_capture(self) -> None:
@@ -271,9 +393,11 @@ class Interceptor:
         errors.
         """
         self._running = False
-        if self._expiry_task is not None:
-            self._expiry_task.cancel()
-            self._expiry_task = None
+        if self._expiry_future is not None:
+            # concurrent.futures.Future.cancel() is thread-safe, unlike
+            # asyncio.Task.cancel() on a loop owned by another thread.
+            self._expiry_future.cancel()
+            self._expiry_future = None
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._loop_thread is not None:
@@ -283,41 +407,71 @@ class Interceptor:
         self._iptables.cleanup_all()
 
     def unblock_ip(self, ip: str) -> bool:
-        """Remove a permanent kernel-level block for ``ip``.
+        """Remove a kernel-level block for ``ip``.
 
-        Returns True if a block was actually removed, False if the IP was
-        not in the blocked set.  Called from the API layer when an operator
-        removes a blacklist entry so the iptables DROP rule, the rule
-        engine's blacklist, and the escalation policy's record all stay in
-        sync.  (The forward direction — BLOCK verdict -> escalation — is
+        Returns True if anything was undone — an escalation record, a kernel
+        DROP or a temp-ban mirror — and False only when there was nothing to
+        undo.  A kernel DROP that refuses to be deleted keeps its bookkeeping
+        and its mirror and is queued in ``_pending_lift`` for the sweeper, so
+        a True here never means the firewall is clean on its own; check
+        ``status()["pending_lift"]`` for that.  Called from the API layer when
+        an operator removes a blacklist entry so the iptables DROP rule, the
+        rule engine's blacklist, and the escalation policy's record all stay
+        in sync.  (The forward direction — BLOCK verdict -> escalation — is
         handled in _handle(); without this reverse direction an API unblock
         leaves the kernel DROP in place and the IP stays banned with no
         recovery short of manual firewall surgery.)
+
+        The operator's own *persistent* blacklist entry is not touched here —
+        the caller removes it, and uses this return value only to decide
+        whether there was anything to undo at all.
         """
         dropped_record = self._block_policy.unblock(ip)
         with self._blocked_lock:
-            self._ban_mirrors.discard(ip)
-            if ip not in self._blocked:
-                return dropped_record
+            self._pending_enforce.discard(ip)
+            self._pending_lift.discard(ip)
+            tracked = ip in self._blocked
+
+        if tracked and not self._iptables.unblock_ip(ip):
+            # The DROP is still installed.  Keeping the bookkeeping and the
+            # ephemeral mirror is the honest state: the kernel is blocking this
+            # source, so reporting it as unblocked would be the lie.
+            with self._blocked_lock:
+                self._pending_lift.add(ip)
+            logger.error(
+                "unblock(%s): the kernel DROP is still installed — mirror kept, "
+                "queued for retry", ip,
+            )
+            return dropped_record
+
+        with self._blocked_lock:
             self._blocked.discard(ip)
-        self._iptables.unblock_ip(ip)
-        return True
+        mirror_removed = self._pipeline.rule_engine.remove_ephemeral_blacklist(ip)
+        return dropped_record or tracked or mirror_removed
 
     def note_operator_blacklist(self, ip: str) -> None:
         """An operator explicitly blacklisted ``ip`` (API POST /rules/blacklist).
 
-        Ends any temp-ban mirror tracking for it: from this moment the
-        blacklist entry is the operator's own, and the expiry sweeper must not
-        remove it when the temp ban lifts.  Without this, an operator
-        blacklisting a source *during* its ML temp ban would silently lose
-        the entry at expiry.
+        Promotes any temp-ban mirror into the persistent tier: from this
+        moment the blacklist entry is the operator's own, and the expiry
+        sweeper must not lift it when the temp ban ends.  Without this, an
+        operator blacklisting a source *during* its ML temp ban would silently
+        lose the entry at expiry.
         """
+        try:
+            self._pipeline.rule_engine.promote_ephemeral(ip)
+        except Exception:
+            logger.exception("could not promote the temp-ban mirror for %s", ip)
         with self._blocked_lock:
-            self._ban_mirrors.discard(ip)
+            # An operator ban is not waiting on a retry that could later
+            # re-add an ephemeral mirror underneath the persistent entry.
+            self._pending_enforce.discard(ip)
 
     def status(self) -> dict:
         with self._blocked_lock:
             blocked = sorted(self._blocked)
+            pending_enforce = sorted(self._pending_enforce)
+            pending_lift = sorted(self._pending_lift)
         stale = (
             None if self._last_detect_mono is None
             else time.monotonic() - self._last_detect_mono
@@ -325,6 +479,11 @@ class Interceptor:
         return {
             "running": self._running,
             "blocked_ips": blocked,
+            # Blocks the kernel refused and lifts that failed; both are
+            # retried by the sweeper, so a non-empty list that never drains
+            # means the firewall and our view of it have diverged.
+            "pending_enforce": pending_enforce,
+            "pending_lift": pending_lift,
             "nfqueue_packets": self._nfqueue.packet_count,
             "nfqueue_dropped": self._nfqueue.dropped_count,
             "nfqueue_parse_failed": self._nfqueue.parse_failed_count,
@@ -346,29 +505,34 @@ class Interceptor:
         way, but logged at most once per ``_UNAVAILABLE_LOG_INTERVAL``
         seconds because in that state it repeats on every packet.
 
-        A timeout only drops *this* packet inline.  It must NOT commit a
-        permanent iptables block: the detection verdict may still be
-        in-flight, and committing a block on an unresolved verdict would
-        risk permanently banning a legitimate IP.  We therefore signal the
-        coroutine that it timed out; the coroutine skips ``block_ip`` and
-        only records that the inline drop already happened.
+        A timeout only drops *this* packet inline; it must NOT commit an
+        iptables block, because the verdict may still be in-flight and
+        banning on an unresolved verdict risks burning a legitimate IP.
+        The cutoff is passed down as a monotonic deadline that ``_handle``
+        checks itself, rather than a flag this thread mutates behind the
+        loop's back: one thread decides, and the decision cannot be torn
+        by the two running concurrently.
         """
-        if self._loop is None:
+        loop = self._loop
+        if loop is None:
             logger.error("detection loop not ready — dropping packet")
             return True
 
-        state: dict = {"timed_out": False}
+        deadline_mono = time.monotonic() + self._detect_timeout
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._handle(packet, state), self._loop
+                self._handle(packet, deadline_mono), loop
             )
             try:
                 # Bound the wait so a hung detector cannot block the nfqueue
                 # callback thread forever (which would freeze all traffic).
                 return future.result(timeout=self._detect_timeout)
             except TimeoutError:
-                # Inline-drop this packet, but forbid a permanent block.
-                state["timed_out"] = True
+                # Inline-drop this packet.  Cancelling also stops a still
+                # running _handle from enforcing a ban nobody is waiting for
+                # any more; the deadline check inside _handle covers the case
+                # where it is already past the point cancellation can reach.
+                future.cancel()
                 logger.warning(
                     "detection timeout (%ss) for %s — dropping inline, "
                     "skipping permanent block",
@@ -394,9 +558,12 @@ class Interceptor:
             logger.exception("detection error — dropping packet (fail-closed)")
             return True
 
-    async def _handle(self, packet: PacketInfo, state: dict) -> bool:
-        self._last_detect_mono = time.monotonic()
+    async def _handle(self, packet: PacketInfo, deadline_mono: float) -> bool:
         verdict = await self._pipeline.process_packet(packet)
+        # Stamped on completion, not on entry: a loop wedged inside
+        # process_packet() must look stale to the status API, and stamping on
+        # entry reported it as healthy right up until the traffic stopped.
+        self._last_detect_mono = time.monotonic()
 
         if self._on_verdict is not None:
             try:
@@ -408,8 +575,6 @@ class Interceptor:
             # Escalation policy decides whether this verdict crosses the
             # strike threshold.  A single BLOCK only counts a strike; the
             # iptables DROP + blacklist mirror happen once, on escalation.
-            # Skip entirely if the inline decision timed out — we must not
-            # count evidence on an unresolved verdict.
             #
             # Only ML-detector BLOCKs feed the escalation policy.  Rule-engine
             # verdicts are deterministic and already enforced inline on every
@@ -420,67 +585,27 @@ class Interceptor:
             # escalated to permanent bans in rules.json.  The strike policy
             # exists to absorb ML false positives, nothing else.
             from_rule_engine = verdict.detector == self._pipeline.rule_engine.name
-            if not state.get("timed_out") and not from_rule_engine:
+            if time.monotonic() > deadline_mono:
+                logger.warning(
+                    "skipping permanent block for %s — verdict resolved after "
+                    "inline-drop timeout", packet.src_ip,
+                )
+            elif not from_rule_engine:
                 should_enforce, rec = self._block_policy.record_block(packet.src_ip)
                 if should_enforce:
-                    if not self._iptables.is_blockable(packet.src_ip):
-                        # The packet is dropped inline either way; only the
-                        # escalation layers are skipped.  Without this guard a
-                        # loopback/safe source would still be mirrored into
-                        # the blacklist and written to rules.json (perm path)
-                        # or tracked in _blocked — a persistent phantom block
-                        # the kernel refuses to enforce, and one that survives
-                        # restart.
-                        logger.warning(
-                            "escalation of %s skipped — loopback or safe-ip source",
-                            packet.src_ip,
-                        )
-                    elif rec.state == "perm_banned":
-                        with self._blocked_lock:
-                            self._blocked.add(packet.src_ip)
-                            self._ban_mirrors.discard(packet.src_ip)
-                        self._iptables.block_ip(packet.src_ip)
-                        try:
-                            self._pipeline.rule_engine.add_blacklist(packet.src_ip)
-                            self._pipeline.rule_engine.save_rules(RULES_FILE)
-                        except Exception:
-                            logger.exception(
-                                "failed to enforce perm ban of %s", packet.src_ip,
-                            )
+                    await self._enforce_ban(packet.src_ip,
+                                            rec.state == "perm_banned")
+                    if rec.state == "perm_banned":
                         logger.warning(
                             "PERM BAN %s after %d temp bans", packet.src_ip,
                             rec.temp_ban_count,
                         )
-                    else:  # temp_banned
-                        with self._blocked_lock:
-                            self._blocked.add(packet.src_ip)
-                        self._iptables.block_ip(packet.src_ip)
-                        # Mirror into the rule engine's *in-memory* blacklist
-                        # only: temp bans are reversible, so they must NOT
-                        # survive in rules.json — the expiry sweeper lifts
-                        # them from both layers together.  Mirror ONLY if the
-                        # entry is ours: an operator-blacklisted IP must not
-                        # be "removed" from the blacklist when the ban lifts.
-                        try:
-                            if packet.src_ip not in self._pipeline.rule_engine.get_blacklist():
-                                self._pipeline.rule_engine.add_blacklist(packet.src_ip)
-                                with self._blocked_lock:
-                                    self._ban_mirrors.add(packet.src_ip)
-                        except Exception:
-                            logger.exception(
-                                "failed to mirror temp ban of %s into rule engine",
-                                packet.src_ip,
-                            )
+                    else:
                         logger.warning(
                             "TEMP BAN %s for %ss (strikes=%d, ban #%d)",
                             packet.src_ip, self._block_policy.temp_ban_seconds,
                             rec.strikes, rec.temp_ban_count,
                         )
-            elif state.get("timed_out"):
-                logger.warning(
-                    "skipping permanent block for %s — verdict resolved after "
-                    "inline-drop timeout", packet.src_ip,
-                )
             logger.info(
                 "DROP %s:%d -> %s:%d  [%s]  %s",
                 packet.src_ip, packet.src_port,

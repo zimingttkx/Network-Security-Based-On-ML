@@ -312,6 +312,49 @@ try:
 finally:
     nfq_mod._get_nfqueue = real_get_nfqueue
 
+# --- I24: setup() rolls back when a late step fails ------------------------------
+import os
+import shutil
+
+from networksecurity.engine import DetectionPipeline
+from networksecurity.interception import Interceptor
+
+
+class ExplodingIptables:
+    """setup_nfqueue fails after the event loop thread is already running."""
+
+    def __init__(self):
+        self.cleaned = False
+
+    def setup_nfqueue(self, queue_num: int = 0) -> None:
+        raise RuntimeError("iptables rejected the redirect")
+
+    def cleanup_all(self) -> None:
+        self.cleaned = True
+
+
+it24 = Interceptor(DetectionPipeline())
+stub24 = ExplodingIptables()
+it24._iptables = stub24
+_real_geteuid, _real_which = os.geteuid, shutil.which
+os.geteuid = lambda: 0
+shutil.which = lambda name: "/usr/sbin/" + name
+try:
+    raised24 = False
+    try:
+        it24.setup()
+    except RuntimeError:
+        raised24 = True
+finally:
+    os.geteuid, shutil.which = _real_geteuid, _real_which
+report("I24 setup() failure rolls the half-initialised interceptor back",
+       not (raised24 and it24._loop is None and it24._loop_thread is None
+            and it24.running is False and stub24.cleaned),
+       f"raised={raised24} loop={it24._loop} thread={it24._loop_thread} "
+       f"running={it24.running} cleanup_all={stub24.cleaned} — without the "
+       f"rollback a live kernel redirect can be left with no listener "
+       f"draining the queue, stalling every matched packet")
+
 # --- I9: iptables manager command dry-run --------------------------------------
 # Monkeypatch subprocess.run to record commands instead of executing.
 import networksecurity.interception.iptables as ipt_mod
@@ -347,23 +390,64 @@ try:
 
     mgr = ipt_mod.IptablesManager(safe_ips=["127.0.0.1", "::1"])
     mgr.setup_nfqueue(queue_num=5)
-    mgr.block_ip("6.6.6.6")
-    mgr.unblock_ip("6.6.6.6")
+    guard_count = mgr._guard_rule_count
+    blocked_ok = mgr.block_ip("6.6.6.6")
+    unblocked_ok = mgr.unblock_ip("6.6.6.6")
     mgr.cleanup_all()
     joined = [" ".join(c) for c in commands]
     has_chain = any("-N NIPS" in c for c in joined)
     has_jump = any("-I INPUT -j NIPS" in c for c in joined)
     has_tcp_nfq = any("NFQUEUE --queue-num 5" in c and "tcp" in c for c in joined)
     has_udp_nfq = any("NFQUEUE --queue-num 5" in c and "udp" in c for c in joined)
-    has_block = any("-I NIPS 1 -s 6.6.6.6 -j DROP" in c for c in joined)
+    # The DROP must land *below* the ACCEPT guards.  safe_ips=["127.0.0.1","::1"]
+    # yields 3 IPv4 guards (127.0.0.1, -i lo, dport 22); "::1" goes to ip6tables
+    # and is not part of the IPv4 chain.  Position 1 — the pre-fix behaviour —
+    # put every ban over the rules whose whole purpose is to keep the box
+    # reachable, self-DoSing SSH and loopback the moment anything tripped a
+    # threshold.
+    drop_pos = guard_count + 1
+    has_block = any(
+        f"-I NIPS {drop_pos} -s 6.6.6.6 -j DROP" in c for c in joined)
     has_unblock = any("-D NIPS -s 6.6.6.6 -j DROP" in c for c in joined)
-    has_flush = any("-F NIPS" in c and "-X" in " ".join(joined) for c in joined)
-    ok = all([has_chain, has_jump, has_tcp_nfq, has_udp_nfq, has_block, has_unblock])
+    ok = all([has_chain, has_jump, has_tcp_nfq, has_udp_nfq,
+              has_block, has_unblock, blocked_ok, unblocked_ok])
     report("I9 iptables rule construction", not ok,
            f"chain={has_chain} jump={has_jump} tcp={has_tcp_nfq} udp={has_udp_nfq} "
-           f"block={has_block} unblock={has_unblock}")
+           f"block@{drop_pos}={has_block} unblock={has_unblock} "
+           f"block_ret={blocked_ok} unblock_ret={unblocked_ok}")
     ipv6_safe = any("ip6tables -I NIPS -s ::1 -j ACCEPT" in c for c in joined)
     report("I10 IPv6 safe_ip routed to ip6tables", not ipv6_safe, f"ip6tables rule present={ipv6_safe}")
+
+    # Guards are all inserted before the NFQUEUE redirects are appended, so a
+    # DROP at guard_count+1 also sits above the queue rules — enforced traffic
+    # never reaches userspace detection.
+    report("I23 guard count matches the 3 IPv4 ACCEPT guards",
+           guard_count != 3,
+           f"guard_count={guard_count} — a miscount shifts every later DROP "
+           f"over a guard or under the NFQUEUE redirects")
+
+    commands.clear()
+    mgr2 = ipt_mod.IptablesManager(safe_ips=["127.0.0.1", "10.9.8.0/24"])
+    mgr2.setup_nfqueue(queue_num=5)
+    refused_loop = mgr2.block_ip("127.0.0.53")
+    refused_safe = mgr2.block_ip("127.0.0.1")
+    refused_cidr = mgr2.block_ip("10.9.8.7")
+    accepted = mgr2.block_ip("203.0.113.66")
+    idempotent = mgr2.block_ip("203.0.113.66")
+    report("I21 block_ip returns False for refused sources, True for real ones",
+           refused_loop or refused_safe or refused_cidr or not accepted or not idempotent,
+           f"loopback={refused_loop} safe_ip={refused_safe} safe_cidr={refused_cidr} "
+           f"remote={accepted} repeat={idempotent} — a True from a refused block "
+           f"is what let phantom blacklist entries into rules.json")
+
+    never_blocked = mgr2.unblock_ip("198.51.100.1")
+    real_unblock = mgr2.unblock_ip("203.0.113.66")
+    second_unblock = mgr2.unblock_ip("203.0.113.66")
+    report("I22 unblock_ip reports whether the kernel rule really went away",
+           never_blocked or not real_unblock or second_unblock,
+           f"never_blocked={never_blocked} after_block={real_unblock} "
+           f"repeat={second_unblock} — a caller that trusts a False positive "
+           f"drops its mirror while the DROP is still installed")
 finally:
     ipt_mod.subprocess.run = real_run
 
