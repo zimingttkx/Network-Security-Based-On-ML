@@ -113,8 +113,8 @@ try:
             enabled=True,
         )
         
-        # Load the model before registering the detector
-        _loaded = asyncio.run(_lucid_adapter.load_model(_model_path))
+        # Load the model before registering the detector (synchronous call)
+        _loaded = _lucid_adapter.load_model(_model_path)
         if not _loaded:
             logger.warning("LUCID model at %r failed to load; detector disabled", _model_path)
             _lucid_adapter._enabled = False
