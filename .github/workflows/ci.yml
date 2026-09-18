@@ -170,29 +170,38 @@ jobs:
           import struct, socket
           from networksecurity.interception.packet_parser import PacketParser
 
-          ip = bytearray(20)
-          ip[0] = 0x45; struct.pack_into('!H', ip, 2, 40)
-          ip[8] = 128; ip[9] = 6  # TTL=128, TCP
-          ip[12:16] = socket.inet_aton('10.0.0.1')
-          ip[16:20] = socket.inet_aton('10.0.0.2')
+          def ip_header(total_len):
+              ip = bytearray(20)
+              ip[0] = 0x45; struct.pack_into('!H', ip, 2, total_len)
+              ip[8] = 128; ip[9] = 6  # TTL=128, TCP
+              ip[12:16] = socket.inet_aton('10.0.0.1')
+              ip[16:20] = socket.inet_aton('10.0.0.2')
+              return bytes(ip)
+
           tcp = bytearray(20)
           tcp[12] = 0x50  # data offset = 5
           struct.pack_into('!H', tcp, 0, 12345)
           struct.pack_into('!H', tcp, 2, 80)
           tcp[13] = 0x02
-          pkt = PacketParser.from_raw(bytes(ip) + bytes(tcp))
+          pkt = PacketParser.from_raw(ip_header(40) + bytes(tcp))
           assert pkt and pkt.ttl == 128 and pkt.src_port == 12345
           print(f'Parser test OK: TTL={pkt.ttl} sport={pkt.src_port}')
 
-          # TCP with options
+          # TCP with options: total_len has to cover the longer header, or the
+          # frame contradicts itself and the fail-closed parser rejects it.
           tcp2 = bytearray(32)
           tcp2[12] = 0x80  # data offset = 8 (32 bytes)
           struct.pack_into('!H', tcp2, 0, 54321)
           struct.pack_into('!H', tcp2, 2, 443)
           tcp2[13] = 0x18
-          pkt2 = PacketParser.from_raw(bytes(ip) + bytes(tcp2))
+          pkt2 = PacketParser.from_raw(ip_header(52) + bytes(tcp2))
           assert pkt2 and pkt2.src_port == 54321 and pkt2.tcp_flags == 0x18
+          assert pkt2.payload_size == 0 and pkt2.packet_size == 52
           print(f'TCP options OK: sport={pkt2.src_port} flags={pkt2.tcp_flags:#x}')
+
+          # The same frame with a lying total_len must be rejected outright.
+          assert PacketParser.from_raw(ip_header(40) + bytes(tcp2)) is None
+          print('Inconsistent total_len rejected OK')
           "
 
       - name: Unit test — RuleEngine persistence
