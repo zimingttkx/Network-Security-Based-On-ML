@@ -115,7 +115,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install numpy fastapi uvicorn scikit-learn pandas pyyaml
+          pip install numpy fastapi uvicorn scikit-learn pandas pyyaml pyarrow
           pip install -e . --no-deps 2>/dev/null || true
 
       - name: Import check — all modules
