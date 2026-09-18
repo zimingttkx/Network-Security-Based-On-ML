@@ -1,23 +1,24 @@
 ---
-name: 功能请求
-about: 建议新功能或改进
+name: Feature Request
+about: Suggest a new capability or improvement
 title: '[FEATURE] '
 labels: enhancement
 assignees: ''
 
 ---
 
-## 功能描述
-清晰简洁地描述你想要的功能
+## Problem
+What limitation or gap does this request address?
 
-## 使用场景
-描述这个功能的使用场景和价值
+## Proposed Solution
+Describe the change you'd like to see. Include a design sketch if the change touches the pipeline, interception, or API.
 
-## 建议的实现方式
-如果有想法，描述你认为应该如何实现
+## Scope Check
+- [ ] Fits NIPS scope: inbound traffic protection only (see ARCHITECTURE.md)
+- [ ] No simulation code inside `networksecurity/`
 
-## 替代方案
-描述你考虑过的其他替代方案
+## Alternatives Considered
+Other approaches you evaluated.
 
-## 额外信息
-其他任何相关信息或截图
+## Additional Context
+Issue links, references, papers, datasets.

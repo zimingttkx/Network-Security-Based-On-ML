@@ -1,33 +1,33 @@
 ---
-name: Bug报告
-about: 报告项目中的问题
+name: Bug Report
+about: Report a problem with the project
 title: '[BUG] '
 labels: bug
 assignees: ''
 
 ---
 
-## 问题描述
-简要描述遇到的问题
+## Description
+Briefly describe the problem.
 
-## 复现步骤
+## Steps to Reproduce
 1.
 2.
 3.
 
-## 期望行为
-描述你期望发生什么
+## Expected Behavior
+What you expected to happen.
 
-## 实际行为
-描述实际发生了什么
+## Actual Behavior
+What actually happened.
 
-## 环境信息
-- 操作系统: [例如 Ubuntu 22.04]
-- Python版本: [例如 3.12]
-- 浏览器: [例如 Chrome 120]
+## Environment
+- OS: [e.g. Ubuntu 22.04]
+- Python version: [e.g. 3.12]
+- NIPS version / commit: [e.g. 1.0.0 or git SHA]
 
-## 截图
-如果可能，请添加截图帮助说明问题
+## Logs / Output
+Relevant log lines, stack traces, or command output.
 
-## 额外信息
-其他任何有助于解决问题的信息
+## Additional Context
+Anything else that helps diagnose the issue.

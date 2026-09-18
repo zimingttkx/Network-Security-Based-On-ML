@@ -1,21 +1,18 @@
 ---
-name: 问题咨询
-about: 询问使用问题
+name: Question
+about: Ask how to use the project
 title: '[QUESTION] '
 labels: question
 assignees: ''
 
 ---
 
-## 问题
-描述你的问题
+## Question
+What would you like to know?
 
-## 已尝试的方法
-描述你已经尝试过的解决方法
+## What You Tried
+Steps already taken, docs read, commands run.
 
-## 相关文档
-是否查阅过相关文档？如果是，请说明
-
-## 环境信息
-- 操作系统:
-- Python版本:
+## Environment
+- OS: [e.g. Ubuntu 22.04]
+- Python version: [e.g. 3.12]
