@@ -23,11 +23,13 @@ class KitsuneDetector(BaseDetector):
         self,
         threshold_percentile: float = 99.0,
         max_autoencoder_size: int = 10,
+        learning_rate: float = 0.1,
     ) -> None:
         super().__init__(name="KitsuneDetector")
         self._kitsune = Kitsune(
             max_autoencoder_size=max_autoencoder_size,
             threshold_percentile=threshold_percentile,
+            learning_rate=learning_rate,
         )
 
     @property
@@ -46,12 +48,11 @@ class KitsuneDetector(BaseDetector):
             return None  # still learning
 
         if result.is_anomaly:
-            confidence = min(1.0, result.rmse / max(0.001, (result.threshold or 1.0)))
+            threshold = result.threshold or 1.0
             return Verdict(
                 action=Action.BLOCK,
-                confidence=confidence,
-                threat_level=self._threat_level_from_rmse(result.rmse,
-                                                          result.threshold or 1.0),
+                confidence=self._confidence_from_rmse(result.rmse, threshold),
+                threat_level=self._threat_level_from_rmse(result.rmse, threshold),
                 reason=f"Kitsune anomaly (RMSE={result.rmse:.4f})",
                 detector=self.name,
                 metadata=result.to_dict(),
@@ -72,6 +73,18 @@ class KitsuneDetector(BaseDetector):
     def reset(self) -> None:
         super().reset()
         self._kitsune.reset()
+
+    @staticmethod
+    def _confidence_from_rmse(rmse: float, threshold: float) -> float:
+        """Map an anomaly score onto [0, 1].
+
+        A BLOCK verdict only exists when ``rmse > threshold``, so ``rmse /
+        threshold`` is always above 1 and clamps to a constant 1.0 — the
+        previous formula reported maximum confidence for every anomaly,
+        marginal and extreme alike.  Scaling by 0.5 puts the decision boundary
+        at 0.5 and saturates at twice the threshold.
+        """
+        return min(1.0, 0.5 * rmse / max(0.001, threshold))
 
     @staticmethod
     def _threat_level_from_rmse(rmse: float, threshold: float) -> ThreatLevel:

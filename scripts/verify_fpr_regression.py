@@ -13,6 +13,8 @@ import asyncio
 import random
 import sys
 
+import numpy as np
+
 sys.path.insert(0, ".")
 sys.path.insert(0, "scripts")
 
@@ -22,7 +24,13 @@ from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
 
 
 async def main() -> int:
-    random.seed(20260904)  # deterministic run
+    # Both RNGs matter: TrafficGenerator draws from `random`, while the
+    # autoencoder weights are initialised with np.random.uniform.  Seeding
+    # only the former left the anomaly threshold varying run to run (2.01 vs
+    # 1.51 on identical traffic), so the gate flapped independently of the
+    # code under test.
+    random.seed(20260904)
+    np.random.seed(20260904)
 
     pipeline = DetectionPipeline()
     kitsune = KitsuneDetector()

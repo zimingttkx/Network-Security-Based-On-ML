@@ -48,6 +48,7 @@ def _build_pipeline() -> DetectionPipeline:
     pipeline.add_detector(KitsuneDetector(
         max_autoencoder_size=_engine_cfg["kitsune"]["max_autoencoder_size"],
         threshold_percentile=_engine_cfg["kitsune"]["threshold_percentile"],
+        learning_rate=_engine_cfg["kitsune"]["learning_rate"],
     ))
     for d in pipeline.detectors:
         if isinstance(d, KitsuneDetector):

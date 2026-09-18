@@ -55,8 +55,13 @@ def pkt(**kw) -> PacketInfo:
 # Checklist — kitsune adapter
 # K1 grace override before training works; after training raises
 # K2 is_ready False during training, True after
-# K3 confidence = rmse/threshold capped at 1.0
+# K3 confidence grades with the anomaly score (0.5 at the boundary, 1.0 at 2x)
 # K4 reset() restores untrained state
+# K5 MAC-pair key does not collapse when the capture source has no MACs
+# K6 feature vector is 90-dim and every place stating the dimension agrees
+# K7 fm_grace_period=0 trains instead of raising IndexError
+# K8 detection phase adapts on normal traffic but never trains on anomalies
+# K9 a backwards clock step rebases instead of freezing the decay window
 # Checklist — lucid adapter
 # L1 disabled/untrained -> always None (abstain)
 # L2 dict interface fields complete (header_size by protocol)
@@ -303,10 +308,110 @@ async def main():
     report("K4 reset restores untrained", kd.is_ready or kd._kitsune.is_initialized,
            f"is_ready={kd.is_ready}, initialized={kd._kitsune.is_initialized}")
 
-    # K3 confidence cap
+    # K3: confidence must actually grade with the anomaly score.  This used to
+    # recompute `min(1.0, 5.0/0.5)` from local literals — a tautology that
+    # passed no matter what the detector did.  It now calls the real method.
     from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector as KD
-    conf = min(1.0, 5.0 / max(0.001, 0.5))
-    report("K3 confidence formula caps at 1.0", conf != 1.0, f"conf={conf}")
+    c_boundary = KD._confidence_from_rmse(1.0, 1.0)
+    c_marginal = KD._confidence_from_rmse(1.2, 1.0)
+    c_extreme = KD._confidence_from_rmse(9.0, 1.0)
+    ok = (abs(c_boundary - 0.5) < 1e-9 and c_boundary < c_marginal < 1.0
+          and c_extreme == 1.0)
+    report("K3 confidence grades with the anomaly score", not ok,
+           f"boundary={c_boundary:.3f}, marginal={c_marginal:.3f}, extreme={c_extreme:.3f}")
+
+    # K5: the live NFQUEUE path parses at the IP layer, so both MACs are empty
+    # and the MAC-pair channel used to key every packet on the same "->".
+    from networksecurity.engine.kitsune.afterimage import AfterImage, IncStat
+    k_live_a = AfterImage._mac_pair_key("", "", 6, 64)
+    k_live_b = AfterImage._mac_pair_key("", "", 17, 128)
+    k_pcap = AfterImage._mac_pair_key("aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66", 6, 64)
+    ok = (k_live_a != "->" and k_live_a != k_live_b
+          and k_pcap == "aa:bb:cc:dd:ee:ff->11:22:33:44:55:66")
+    report("K5 MAC-pair key does not collapse without link-layer headers", not ok,
+           f"live={k_live_a!r}/{k_live_b!r}, pcap={k_pcap!r}")
+
+    # K6: the dimension is stated in four places; they must all agree.
+    ai = AfterImage()
+    vec = ai.update_get_stats(src_mac="", dst_mac="", src_ip="1.2.3.4",
+                              dst_ip="10.0.0.1", src_port=1, dst_port=80,
+                              packet_size=100, timestamp=1.0, protocol=6, ttl=64)
+    from networksecurity.features.feature_registry import get_feature_dim
+    dims = {"vector": len(vec), "method": ai.get_feature_dim(),
+            "constant": AfterImage.FEATURE_DIM,
+            "registry": get_feature_dim("afterimage")}
+    ok = len(set(dims.values())) == 1 and ai.get_feature_dim() == 90
+    report("K6 feature dimension is 90 and consistent everywhere", not ok, f"dims={dims}")
+
+    # K7: fm_grace_period=0 left fm_data empty and _build_feature_map indexed
+    # X.shape[1] on a 1-D np.array([]) -> IndexError.
+    kd0 = KitsuneDetector()
+    kd0.set_grace_periods(fm_grace_period=0, ad_grace_period=5)
+    err = None
+    try:
+        for i in range(20):
+            await kd0.process_packet(pkt(timestamp=2000.0 + i * 0.01,
+                                         src_port=1000 + i, packet_size=60 + i * 5))
+    except Exception as e:  # noqa: BLE001 - the point is that nothing escapes
+        err = f"{type(e).__name__}: {e}"
+    ok = err is None and kd0.is_ready
+    report("K7 fm_grace_period=0 trains instead of raising", not ok,
+           f"error={err}, is_ready={kd0.is_ready}, groups={len(kd0._kitsune.kitnet.feature_map)}")
+
+    # K8: after the grace periods the model used to freeze permanently, so it
+    # could not track drift.  It must now keep adapting on normal-scoring
+    # packets and must never train on a packet it scored as anomalous.
+    kd8 = KitsuneDetector()
+    kd8.set_grace_periods(fm_grace_period=20, ad_grace_period=40)
+    t8 = 3000.0
+    for i in range(80):
+        await kd8.process_packet(pkt(timestamp=t8 + i * 0.01, src_port=2000 + i % 50,
+                                     packet_size=100 + (i * 7) % 200,
+                                     dst_port=[80, 443][i % 2]))
+    kn = kd8._kitsune.kitnet
+
+    # Continue the *same* traffic pattern into the detection phase.  Fresh
+    # source ports score ~200x over the threshold (a socket the baseline has
+    # never seen), so an out-of-distribution probe would never reach the
+    # normal-scoring branch this test is about.
+    snap = [ae.W_decode.copy() for ae in kn.ensemble]
+    i = 80
+    await kd8.process_packet(pkt(timestamp=t8 + i * 0.01, src_port=2000 + i % 50,
+                                 packet_size=100 + (i * 7) % 200,
+                                 dst_port=[80, 443][i % 2]))
+    normal_delta = max(float(np.abs(a.W_decode - b).max())
+                       for a, b in zip(kn.ensemble, snap))
+
+    # Force "everything is anomalous" so the anti-poisoning branch is
+    # exercised deterministically rather than hoping for a real outlier.
+    saved_threshold = kn.threshold
+    kn.threshold = -1.0
+    snap2 = [ae.W_decode.copy() for ae in kn.ensemble]
+    i = 81
+    await kd8.process_packet(pkt(timestamp=t8 + i * 0.01, src_port=2000 + i % 50,
+                                 packet_size=100 + (i * 7) % 200,
+                                 dst_port=[80, 443][i % 2]))
+    anomaly_delta = max(float(np.abs(a.W_decode - b).max())
+                        for a, b in zip(kn.ensemble, snap2))
+    kn.threshold = saved_threshold
+
+    ok = kd8.is_ready and normal_delta > 0.0 and anomaly_delta == 0.0
+    report("K8 detection phase adapts on normal, never trains on anomalies", not ok,
+           f"is_ready={kd8.is_ready}, normal_delta={normal_delta:.3e}, "
+           f"anomaly_delta={anomaly_delta:.3e}")
+
+    # K9: a backwards clock step used to leave last_timestamp pinned in the
+    # future, so every later packet skipped decay until the clock caught up.
+    s = IncStat(lambda_=1.0, init_time=100.0)
+    s.insert(10.0, 100.0)
+    s.insert(20.0, 90.0)          # clock stepped back 10s
+    rebased = s.last_timestamp == 90.0
+    s.insert(30.0, 95.0)          # forward again from the rebased point
+    decayed = s.weight < 2.0      # frozen window would leave weight at 3.0
+    ok = rebased and decayed and np.isfinite(s.weight) and np.isfinite(s.mean())
+    report("K9 backwards clock step rebases instead of freezing the window", not ok,
+           f"last_timestamp={s.last_timestamp}, weight={s.weight:.4f}, "
+           f"rebased={rebased}, decayed_after={decayed}")
 
     # --- L1/L2: lucid adapter interface --------------------------------------
     from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter

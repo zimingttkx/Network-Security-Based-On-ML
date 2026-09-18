@@ -18,6 +18,9 @@ from networksecurity.engine.kitsune.kitnet import KitNET
 
 logger = logging.getLogger(__name__)
 
+# Packets between "still training, all traffic is being allowed" warnings.
+_WARMUP_LOG_INTERVAL = 10_000
+
 
 @dataclass
 class KitsuneResult:
@@ -108,7 +111,7 @@ class Kitsune:
     def process_packet(self, packet_info: dict) -> KitsuneResult:
         """Process a single packet.  Accepts a dict with:
         src_mac, dst_mac, src_ip, dst_ip, src_port, dst_port,
-        packet_size, timestamp.
+        packet_size, timestamp, protocol, ttl.
         """
         self.packet_count += 1
 
@@ -121,6 +124,8 @@ class Kitsune:
             dst_port=packet_info.get("dst_port", 0),
             packet_size=packet_info.get("packet_size", 0),
             timestamp=packet_info.get("timestamp", 0.0),
+            protocol=packet_info.get("protocol", 0),
+            ttl=packet_info.get("ttl", 0),
         )
 
         return self._process_features(features)
@@ -133,6 +138,15 @@ class Kitsune:
         rmse = self.kitnet.process(features)
         is_training = not self.kitnet.is_ad_done
         is_anomaly = self.kitnet.is_anomaly(rmse) if not is_training else False
+
+        if is_training and self.packet_count % _WARMUP_LOG_INTERVAL == 0:
+            total = self.fm_grace + self.ad_grace
+            logger.warning(
+                "Kitsune still training: abstaining on every packet, so all "
+                "traffic is being allowed through (%d/%d packets, %.1f%%); "
+                "detection starts at packet %d",
+                self.packet_count, total,
+                self.packet_count * 100.0 / max(1, total), total + 1)
 
         return KitsuneResult(
             rmse=rmse,

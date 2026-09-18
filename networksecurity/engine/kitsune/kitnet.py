@@ -17,86 +17,109 @@ class AutoEncoder:
     """
     Lightweight autoencoder with a single hidden layer
     for fast training and inference.
+
+    ``output_activation`` controls the decoder's transfer function:
+
+    - ``"sigmoid"``: reconstruction bounded to (0, 1).  Only appropriate
+      when the training target is itself in that range.
+    - ``"linear"``: reconstruction unbounded.
+
+    Because ``_normalize`` z-scores the input, the reconstruction target lives
+    on the whole real line and a sigmoid decoder cannot reach it: measured on
+    live-shaped traffic an AE saw targets up to +10.28 against reconstructions
+    clamped to +1.000, so most of the reported RMSE was an irreducible bias
+    term rather than a reconstruction failure.  KitNET therefore gives the
+    output AE a linear decoder; the ensemble AEs keep the sigmoid one, which
+    bounds their weights — see ``_build_ensemble``.
     """
-    
-    def __init__(self, input_dim: int, hidden_ratio: float = 0.75, 
-                 learning_rate: float = 0.1):
+
+    def __init__(self, input_dim: int, hidden_ratio: float = 0.75,
+                 learning_rate: float = 0.1,
+                 output_activation: str = "sigmoid"):
         """
         Args:
             input_dim: Input dimension.
             hidden_ratio: Hidden-layer size ratio relative to input.
             learning_rate: Learning rate.
+            output_activation: "sigmoid" or "linear" decoder.
         """
+        if output_activation not in ("sigmoid", "linear"):
+            raise ValueError(
+                f"output_activation must be 'sigmoid' or 'linear', got {output_activation!r}")
         self.input_dim = input_dim
         self.hidden_dim = max(1, int(input_dim * hidden_ratio))
         self.learning_rate = learning_rate
-        
+        self.output_activation = output_activation
+
         # Initialize weights (Xavier initialization).
         limit = np.sqrt(6.0 / (input_dim + self.hidden_dim))
         self.W_encode = np.random.uniform(-limit, limit, (input_dim, self.hidden_dim))
         self.b_encode = np.zeros(self.hidden_dim)
-        
+
         limit = np.sqrt(6.0 / (self.hidden_dim + input_dim))
         self.W_decode = np.random.uniform(-limit, limit, (self.hidden_dim, input_dim))
         self.b_decode = np.zeros(input_dim)
-        
+
         # Normalization parameters.
         self.norm_mean = None
         self.norm_std = None
         self.is_fitted = False
-    
+
     def _sigmoid(self, x: np.ndarray) -> np.ndarray:
         """Sigmoid activation."""
         return 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
-    
+
     def _sigmoid_derivative(self, x: np.ndarray) -> np.ndarray:
         """Sigmoid derivative."""
         s = self._sigmoid(x)
         return s * (1 - s)
-    
+
     def _normalize(self, x: np.ndarray) -> np.ndarray:
         """Normalize input."""
         if self.norm_mean is None:
             return x
         return (x - self.norm_mean) / (self.norm_std + 1e-10)
-    
+
     def encode(self, x: np.ndarray) -> np.ndarray:
         """Encode."""
         return self._sigmoid(np.dot(x, self.W_encode) + self.b_encode)
-    
+
     def decode(self, h: np.ndarray) -> np.ndarray:
         """Decode."""
-        return self._sigmoid(np.dot(h, self.W_decode) + self.b_decode)
-    
+        z = np.dot(h, self.W_decode) + self.b_decode
+        return z if self.output_activation == "linear" else self._sigmoid(z)
+
     def forward(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Forward pass. Returns (reconstruction, hidden, normalized_input)."""
         x_norm = self._normalize(x)
         h = self.encode(x_norm)
         x_recon = self.decode(h)
         return x_recon, h, x_norm
-    
+
     def train_step(self, x: np.ndarray) -> float:
         """Single training step. Returns reconstruction error."""
         x_recon, h, x_norm = self.forward(x)
-        
+
         # Compute error.
         error = x_norm - x_recon
         rmse = np.sqrt(np.mean(error ** 2))
-        
-        # Backpropagation.
-        d_decode = error * self._sigmoid_derivative(
-            np.dot(h, self.W_decode) + self.b_decode
-        )
+
+        # Backpropagation.  A linear decoder has derivative 1, so the output
+        # delta is the raw error; only the sigmoid decoder gets the
+        # sigma'(z) factor.
+        z_decode = np.dot(h, self.W_decode) + self.b_decode
+        d_decode = (error if self.output_activation == "linear"
+                    else error * self._sigmoid_derivative(z_decode))
         d_encode = np.dot(d_decode, self.W_decode.T) * self._sigmoid_derivative(
             np.dot(x_norm, self.W_encode) + self.b_encode
         )
-        
+
         # Update weights.
         self.W_decode += self.learning_rate * np.outer(h, d_decode)
         self.b_decode += self.learning_rate * d_decode
         self.W_encode += self.learning_rate * np.outer(x_norm, d_encode)
         self.b_encode += self.learning_rate * d_encode
-        
+
         return rmse
     
     def compute_rmse(self, x: np.ndarray) -> float:
@@ -117,8 +140,12 @@ class KitNET:
 
     Architecture:
     1. Feature mapping: cluster input features into small groups.
-    2. Ensemble: one autoencoder per feature group, running in parallel.
-    3. Output: one autoencoder aggregating all ensemble RMSE outputs.
+    2. Ensemble: one sigmoid-decoder autoencoder per feature group, running
+       in parallel.
+    3. Output: one linear-decoder autoencoder aggregating the ensemble RMSEs.
+
+    After the two grace periods the model keeps training on packets it scores
+    as normal, so the baseline follows slow drift without absorbing attacks.
     """
 
     def __init__(self, input_dim: int, max_autoencoder_size: int = 10,
@@ -221,11 +248,20 @@ class KitNET:
             )
             self.ensemble.append(ae)
 
-        # Output autoencoder
+        # Output autoencoder.  Its input is the ensemble-RMSE vector z-scored
+        # by the running statistics below, so a sigmoid decoder — bounded to
+        # (0, 1) — cannot represent the target and the anomaly score stops
+        # tracking the input.  Measured on live-shaped traffic (2 seeds):
+        # switching this one decoder to linear moved AUC 0.9988-0.9992 ->
+        # 1.0000 and FPR 3.9-5.0% -> 2.9-3.6% at unchanged 100% TPR.  Making
+        # the *ensemble* AEs linear too was also measured and is far worse:
+        # with lr=0.1 and no output bound their weights diverge, the detection
+        # threshold ends up below the median normal score and FPR hits 87%.
         self.output_ae = AutoEncoder(
             input_dim=len(self.ensemble),
             hidden_ratio=self.hidden_ratio,
             learning_rate=self.learning_rate,
+            output_activation="linear",
         )
 
         logger.info("KitNET: Built %d ensemble autoencoders", len(self.ensemble))
@@ -244,7 +280,14 @@ class KitNET:
 
         # Complete feature mapping
         if not self.is_fm_done:
-            fm_array = np.array(self.fm_data)
+            # fm_grace_period=0 leaves fm_data empty, and _build_feature_map
+            # indexes X.shape[1] — an empty np.array() is 1-D and raises
+            # IndexError.  Fall back to the triggering sample: with one row
+            # the correlation matrix is degenerate (every feature becomes its
+            # own group) but the detector still works instead of crashing.
+            if not self.fm_data:
+                self.fm_data.append(x.copy())
+            fm_array = np.atleast_2d(np.array(self.fm_data))
             self._build_feature_map(fm_array)
             self._build_ensemble()
 
@@ -285,8 +328,14 @@ class KitNET:
             self.is_ad_done = True
             logger.info("KitNET: training complete, threshold=%.4f", self.threshold)
 
-        # Run detection
-        return self._execute(x)
+        # Run detection.  Keep adapting on traffic the model considers normal
+        # so the score tracks slow drift in the baseline; a packet that scores
+        # above the threshold never trains the model, otherwise a sustained
+        # attack would be absorbed into "normal".
+        score = self._execute(x)
+        if self.threshold is not None and score <= self.threshold:
+            self._train_step(x)
+        return score
     
     def _train_step(self, x: np.ndarray) -> float:
         """Training step."""

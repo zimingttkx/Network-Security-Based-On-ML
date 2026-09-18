@@ -81,6 +81,7 @@ pipeline.set_rule_engine(RuleEngine(
 pipeline.add_detector(KitsuneDetector(
     max_autoencoder_size=_engine_cfg["kitsune"]["max_autoencoder_size"],
     threshold_percentile=_engine_cfg["kitsune"]["threshold_percentile"],
+    learning_rate=_engine_cfg["kitsune"]["learning_rate"],
 ))
 # Kitsune grace periods must be set before the first packet is processed.
 for _d in pipeline.detectors:
