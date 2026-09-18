@@ -24,13 +24,14 @@ class PcapLoader:
     entries mirror the ``None`` returned by ``PacketParser.from_raw`` for
     unparseable live packets, so callers can skip them uniformly.
 
-    For an IPv4 frame whose L4 segment is truncated/malformed (e.g. a
-    snaplen-limited TCP dump), the loader follows the live
-    ``PacketParser.from_raw`` path: it returns a **best-effort** record with
-    ports/flags defaulted to 0 rather than ``None``.  This keeps the two
-    ingestion paths in agreement on which frames are "valid" (both treat a
-    complete IP header as parseable) and avoids offline-vs-live feature
-    drift on the same physical packet.
+    For an IPv4 frame whose L4 segment is truncated or malformed (e.g. a
+    snaplen-limited TCP dump, a non-first fragment, a ``dataofs`` outside
+    20..60, or an IP total length that contradicts the captured byte count),
+    the loader yields ``None`` — mirroring ``PacketParser.from_raw``, which is
+    fail-closed on exactly the same conditions.  Emitting a best-effort record
+    instead would make the two ingestion paths disagree about which frames are
+    valid: a packet dropped live would still be trained on offline, so the
+    model would be fitted to features the live path never produces.
 
     ``packet_size`` / ``payload_size`` follow the **IP-layer** convention
     (``ip_total`` and ``ip_total - ip_hdr - l4_hdr``) to stay consistent with
@@ -63,6 +64,7 @@ class PcapLoader:
 
         count = 0
         parsed = 0
+        failed = 0
         for pkt in packets:
             count += 1
             # Guarded per-packet parse. Everything from the link-layer probe
@@ -107,15 +109,19 @@ class PcapLoader:
                 else:
                     link_offset = 0
 
-                # Mirror PacketParser.from_raw's minimum-valid-IPv4 guard.
+                # Mirror PacketParser.from_raw's guards one for one, so the two
+                # ingestion paths accept and reject the same frames.
                 version = int(ip_layer.version)
                 ihl = int(ip_layer.ihl) * 4
                 ip_total = int(ip_layer.len)
-                # A frame that doesn't even carry a full 20-byte IP header must
-                # be treated as unparseable (None), exactly like from_raw's
-                # `len(data) < 20` reject — otherwise the two ingestion paths
-                # disagree on which frames are valid.
-                if version != 4 or len(bytes(pkt)) - link_offset < 20:
+                avail = len(bytes(pkt)) - link_offset
+                if (version != 4
+                        or avail < 20
+                        or ihl < 20 or ihl > 60 or ihl > avail
+                        or ip_total < ihl
+                        # A non-first fragment carries no L4 header, so reading
+                        # ports at `ihl` yields arbitrary payload bytes.
+                        or int(ip_layer.frag) != 0):
                     yield None
                     continue
 
@@ -123,48 +129,42 @@ class PcapLoader:
                 udp_layer = ip_layer.getlayer(UDP)
                 proto = int(ip_layer.proto)
 
-                # Key the L4 header length off the IP *protocol* field (not off
-                # whether scapy built a layer), exactly like PacketParser.from_raw
-                # does via `protocol == 6`. A truncated TCP segment that scapy
-                # cannot fully parse still carries proto==6, so it must get the
-                # TCP default (20) rather than the UDP/ICMP default (8) —
-                # otherwise payload_size drifts from the live path on the same
-                # physical packet.
+                src_port = dst_port = tcp_flags = window_size = 0
                 if proto == 6:  # TCP
-                    if tcp_layer is not None and tcp_layer.dataofs is not None:
-                        l4_header = int(tcp_layer.dataofs) * 4
-                    else:
-                        l4_header = 20
-                else:
-                    l4_header = 8
-                # Clamp like from_raw (max(0, ...)): a malformed total length
-                # smaller than the header just yields payload_size 0, mirroring
-                # the live path which returns a record rather than None here.
-                payload_size = max(0, ip_total - ihl - l4_header)
-
-                # Best-effort field access. from_raw only reads ports/flags when
-                # the relevant L4 header is fully present (`len(data) >= ihl+20`
-                # for TCP, `>= ihl+8` for UDP); otherwise they stay 0. Mirror
-                # that here by gating on whether the dissected layer actually
-                # carries a complete header, so the same physical (truncated)
-                # packet yields identical features on both ingestion paths.
-                tcp_full = tcp_layer is not None and len(bytes(tcp_layer)) >= 20
-                udp_full = udp_layer is not None and len(bytes(udp_layer)) >= 8
-
-                def _port(layer, attr: str) -> int:
-                    val = getattr(layer, attr, None)
-                    return int(val) if val is not None else 0
-
-                if tcp_full:
-                    src_port = _port(tcp_layer, "sport")
-                    dst_port = _port(tcp_layer, "dport")
+                    if tcp_layer is None or len(bytes(tcp_layer)) < 20:
+                        yield None
+                        continue
+                    l4_header = int(tcp_layer.dataofs) * 4
+                    if (l4_header < 20 or l4_header > 60
+                            or avail < ihl + l4_header
+                            or ip_total < ihl + l4_header):
+                        yield None
+                        continue
+                    src_port = int(tcp_layer.sport)
+                    dst_port = int(tcp_layer.dport)
                     tcp_flags = int(tcp_layer.flags) & 0x3F
-                elif udp_full:
-                    src_port = _port(udp_layer, "sport")
-                    dst_port = _port(udp_layer, "dport")
-                    tcp_flags = 0
+                    window_size = int(tcp_layer.window)
+                elif proto == 17:  # UDP
+                    if udp_layer is None or len(bytes(udp_layer)) < 8:
+                        yield None
+                        continue
+                    l4_header = 8
+                    if avail < ihl + l4_header or ip_total < ihl + l4_header:
+                        yield None
+                        continue
+                    src_port = int(udp_layer.sport)
+                    dst_port = int(udp_layer.dport)
                 else:
-                    src_port = dst_port = tcp_flags = 0
+                    # Any other protocol still yields a record with ports at
+                    # zero, exactly like from_raw: the rule engine's
+                    # allowed_protocols filter blocks it, which is a more
+                    # auditable outcome than a silent parse failure.  No L4
+                    # header is subtracted, matching from_raw (the old code
+                    # subtracted the UDP default of 8 here, so ICMP
+                    # payload_size drifted from the live path).
+                    l4_header = 0
+
+                payload_size = max(0, ip_total - ihl - l4_header)
 
                 yield {
                     "src_ip": ip_layer.src,
@@ -184,15 +184,20 @@ class PcapLoader:
                     "tcp_flags": tcp_flags,
                     "ttl": int(ip_layer.ttl),
                     "payload_size": payload_size,
+                    "window_size": window_size,
                 }
                 parsed += 1
             except Exception:  # noqa: BLE001
                 # Malformed IPv4/L4 frame — treat as unparseable (matching
                 # PacketParser.from_raw returning None for the same) and keep
                 # processing the rest of the capture.
+                failed += 1
                 yield None
 
-        logger.info("Loaded %d packets from %s (%d parsed as IPv4)", count, path, parsed)
+        logger.info(
+            "Loaded %d packets from %s (%d parsed as IPv4, %d unparseable)",
+            count, path, parsed, failed,
+        )
 
     # -- link-layer parsing --------------------------------------------------
 

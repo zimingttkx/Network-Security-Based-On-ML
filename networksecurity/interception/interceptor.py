@@ -327,6 +327,7 @@ class Interceptor:
             "blocked_ips": blocked,
             "nfqueue_packets": self._nfqueue.packet_count,
             "nfqueue_dropped": self._nfqueue.dropped_count,
+            "nfqueue_parse_failed": self._nfqueue.parse_failed_count,
             "detection_loop_stale_seconds": stale,
             "detection_unavailable_drops": self._unavailable_drops,
             "pipeline": self._pipeline.status(),

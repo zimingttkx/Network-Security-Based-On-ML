@@ -256,6 +256,10 @@ async def engine_status():
         "ml_unavailable": pipe_status["ml_unavailable"],
         "detection_unavailable_drops": inter_status.get(
             "detection_unavailable_drops"),
+        # Packets the parser could not read completely and consistently, and
+        # which were therefore dropped fail-closed.  A rising count here means
+        # wire traffic is being discarded before detection ever sees it.
+        "nfqueue_parse_failed": inter_status.get("nfqueue_parse_failed"),
         "kitsune_trained": bool(
             hasattr(pipeline, "_detectors")
             and any(

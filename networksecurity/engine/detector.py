@@ -22,6 +22,10 @@ class PacketInfo:
     tcp_flags: int = 0
     ttl: int = 64
     payload_size: int = 0
+    # TCP advertised window; 0 for UDP and for non-TCP/UDP protocols.
+    window_size: int = 0
+    # Flow direction using LUCID's convention: 0 = outbound, 1 = inbound.
+    direction: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +41,8 @@ class PacketInfo:
             "tcp_flags": self.tcp_flags,
             "ttl": self.ttl,
             "payload_size": self.payload_size,
+            "window_size": self.window_size,
+            "direction": self.direction,
         }
 
 
