@@ -34,6 +34,63 @@ def sh(*args: str) -> str:
     return subprocess.run(args, capture_output=True, text=True).stdout
 
 
+def _degrade_child() -> int:
+    """Child mode: only iptables is on PATH, so ip6tables is really absent.
+
+    Running the real binary-missing case (rather than monkeypatching subprocess)
+    is the point: the branch under test decides what happens when the OS has no
+    ip6tables at all, and a stub cannot catch an error raised from the exec path.
+    """
+    from networksecurity.interception.iptables import IptablesManager
+
+    failures = 0
+    mgr = IptablesManager(safe_ips=["127.0.0.1"])
+    checks: list[tuple[str, bool, str]] = []
+    try:
+        mgr.setup_nfqueue(queue_num=9, intercept_icmp=True)
+        checks.append(("setup succeeds without ip6tables", mgr._nfqueue_rules_added, ""))
+        checks.append(("ipv6_ready reports False", mgr.ipv6_ready is False, str(mgr.ipv6_ready)))
+        checks.append(("IPv4 chain still built",
+                       f"-N {mgr.CHAIN}" in sh("iptables", "-S"),
+                       sh("iptables", "-S").replace("\n", " | ")[:120]))
+        refused = mgr.block_ip("2001:db8::2")
+        checks.append(("IPv6 block refused (no phantom enforcement)", refused is False, str(refused)))
+        v4_ok = mgr.block_ip("203.0.113.9")
+        checks.append(("IPv4 block still enforced", v4_ok is True, str(v4_ok)))
+        checks.append(("no IPv6 rule anywhere in the v4 ruleset",
+                       "2001:db8::2" not in sh("iptables", "-S"), ""))
+    finally:
+        mgr.cleanup_all()
+    for name, ok, detail in checks:
+        print(f"{'PASS' if ok else 'FAIL':10} {name}" + (f"  [{detail}]" if detail else ""))
+        failures += 0 if ok else 1
+    return 1 if failures else 0
+
+
+def _run_degrade_child() -> int:
+    """Re-invoke this script with a PATH that hides ip6tables but not iptables."""
+    import os
+    import tempfile
+
+    bindir = Path(tempfile.mkdtemp(prefix="nips_path_"))
+    real = sh("which", "iptables").strip()
+    if not real:
+        print("SKIP: cannot locate iptables to build a restricted PATH")
+        return 0
+    os.symlink(real, bindir / "iptables")
+    for tool in ("sh", "ip", "uname"):
+        located = sh("which", tool).strip()
+        if located:
+            os.symlink(located, bindir / tool)
+    env = dict(os.environ, PATH=str(bindir), PYTHONPATH=str(Path(__file__).resolve().parent.parent))
+    done = subprocess.run([sys.executable, __file__, "--degraded"], capture_output=True,
+                          text=True, env=env)
+    print(done.stdout.strip())
+    if done.stderr.strip():
+        print("  stderr:", done.stderr.strip()[:200])
+    return done.returncode
+
+
 def main() -> int:
     if sys.platform != "linux":
         print(f"SKIP: needs Linux (running on {sys.platform})")
@@ -44,6 +101,9 @@ def main() -> int:
     if not sh("which", "iptables").strip():
         print("SKIP: iptables not installed")
         return 0
+
+    if "--degraded" in sys.argv:
+        return _degrade_child()
 
     from networksecurity.interception.iptables import IptablesManager
 
@@ -177,6 +237,13 @@ def main() -> int:
                   chain not in sh("ip6tables", "-S"), "v6 chain still present")
             check("host v6 rules untouched", sh("ip6tables", "-S") == before6,
                   "v6 ruleset differs from the pre-run snapshot")
+
+        # -- ip6tables genuinely absent (separate process, restricted PATH) --
+        if has_v6:
+            ipt.cleanup_all()
+            child_rc = _run_degrade_child()
+            check("degradation with ip6tables absent passes", child_rc == 0,
+                  f"child exit={child_rc}")
     finally:
         ipt.cleanup_all()
 
