@@ -55,15 +55,20 @@ health() {
 
 # Run verification tests
 test() {
+    # python3, not a pinned python3.13: the image is python:3.12-slim, which
+    # ships python3/python only — the pinned name made every one of these
+    # commands fail with "command not found" while looking like a passing suite.
+    # verify_kernel_rules is intentionally absent: the container is unprivileged,
+    # so it has no NET_ADMIN and its iptables assertions cannot run there.
     log_info "Running verification tests..."
-    docker compose exec api python3.13 /app/scripts/verify_engine_module.py
-    docker compose exec api python3.13 /app/scripts/verify_interception_module.py
-    docker compose exec api python3.13 /app/scripts/verify_block_lifecycle.py
-    docker compose exec api python3.13 /app/scripts/verify_live_exposed_bugs.py
-    docker compose exec api python3.13 /app/scripts/verify_fpr_regression.py
-    docker compose exec api python3.13 /app/scripts/verify_features_module.py
-    docker compose exec api python3.13 /app/scripts/verify_data_module.py
-    docker compose exec api python3.13 /app/scripts/verify_management_plane.py
+    docker compose exec api python3 /app/scripts/verify_engine_module.py
+    docker compose exec api python3 /app/scripts/verify_interception_module.py
+    docker compose exec api python3 /app/scripts/verify_block_lifecycle.py
+    docker compose exec api python3 /app/scripts/verify_live_exposed_bugs.py
+    docker compose exec api python3 /app/scripts/verify_fpr_regression.py
+    docker compose exec api python3 /app/scripts/verify_features_module.py
+    docker compose exec api python3 /app/scripts/verify_data_module.py
+    docker compose exec api python3 /app/scripts/verify_management_plane.py
 }
 
 # Help
