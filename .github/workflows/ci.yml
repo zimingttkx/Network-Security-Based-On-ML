@@ -115,7 +115,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install numpy fastapi uvicorn scikit-learn pandas pyyaml pyarrow
+          pip install numpy fastapi uvicorn httpx scikit-learn pandas pyyaml pyarrow
           pip install -e . --no-deps 2>/dev/null || true
 
       - name: Import check — all modules
@@ -270,6 +270,10 @@ jobs:
       - name: Unit test — data module (one-hot alignment)
         run: |
           python scripts/verify_data_module.py
+
+      - name: Unit test — management plane (app.py + cli.py, 27 checks)
+        run: |
+          python scripts/verify_management_plane.py
 
   # ── 攻击仿真冒烟测试 ─────────────────────────────────────────────────
   smoke-attack:

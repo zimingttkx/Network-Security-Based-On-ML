@@ -63,6 +63,7 @@ test() {
     docker compose exec api python3.13 /app/scripts/verify_fpr_regression.py
     docker compose exec api python3.13 /app/scripts/verify_features_module.py
     docker compose exec api python3.13 /app/scripts/verify_data_module.py
+    docker compose exec api python3.13 /app/scripts/verify_management_plane.py
 }
 
 # Help

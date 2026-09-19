@@ -18,6 +18,9 @@ scikit-learn>=1.3.0
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 
+# Management-plane regression check (fastapi TestClient drives app.py)
+httpx>=0.24.0
+
 # Live interception (Linux only — install manually)
 # pip install NetfilterQueue
 
