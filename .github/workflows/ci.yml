@@ -248,7 +248,7 @@ jobs:
         run: |
           python scripts/verify_fpr_regression.py
 
-      - name: Unit test — engine module (50 checks)
+      - name: Unit test — engine module (56 checks)
         run: |
           python scripts/verify_engine_module.py
 
@@ -272,7 +272,7 @@ jobs:
         run: |
           python scripts/verify_data_module.py
 
-      - name: Unit test — management plane (app.py + cli.py, 39 checks)
+      - name: Unit test — management plane (app.py + cli.py, 45 checks)
         run: |
           python scripts/verify_management_plane.py
 

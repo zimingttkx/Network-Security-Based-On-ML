@@ -78,6 +78,19 @@ def pkt(**kw) -> PacketInfo:
 # C10 shipped config/config.yaml loads with documented values
 # ---------------------------------------------------------------------------
 
+
+def _tmp_dir(prefix):
+    import contextlib, shutil, tempfile
+
+    @contextlib.contextmanager
+    def _ctx():
+        path = Path(tempfile.mkdtemp(prefix=prefix))
+        try:
+            yield path
+        finally:
+            shutil.rmtree(path, ignore_errors=True)
+    return _ctx()
+
 async def main():
     # --- P1/P2/P3: pipeline semantics -------------------------------------
     from networksecurity.engine.detector import BaseDetector
@@ -736,6 +749,71 @@ async def main():
           and e7.remove_whitelist("1.1.1.1") is False
           and e7.remove_ephemeral_blacklist("x") is False)
     report("E7 remove_* return presence", not ok, "see assertion")
+
+    # -- group RL: hot reload (replace semantics, all-or-nothing) ------------
+    with _tmp_dir("nips_reload_") as rdir:
+        rfile = rdir / "rules.json"
+        r1 = RuleEngine()
+        r1.add_blacklist("10.9.9.9")
+        r1.add_blacklist("10.8.8.8")
+        r1.add_ephemeral_blacklist("10.7.7.7")
+        rfile.write_text(_json.dumps({"blacklist": ["10.9.9.9"], "whitelist": []}))
+        counts = r1.reload_rules(rfile)
+        ok = (counts["blacklist_removed"] == 1
+              and r1.get_blacklist() == ["10.9.9.9"]
+              and "10.8.8.8" not in r1.get_blacklist())
+        report("RL1 reload_rules replaces persistent tier", not ok, str(counts))
+
+        report("RL2 reload never touches the ephemeral tier",
+               r1.get_ephemeral_blacklist() != ["10.7.7.7"],
+               str(r1.get_ephemeral_blacklist()))
+
+        rfile.write_text(_json.dumps({"blacklist": ["10.9.9.9", "not-an-ip"],
+                                     "whitelist": []}))
+        rejected = True
+        try:
+            r1.reload_rules(rfile)
+            rejected = False
+        except ValueError:
+            pass
+        ok = rejected and r1.get_blacklist() == ["10.9.9.9"]
+        report("RL3 invalid entry rejects whole reload, state kept", not ok,
+               f"rejected={rejected} live={r1.get_blacklist()}")
+
+        rfile.write_text('{"blacklist": [')
+        truncated = True
+        try:
+            r1.reload_rules(rfile)
+            truncated = False
+        except _json.JSONDecodeError:
+            pass
+        report("RL4 truncated json rejected", not truncated,
+               f"truncated_rejected={truncated}")
+
+        # R5: knobs swapped while running take effect on the next packet.
+        r2 = RuleEngine(window_seconds=1000.0, max_connections=1000,
+                        allowed_protocols={6, 17})
+        icmp_before = await r2.process_packet(pkt(src_ip="5.5.5.5", protocol=1,
+                                                  timestamp=100.0))
+        r2.set_allowed_protocols({6, 17, 1})
+        r2.set_rate_limit(1000.0, 2)
+        icmp_after = await r2.process_packet(pkt(src_ip="5.5.5.5", protocol=1,
+                                                 timestamp=101.0))
+        syns = [await r2.process_packet(pkt(src_ip="6.6.6.6", tcp_flags=0x02,
+                                            timestamp=200.0 + i)) for i in range(5)]
+        syn_blocks = sum(1 for v in syns if v and v.action == Action.BLOCK)
+        ok = (icmp_before and icmp_before.action == Action.BLOCK
+              and icmp_after is None and syn_blocks == 3)
+        report("RL5 setters apply live (ICMP allowed, tighter cap)", not ok,
+               f"before={icmp_before.action.value if icmp_before else None} "
+               f"after={icmp_after.action.value if icmp_after else None} blocks={syn_blocks}")
+
+        from networksecurity.utils.reload import ReloadProbe
+        rfile.write_text(_json.dumps({"blacklist": ["10.9.9.9"], "whitelist": []}))
+        probe = ReloadProbe(r1, rfile, Path("config/config.yaml"))
+        same = probe.probe()
+        report("RL6 probe skips unchanged files", same is not None,
+               f"unexpected summary={same}")
 
     print("\n==== SUMMARY ====")
     for name, status in results:

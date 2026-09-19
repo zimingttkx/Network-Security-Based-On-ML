@@ -11,6 +11,8 @@ Requires fastapi + httpx (TestClient).  Skips when they are absent.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import sys
 import tempfile
 import time
@@ -52,9 +54,15 @@ def main() -> int:
     from networksecurity.utils.validation import validate_ip_or_cidr
 
     # Never let the suite touch the developer's rules.json or event database.
-    appmod.RULES_FILE = Path(tempfile.mkstemp(prefix="nips_rules_", suffix=".json")[1])
+    rules_tmp = Path(tempfile.mkdtemp(prefix="nips_rules_")) / "rules.json"
+    rules_tmp.write_text('{"blacklist": [], "whitelist": []}')
+    appmod.RULES_FILE = rules_tmp
     from networksecurity.observability import EventStore
+    from networksecurity.utils.reload import ReloadProbe
 
+    # The app built its probe against the repo rules.json at import; repoint it
+    # so the reload checks below exercise the temp copy.
+    appmod.reload_probe = ReloadProbe(appmod.pipeline.rule_engine, rules_tmp)
     tmp_db = Path(tempfile.mkdtemp(prefix="nips_events_")) / "events.db"
     appmod.event_store = EventStore(tmp_db, max_rows=5000, retention_days=7)
 
@@ -160,6 +168,45 @@ def main() -> int:
         pkt = PacketInfo("203.0.113.200", "10.0.0.1", 1, 80, 6, 40, 1.0, tcp_flags=0x02)
         v = asyncio.run(appmod.pipeline.process_packet(pkt))
         check("blacklisted IP blocked by app pipeline", v.action == Action.BLOCK, str(v.action))
+
+        # -- hot reload: an edited rules.json applies without a restart ------
+        def _write_rules(payload: str, bump: float) -> None:
+            rules_tmp.write_text(payload)
+            os.utime(rules_tmp, (time.time() + bump, time.time() + bump))
+
+        _write_rules(json.dumps({"blacklist": ["198.51.100.77"], "whitelist": []}), 2)
+        r = c.post("/api/v1/rules/reload")
+        live = appmod.pipeline.rule_engine.get_blacklist()
+        check("POST /rules/reload applies an edited file (replace semantics)",
+              r.status_code == 200 and live == ["198.51.100.77"],
+              f"{r.status_code} live={live}")
+
+        _write_rules('{"blacklist": ["1.1.1.1"', 4)          # truncated JSON
+        r = c.post("/api/v1/rules/reload")
+        check("malformed file -> 500 with previous rules kept",
+              r.status_code == 500
+              and appmod.pipeline.rule_engine.get_blacklist() == ["198.51.100.77"],
+              str(r.json())[:70])
+
+        _write_rules(json.dumps({"blacklist": ["203.0.113.5", "127.0.0.1"],
+                                 "whitelist": []}), 6)
+        r = c.post("/api/v1/rules/reload")
+        check("reload sweeps the entry the kernel would refuse",
+              r.status_code == 200
+              and appmod.pipeline.rule_engine.get_blacklist() == ["203.0.113.5"]
+              and appmod.reload_probe.last_summary.get("dropped_unenforceable") == ["127.0.0.1"],
+              str(appmod.pipeline.rule_engine.get_blacklist()))
+
+        st = c.get("/api/v1/status").json()
+        check("status exposes reload counters",
+              st["reload"]["reloads"] >= 2 and st["reload"]["failures"] >= 1,
+              str(st["reload"])[:70])
+        au = {a["result"] for a in c.get("/api/v1/audit?limit=100").json()["items"]}
+        check("reload attempts are audited (success and failure)",
+              {"reload", "reload_failed"} <= au, str(sorted(au))[:80])
+        dupes = [a for a in c.get("/api/v1/audit?limit=200").json()["items"]
+                 if a["path"] == "/api/v1/rules/reload" and a["result"] == "500"]
+        check("handler-audited failure is not double-recorded", not dupes, str(len(dupes)))
 
     # -- CLI-side guards (no server needed) ---------------------------------
     import cli
