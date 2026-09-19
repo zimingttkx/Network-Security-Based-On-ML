@@ -133,8 +133,8 @@ ipt = IptablesManager(safe_ips=["127.0.0.1", "::1"])  # shipped config.yaml
 ipt._nfqueue_rules_added = True  # simulate an active session (not teardown)
 inserted: list[list[str]] = []
 ipt._run = lambda *args, **kw: (inserted.append(list(args)), "")[1]  # type: ignore[method-assign]
-ipt._chain_exists = staticmethod(lambda chain: True)  # type: ignore[method-assign]
-ipt._rule_exists = staticmethod(lambda *args: False)  # type: ignore[method-assign]
+ipt._chain_exists = staticmethod(lambda chain, **kw: True)  # type: ignore[method-assign]
+ipt._rule_exists = staticmethod(lambda *args, **kw: False)  # type: ignore[method-assign]
 
 ipt.block_ip("127.0.0.53")   # systemd-resolved stub — the live incident
 ipt.block_ip("127.0.0.1")

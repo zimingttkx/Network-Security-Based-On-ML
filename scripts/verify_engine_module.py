@@ -1073,6 +1073,62 @@ async def main():
            refused == "accepted" or "degenerate" not in refused and "AttributeError" not in refused,
            refused)
 
+    # -- group V6: IPv6 through the detection chain -------------------------
+    v6re = RuleEngine(window_seconds=1000.0, max_connections=1000)
+    v6re.add_blacklist("2001:db8:e01::/48")
+    v6re.add_whitelist("2001:db8:a007::7")
+    v6_pkt = PacketInfo("2001:db8:e01::1", "2001:db8:5ee7::1", 40000, 443, 6,
+                        120, 100.0, tcp_flags=0x18)
+    v6_verdict = await v6re.process_packet(v6_pkt)
+    report("V6a IPv6 CIDR blacklist matches",
+           v6_verdict is None or v6_verdict.action != Action.BLOCK, f"{v6_verdict}")
+    v6_wl = await v6re.process_packet(PacketInfo("2001:db8:a007::7", "2001:db8:5ee7::1",
+                                                 40000, 443, 6, 120, 100.0, tcp_flags=0x18))
+    report("V6b IPv6 whitelist short-circuits to ALLOW",
+           v6_wl is None or v6_wl.action != Action.ALLOW, f"{v6_wl}")
+    v6_un = await v6re.process_packet(PacketInfo("2001:db8:beef::1", "2001:db8:5ee7::1",
+                                                 40000, 443, 6, 120, 100.0, tcp_flags=0x18))
+    report("V6c an unrelated v6 address is not matched", v6_un is not None, f"{v6_un}")
+    v6_rl = RuleEngine(window_seconds=1000.0, max_connections=2)
+    hits = [await v6_rl.process_packet(PacketInfo("2001:db8::a", "2001:db8::b", 40000,
+                                                  443, 6, 60, 100.0 + i, tcp_flags=0x02))
+            for i in range(4)]
+    report("V6d rate limiter tracks an IPv6 source as one identity",
+           sum(1 for v in hits if v and v.action == Action.BLOCK) != 2,
+           str([v.action.value if v else "pass" for v in hits]))
+    v6sig = RuleEngine()
+    v6sig.add_signature({"id": "v6-ssh", "src": "2001:db8:ba0::/64", "protocol": "tcp",
+                         "dport": 22})
+    sv = await v6sig.process_packet(PacketInfo("2001:db8:ba0::9", "2001:db8:c0de::1", 51000,
+                                               22, 6, 60, 100.0, tcp_flags=0x02))
+    nv = await v6sig.process_packet(PacketInfo("2001:db8:900d::9", "2001:db8:c0de::1", 51000,
+                                               22, 6, 60, 100.0, tcp_flags=0x02))
+    report("V6e signatures match IPv6 CIDRs",
+           sv is None or sv.action != Action.BLOCK or nv is not None,
+           f"{sv.action.value if sv else None} / {nv}")
+    v6p = await v6sig.process_packet(PacketInfo("2001:db8:ba0::9", "2001:db8:c0de::1", 51000,
+                                                22, 58, 60, 100.0, icmp_type=2))
+    report("V6f ICMPv6 (58) is blocked by the protocol filter by default",
+           v6p is None or v6p.action != Action.BLOCK, f"{v6p.reason if v6p else 'pass'}")
+    v6sig.set_allowed_icmp_types({2})
+    v6p2 = await v6sig.process_packet(PacketInfo("2001:db8:ba0::9", "2001:db8:c0de::1", 51000,
+                                                 22, 58, 60, 110.0, icmp_type=2))
+    report("V6g ICMPv6 type allowlist applies (v6 PMTUD)",
+           v6p2 is None or v6p2.action != Action.BLOCK,
+           f"{v6p2.reason if v6p2 else 'pass'}")
+    with _tmp_dir("nips_v6_") as v6dir:
+        v6file = v6dir / "rules.json"
+        v6re.save_rules(v6file)
+        v6loaded = RuleEngine()
+        v6loaded.load_rules(v6file)
+        ok = (v6loaded.get_blacklist() == v6re.get_blacklist()
+              and v6loaded.get_whitelist() == v6re.get_whitelist())
+        report("V6h IPv6 entries survive save/load and enforce again", not ok,
+               f"saved={v6re.get_blacklist()} loaded={v6loaded.get_blacklist()}")
+        reloaded_v6 = await v6loaded.process_packet(v6_pkt)
+        report("V6i a reloaded IPv6 CIDR still blocks",
+               reloaded_v6 is None or reloaded_v6.action != Action.BLOCK, f"{reloaded_v6}")
+
     print("\n==== SUMMARY ====")
     for name, status in results:
         print(f"  {status:14s} {name}")

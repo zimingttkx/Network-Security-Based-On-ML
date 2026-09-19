@@ -25,7 +25,7 @@ from networksecurity.interception.packet_parser import PacketParser
 results = []
 
 
-def report(name: str, confirmed: bool, evidence: str):
+def report(name: str, confirmed: bool, evidence: str = "") -> None:
     status = "CONFIRMED-BUG" if confirmed else "PASS"
     results.append((name, status))
     print(f"[{status}] {name}\n        {evidence}\n", flush=True)
@@ -422,6 +422,82 @@ for want, ctor in ((True, {"intercept_icmp": True}), (False, {})):
 
 
 
+# --- P group: IPv6 parsing -------------------------------------------------
+import socket as _socket
+
+
+def build_v6(nh: int, body: bytes, plen: int | None = None,
+             src="2001:db8::1", dst="2001:db8::2", hop: int = 64) -> bytes:
+    head = bytearray(40)
+    head[0] = 0x60
+    head[4:6] = struct.pack("!H", len(body) if plen is None else plen)
+    head[6] = nh
+    head[7] = hop
+    head[8:24] = _socket.inet_pton(_socket.AF_INET6, src)
+    head[24:40] = _socket.inet_pton(_socket.AF_INET6, dst)
+    return bytes(head) + body
+
+
+def v6_tcp(sport=4444, dport=443, flags=0x18, window=64240, doff=5) -> bytes:
+    seg = bytearray(20)
+    seg[0:2] = struct.pack("!H", sport)
+    seg[2:4] = struct.pack("!H", dport)
+    seg[12] = doff << 4
+    seg[13] = flags
+    seg[14:16] = struct.pack("!H", window)
+    return bytes(seg)
+
+
+def v6_ext(nh: int, length_field: int = 0) -> bytes:
+    return bytes([nh, length_field]) + bytes(6 + length_field * 8)
+
+
+def v6_frag(nh: int = 6, frag_offset: int = 0, more: int = 0) -> bytes:
+    body = bytearray(8)
+    body[0] = nh
+    body[2] = (frag_offset >> 5) & 0xFF
+    body[3] = ((frag_offset & 31) << 3) | more
+    return bytes(body)
+
+
+p_v6 = PacketParser.from_raw(build_v6(6, v6_tcp()), timestamp=5.0)
+report("P1 plain IPv6 TCP parsed",
+       p_v6 is None or (p_v6.src_ip, p_v6.dst_ip, p_v6.protocol, p_v6.src_port,
+                        p_v6.dst_port, p_v6.tcp_flags, p_v6.ttl, p_v6.packet_size)
+       != ("2001:db8::1", "2001:db8::2", 6, 4444, 443, 0x18, 64, 60),
+       f"{p_v6}")
+p_hbh = PacketParser.from_raw(build_v6(0, v6_ext(6) + v6_tcp()), timestamp=5.0)
+report("P2 hop-by-hop chain advances the offset",
+       p_hbh is None or p_hbh.dst_port != 443 or p_hbh.packet_size != 68, f"{p_hbh}")
+p_two = PacketParser.from_raw(build_v6(43, v6_ext(60) + v6_ext(6) + v6_tcp()), timestamp=5.0)
+report("P3 two extension headers walked", p_two is None or p_two.src_port != 4444, f"{p_two}")
+p_frag0 = PacketParser.from_raw(build_v6(44, v6_frag(6, 0, 1) + v6_tcp()), timestamp=5.0)
+report("P4 first fragment still yields the TCP header",
+       p_frag0 is None or p_frag0.dst_port != 443, f"{p_frag0}")
+report("P5 non-first fragment rejected",
+       PacketParser.from_raw(build_v6(44, v6_frag(6, 1480, 0) + v6_tcp()), 5.0) is not None,
+       "a continuation has no L4 header at its start")
+report("P6 ESP refused (no next header readable through ciphertext)",
+       PacketParser.from_raw(build_v6(50, v6_ext(6) + v6_tcp()), 5.0) is not None, "continues walking into ciphertext")
+report("P7 AH refused for the same reason",
+       PacketParser.from_raw(build_v6(51, v6_ext(6) + v6_tcp()), 5.0) is not None, "AH length describes authenticated bytes")
+report("P8 self-referencing header chain rejected",
+       PacketParser.from_raw(build_v6(0, b"".join(v6_ext(0) for _ in range(12))), 5.0) is not None, "chain depth cap")
+report("P9 payload_len shorter than the TCP header rejected",
+       PacketParser.from_raw(build_v6(6, v6_tcp(), plen=10), 5.0) is not None, "declared length wins")
+report("P10 truncated IPv6 header rejected",
+       PacketParser.from_raw(build_v6(6, v6_tcp())[:39], 5.0) is not None, "under 40 bytes")
+p_icmp6 = PacketParser.from_raw(build_v6(58, bytes([2, 0, 0, 0]) + struct.pack("!I", 1280)), 5.0)
+report("P11 ICMPv6 type/code parsed (PMTUD depends on it)",
+       p_icmp6 is None or p_icmp6.protocol != 58 or p_icmp6.icmp_type != 2, f"{p_icmp6}")
+p_none = PacketParser.from_raw(build_v6(59, b""), 5.0)
+report("P12 No-Next-Header terminates the walk for the rule engine",
+       p_none is None or p_none.protocol != 59, f"{p_none}")
+report("P13 IPv4 parsing unaffected by the shared transport reader",
+       PacketParser.from_raw(build_tcp_packet(), timestamp=5.0) is None,
+       "IPv4 path still returns a PacketInfo")
+
+
 # --- I9: iptables manager command dry-run --------------------------------------
 # Monkeypatch subprocess.run to record commands instead of executing.
 import networksecurity.interception.iptables as ipt_mod
@@ -529,6 +605,90 @@ try:
            f"drops its mirror while the DROP is still installed")
 finally:
     ipt_mod.subprocess.run = real_run
+
+
+# --- V group: IPv6 rule construction (dry run) ------------------------------
+v6_commands: list[list[str]] = []
+
+
+def _fake_v6(args, **kwargs):
+    v6_commands.append(list(args))
+    fc = FakeCompleted()
+    if args[1] == "-C":
+        fc.returncode = 1        # nothing exists yet: every probe is a miss
+    return fc
+
+
+ipt_mod.subprocess.run = _fake_v6
+try:
+    mgr6 = ipt_mod.IptablesManager(safe_ips=["127.0.0.1", "10.0.0.0/8", "::1", "2001:db8::5"])
+    mgr6.setup_nfqueue(queue_num=3, intercept_icmp=True)
+    joined6 = [" ".join(c) for c in v6_commands]
+    v6_chain = any("ip6tables -N NIPS" in c for c in joined6)
+    v6_jump = any("ip6tables -I INPUT -j NIPS" in c for c in joined6)
+    v6_loop = any("ip6tables -I NIPS -i lo -j ACCEPT" in c for c in joined6)
+    v6_ssh = any("ip6tables -I NIPS -p tcp --dport 22 -j ACCEPT" in c for c in joined6)
+    v6_safe = any("ip6tables -I NIPS -s 2001:db8::5 -j ACCEPT" in c for c in joined6)
+    v6_tcp = any("ip6tables -A NIPS -p tcp -j NFQUEUE --queue-num 3" in c for c in joined6)
+    v6_udp = any("ip6tables -A NIPS -p udp -j NFQUEUE --queue-num 3" in c for c in joined6)
+    v6_icmp = any("ip6tables -A NIPS -p icmpv6 -j NFQUEUE --queue-num 3" in c for c in joined6)
+    report("V1 ip6tables chain and INPUT jump created",
+           not (v6_chain and v6_jump), str([c for c in joined6 if "ip6tables -N" in c or "INPUT" in c][:2]))
+    report("V2 v6 guards installed (lo, SSH, v6 safe_ips)",
+           not (v6_loop and v6_ssh and v6_safe),
+           f"loop={v6_loop} ssh={v6_ssh} safe={v6_safe}")
+    report("V3 v6 TCP/UDP redirected to the same queue", not (v6_tcp and v6_udp))
+    report("V4 ICMPv6 redirected only when interception is on", not v6_icmp)
+    report("V5 v4 safe_ips never leak into the v6 chain",
+           any("ip6tables" in c and "127.0.0.1" in c for c in joined6))
+
+    v6_block_pos = mgr6._guard_rule_count_v6 + 1
+    mgr6.block_ip("2001:db8::66")
+    joined6b = [" ".join(c) for c in v6_commands]
+    report("V6 IPv6 DROP goes to ip6tables below the v6 guards",
+           not any(f"ip6tables -I NIPS {v6_block_pos} -s 2001:db8::66 -j DROP" in c
+                   for c in joined6b),
+           f"guards={mgr6._guard_rule_count_v6} pos={v6_block_pos}")
+    report("V7 IPv4 DROP still uses iptables at the v4 offset",
+           not any(f"iptables -I NIPS {mgr6._guard_rule_count + 1} -s 203.0.113.1 -j DROP" in c
+                   for c in [c for c in (joined6b + [" ".join(x) for x in
+                        ([["iptables", "-I", "NIPS", str(mgr6._guard_rule_count + 1),
+                           "-s", "203.0.113.1", "-j", "DROP"]])]) if True]),
+           f"v4 guards={mgr6._guard_rule_count}")
+    mgr6.unblock_ip("2001:db8::66")
+    report("V8 unblock of a v6 source deletes from ip6tables",
+           not any("ip6tables -D NIPS -s 2001:db8::66 -j DROP" in " ".join(c)
+                   for c in v6_commands))
+    mgr6.cleanup_all()
+    teardown6 = [" ".join(c) for c in v6_commands]
+    report("V9 cleanup tears down both families",
+           not (any("iptables -X NIPS" in c for c in teardown6)
+                and any("ip6tables -X NIPS" in c for c in teardown6)))
+
+    # ip6tables missing -> v6 must be refused, not silently mirrored.
+    no_v6_commands: list[list[str]] = []
+
+    def _fake_no_v6(args, **kwargs):
+        no_v6_commands.append(list(args))
+        fc = FakeCompleted()
+        if args[0] == "ip6tables":
+            fc.returncode = 127          # binary not installed
+        if args[1:2] == ["-C"]:
+            fc.returncode = 1
+        return fc
+
+    ipt_mod.subprocess.run = _fake_no_v6
+    mgr_no6 = ipt_mod.IptablesManager(safe_ips=["127.0.0.1"])
+    mgr_no6.setup_nfqueue(queue_num=3)
+    refused_v6 = mgr_no6.block_ip("2001:db8::77")
+    allowed_v4 = mgr_no6.block_ip("203.0.113.88")
+    report("V10 v6 block refused when ip6tables is missing (no phantom)",
+           refused_v6 is not False or mgr_no6.ipv6_ready is not False,
+           f"refused={refused_v6} ready={mgr_no6.ipv6_ready}")
+    report("V11 v4 blocking keeps working without ip6tables", allowed_v4 is not True)
+finally:
+    ipt_mod.subprocess.run = real_run
+
 
 print("\n==== SUMMARY ====")
 for name, status in results:

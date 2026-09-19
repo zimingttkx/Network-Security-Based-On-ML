@@ -50,6 +50,8 @@ def main() -> int:
     probe = IptablesManager()
     chain = probe.CHAIN
     before = sh("iptables", "-S")
+    has_v6 = subprocess.run(["ip6tables", "-S"], capture_output=True).returncode == 0
+    before6 = sh("ip6tables", "-S") if has_v6 else ""
     if f"-N {chain}" in before or f"-A {chain}" in before:
         print(f"SKIP: chain {chain} already exists on this host, refusing to touch it")
         return 0
@@ -93,6 +95,27 @@ def main() -> int:
         ipt.cleanup_nfqueue()
         ipt.setup_nfqueue(queue_num=7)
 
+        # -- IPv6 rules (same kernel family, different ruleset) --------------
+        if has_v6:
+            v6rules = sh("ip6tables", "-S", chain)
+            check("ip6tables chain exists with an INPUT jump",
+                  f"-N {chain}" in sh("ip6tables", "-S")
+                  and f"-A INPUT -j {chain}" in sh("ip6tables", "-S"),
+                  sh("ip6tables", "-S").replace("\n", " | ")[:120])
+            check("IPv6 loopback and SSH guarded",
+                  f"-A {chain} -i lo -j ACCEPT" in v6rules
+                  and f"-A {chain} -p tcp -m tcp --dport 22 -j ACCEPT" in v6rules)
+            check("IPv6 TCP redirected to NFQUEUE", f"-A {chain} -p tcp -j NFQUEUE" in v6rules,
+                  v6rules.replace("\n", " | ")[:140])
+            check("IPv6 UDP redirected to NFQUEUE", f"-A {chain} -p udp -j NFQUEUE" in v6rules)
+            check("ICMPv6 redirected when intercept_icmp is on",
+                  "-p icmpv6 -j NFQUEUE" in v6rules,
+                  "PMTUD/ND reach userspace only if this is present")
+            check("v4 safe_ips did not leak into the v6 chain",
+                  "-s 10.0.0.0/8" not in v6rules and "-s 127.0.0.1" not in v6rules)
+        else:
+            print("NOTE: ip6tables unavailable on this runner; v6 enforcement not asserted")
+
         # -- blocking --------------------------------------------------------
         check("block_ip(203.0.113.7) reported success", ipt.block_ip("203.0.113.7"))
         after_block = sh("iptables", "-S", chain)
@@ -104,6 +127,22 @@ def main() -> int:
         check("CIDR block installs a network DROP", ipt.block_ip("198.51.100.0/24"))
         check("CIDR visible in kernel rules",
               "198.51.100.0/24" in sh("iptables", "-S", chain))
+        if has_v6:
+            check("IPv6 block installs DROP in ip6tables, not iptables",
+                  ipt.block_ip("2001:db8::66")
+                  and "2001:db8::66" in sh("ip6tables", "-S", chain)
+                  and "2001:db8::66" not in sh("iptables", "-S", chain),
+                  sh("ip6tables", "-S", chain).replace("\n", " | ")[:150])
+            check("IPv6 CIDR block installs a network DROP",
+                  ipt.block_ip("2001:db8:cafe::/64")
+                  and "2001:db8:cafe::/64" in sh("ip6tables", "-S", chain))
+            check("IPv6 blocked source listed by blocked_ips()",
+                  set(["2001:db8::66", "2001:db8:cafe::/64"]) <= set(ipt.blocked_ips()),
+                  str(ipt.blocked_ips()))
+            check("v6 loopback (::1) refused", not ipt.block_ip("::1")
+                  and "::1 -j DROP" not in sh("ip6tables", "-S", chain))
+            check("unblock removes the v6 DROP", ipt.unblock_ip("2001:db8::66")
+                  and "2001:db8::66" not in sh("ip6tables", "-S", chain))
         check("is_blockable refuses loopback", not ipt.is_blockable("127.0.0.1"))
         check("is_blockable refuses a safe_ip", not ipt.is_blockable("10.1.2.3"))
         check("is_blockable allows ordinary source", ipt.is_blockable("203.0.113.9"))
@@ -124,8 +163,13 @@ def main() -> int:
               chain not in sh("iptables", "-S"), "chain still present")
         check("cleanup_all removes the INPUT jump",
               f"-j {chain}" not in sh("iptables", "-S"))
-        check("host rules untouched", sh("iptables", "-S") == before,
+        check("host v4 rules untouched", sh("iptables", "-S") == before,
               "differs from the pre-run snapshot")
+        if has_v6:
+            check("cleanup_all removes the ip6tables chain",
+                  chain not in sh("ip6tables", "-S"), "v6 chain still present")
+            check("host v6 rules untouched", sh("ip6tables", "-S") == before6,
+                  "v6 ruleset differs from the pre-run snapshot")
     finally:
         ipt.cleanup_all()
 
