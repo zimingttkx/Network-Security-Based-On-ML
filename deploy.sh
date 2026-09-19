@@ -50,7 +50,9 @@ logs() {
 
 # Health check
 health() {
-    curl -s http://localhost:8000/health | python -m json.tool
+    # python3, not python: server hosts commonly ship python3 only, and a
+    # missing alias here made the health check look broken rather than absent.
+    curl -s http://localhost:8000/health | python3 -m json.tool
 }
 
 # Run verification tests

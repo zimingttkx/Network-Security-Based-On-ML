@@ -363,3 +363,207 @@ jobs:
       - name: Remove namespace
         if: always()
         run: sudo ip netns del nips-verify || true
+
+  # ── LUCID 训练与加载（TensorFlow）────────────────────────────────────
+  # TF 不在默认依赖里，所以这条链路在其余 job 中永远走不到：训练脚本能否
+  # 产出权重、app 能否加载并按形状校验、加载失败时是否真的不注册检测器。
+  lucid-train:
+    name: LUCID training (TensorFlow)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install numpy pandas pyyaml scapy fastapi uvicorn httpx tensorflow-cpu
+
+      - name: Build a small labelled pcap
+        run: |
+          python - <<'PY'
+          from scapy.all import Ether, IP, TCP, wrpcap
+          packets = []
+          for flow in range(30):
+              attack = flow % 3 == 0
+              src = f"203.0.113.{flow % 7 + 1}" if attack else f"10.0.0.{flow % 5 + 10}"
+              for _ in range(12):
+                  packets.append(Ether() / IP(src=src, dst="10.0.0.1")
+                                 / TCP(sport=1024 + flow, dport=22, flags="S"))
+          wrpcap("lucid_train.pcap", packets)
+          print(f"wrote {len(packets)} packets")
+          PY
+
+      - name: Inspect labels before training
+        run: |
+          python scripts/train_lucid.py --pcap lucid_train.pcap \
+            --attackers 203.0.113.0/24 --inspect | tee inspect.log
+          grep -q "label set looks usable" inspect.log
+
+      - name: Train and save the model
+        run: |
+          TF_CPP_MIN_LOG_LEVEL=2 python scripts/train_lucid.py --pcap lucid_train.pcap \
+            --attackers 203.0.113.0/24 --out models/lucid_cnn.h5 --epochs 3 | tee train.log
+          test -s models/lucid_cnn.h5
+          grep -q "Saved models/lucid_cnn.h5" train.log
+
+      - name: App registers the detector from the saved model
+        run: |
+          python - <<'PY'
+          import re, pathlib
+          cfg = pathlib.Path("config/config.yaml")
+          cfg.write_text(re.sub(r'model_path: ""', 'model_path: "models/lucid_cnn.h5"',
+                                cfg.read_text()))
+          import app
+          names = [type(d).__name__ for d in app.pipeline._detectors]
+          assert "LucidDetectorAdapter" in names, names
+          status = app.pipeline.status()
+          assert status["broken_detectors"] == [], status
+          lucid = next(d for d in app.pipeline._detectors if type(d).__name__ == "LucidDetectorAdapter")
+          assert lucid._enabled and lucid._lucid.is_trained, "model loaded but detector not trained"
+          print("LUCID loaded from the trained model and registered")
+          PY
+
+      - name: Unloadable model leaves the detector out of the pipeline
+        run: |
+          python - <<'PY'
+          import re, pathlib
+          cfg = pathlib.Path("config/config.yaml")
+          cfg.write_text(re.sub(r'model_path: "models/lucid_cnn.h5"',
+                                'model_path: "models/missing.h5"', cfg.read_text()))
+          import app
+          names = [type(d).__name__ for d in app.pipeline._detectors]
+          assert "LucidDetectorAdapter" not in names, (
+              f"a model that failed to load must not be registered: {names}")
+          print("refused cleanly: no detector registered for an unreadable model")
+          PY
+
+  # ── 容器部署闭环 ─────────────────────────────────────────────────────
+  # deploy.sh 的 build/start/health/test 此前从未被任何地方执行过，所以
+  # "镜像能构建、容器能起来、容器内测试套件通过"这三件事全是纸面假设。
+  docker:
+    name: Docker deploy loop
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: bash deploy.sh build
+
+      - name: Start and wait for the API
+        run: |
+          bash deploy.sh start
+          ready=""
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then ready=yes; break; fi
+            sleep 2
+          done
+          test -n "$ready" || { docker compose logs api; exit 1; }
+
+      - name: Health endpoint
+        run: bash deploy.sh health
+
+      - name: Verification suite inside the container
+        run: bash deploy.sh test
+
+      - name: Missing rules.json is created, not an IsADirectoryError
+        run: |
+          bash deploy.sh stop
+          rm -f rules.json
+          bash deploy.sh start
+          sleep 3
+          test -f rules.json
+          curl -fsS http://127.0.0.1:8000/health
+
+      - name: Container is the management plane only
+        run: |
+          # No NET_ADMIN: the API container must not be able to install kernel
+          # rules. If this ever succeeds, the README's claim is wrong.
+          if docker compose exec api iptables -S 2>/dev/null | grep -q '^-N NIPS'; then
+            echo "::error::the unprivileged API container could create a firewall chain"
+            exit 1
+          fi
+          echo "confirmed: container holds no netfilter privileges"
+
+      - name: Tear down
+        if: always()
+        run: bash deploy.sh stop || true
+
+  # ── systemd 单元 ─────────────────────────────────────────────────────
+  # 单元文件此前只做过 INI 解析，从未被 systemd 启动过。这里在真实 runner VM
+  # 上 verify + 起停两个单元。拦截器通过 NetworkNamespacePath drop-in 放进独立
+  # netns：它会往 INPUT 挂 NFQUEUE 重定向，跑在宿主机命名空间里可能把 runner
+  # 自己的网络掐断（检测不可用时按 fail-closed 丢包）。systemd 管理、起停、
+  # 撤规则这些被测行为不受影响。
+  systemd:
+    name: systemd units (verify + start/stop)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the package into /opt/nips
+        run: |
+          # netfilterqueue is a compiled binding: the interceptor unit calls
+          # start() for real, so the import has to resolve or the unit fails on
+          # the first packet path it touches.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libnetfilter-queue-dev python3-dev gcc
+          sudo mkdir -p /opt/nips
+          sudo cp -a . /opt/nips/
+          sudo python3 -m venv /opt/nips/venv
+          sudo /opt/nips/venv/bin/pip install -q numpy pandas pyyaml fastapi uvicorn httpx scikit-learn
+          sudo /opt/nips/venv/bin/pip install -q --no-build-isolation NetfilterQueue
+          sudo useradd --create-home --shell /bin/bash nips
+          sudo chown -R nips:nips /opt/nips
+
+      - name: Install units and verify them
+        run: |
+          sudo cp deploy/systemd/*.service /etc/systemd/system/
+          sudo ip netns add nips-sys
+          sudo mkdir -p /etc/systemd/system/nips-interceptor.service.d
+          printf '[Service]\nNetworkNamespacePath=/run/netns/nips-sys\n' \
+            | sudo tee /etc/systemd/system/nips-interceptor.service.d/netns.conf
+          sudo systemctl daemon-reload
+          sudo systemd-analyze verify nips-api.service nips-interceptor.service
+
+      - name: API unit starts and serves
+        run: |
+          sudo systemctl enable --now nips-api
+          for _ in $(seq 1 20); do
+            curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          sudo journalctl -u nips-api --no-pager | tail -30
+          exit 1
+
+      - name: Interceptor unit installs kernel rules
+        run: |
+          sudo systemctl enable --now nips-interceptor
+          sleep 6
+          sudo systemctl is-active --quiet nips-interceptor
+          sudo ip netns exec nips-sys iptables -S | grep -E '^-N NIPS|^-A INPUT -j NIPS'
+          curl -fsS http://127.0.0.1:8000/api/v1/status | grep -q '"interception_active": true'
+
+      - name: Stopping the unit tears the ruleset down
+        run: |
+          sudo systemctl stop nips-interceptor
+          for _ in $(seq 1 10); do
+            sudo ip netns exec nips-sys iptables -S | grep -q 'NIPS' || exit 0
+            sleep 2
+          done
+          echo "::error::NIPS rules survived unit stop; the queue would keep packets with no listener"
+          exit 1
+
+      - name: Tear down
+        if: always()
+        run: |
+          sudo systemctl stop nips-api nips-interceptor || true
+          sudo ip netns del nips-sys || true
