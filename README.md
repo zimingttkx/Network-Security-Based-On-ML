@@ -102,6 +102,7 @@ python cli.py unblock 1.2.3.4        # unblock an IP (DELETE /api/v1/rules/black
 python cli.py whitelist --ip 10.0.0.0/8   # whitelist a subnet (rejects /0 default routes)
 python cli.py unwhitelist --ip 10.0.0.0/8 # remove from whitelist
 python cli.py rules                  # list blacklist/whitelist entries
+python cli.py reload                 # apply edited rules.json / config to the running engine
 python cli.py alerts --last 20       # stored alerts, newest first (via API)
 python cli.py alerts --source-ip 203.0.113.7 --action block
 python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
@@ -160,6 +161,7 @@ On `engine/start` the API/CLI read the `interception`, `engine`, `blocking`, and
 | `DELETE` | `/api/v1/rules/blacklist/{ip}` | Remove IP from blacklist |
 | `POST` | `/api/v1/rules/whitelist` | Add IP/CIDR to whitelist |
 | `DELETE` | `/api/v1/rules/whitelist/{ip}` | Remove IP from whitelist |
+| `POST` | `/api/v1/rules/reload` | Re-read rules.json and the live engine knobs from config.yaml |
 | `POST` | `/api/v1/engine/start` | Start live interception (Linux, root) |
 | `POST` | `/api/v1/engine/stop` | Stop interception and clean up iptables |
 | `GET` | `/metrics` | Prometheus text exposition (token-guarded like `/api/v1/*`) |
@@ -179,6 +181,16 @@ Detection events and every management action are written to SQLite (WAL) at `sto
 The detection path never waits on the disk: `record_alert` only enqueues into a bounded buffer and a background thread writes in batches. If the buffer overflows or a batch fails, the counters in `nips_alert_events_dropped_total` / `nips_event_store_write_errors_total` rise and `/api/v1/status` reports them under `event_store` — an incomplete trail is visible, not silent. When the database is unusable, reads fall back to the most recent 500 in-memory events and `event_store.degraded` is true.
 
 `logging.file` adds a rotating log file and `logging.syslog_address` forwards to syslog (platform socket, or `host:port` over UDP); an unreachable target is reported and skipped rather than blocking startup.
+
+### Hot reload
+
+`rules.json` and `config/config.yaml` are watched by mtime, so a running engine picks up edits within 30 s; `POST /api/v1/rules/reload` (or `cli.py reload`) applies them immediately. Restarting is not required — and would be costly, since Kitsune re-trains from zero.
+
+- `rules.json` is applied with **replace** semantics, so deleting an entry really stops enforcing it (startup uses merge, which only adds).
+- `engine.rule_engine.rate_limit.*` and `allowed_protocols` take effect on the next packet.
+- A malformed file is rejected wholesale: the live rules stay exactly as they were, `/api/v1/status` raises `reload.failures`, and the attempt is audited as `reload_failed`.
+- Entries the kernel would refuse anyway (loopback / `safe_ips`) are swept as at startup and reported as `dropped_unenforceable`.
+- Kitsune's `fm_grace_period`, `ad_grace_period`, `threshold_percentile` and `learning_rate` are **not** re-applied — they describe how the detector was trained, so they need a restart. The reload summary names them.
 
 ---
 

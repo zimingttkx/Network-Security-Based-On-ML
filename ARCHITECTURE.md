@@ -123,6 +123,7 @@ networksecurity/
   utils/            # Shared configuration and input validation
     config.py       # config.yaml readers (engine / api / blocking / storage / logging blocks)
     validation.py   # IP/CIDR validation, blacklist refusal, rule sweep
+    reload.py       # ReloadProbe: mtime watch over rules.json + config.yaml
 ```
 
 ### Dependency Rules

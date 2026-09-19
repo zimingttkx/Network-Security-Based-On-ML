@@ -102,6 +102,7 @@ python cli.py unblock 1.2.3.4        # 解封某个 IP（DELETE /api/v1/rules/bl
 python cli.py whitelist --ip 10.0.0.0/8   # 将某个子网加入白名单（拒绝 /0 默认路由）
 python cli.py unwhitelist --ip 10.0.0.0/8 # 从白名单移除
 python cli.py rules                  # 列出黑名单/白名单条目
+python cli.py reload                 # 把改过的 rules.json / 配置应用到运行中的引擎
 python cli.py alerts --last 20       # 查看已存储告警（最新在前，走 API）
 python cli.py alerts --source-ip 203.0.113.7 --action block
 python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
@@ -158,6 +159,7 @@ api:
 | `DELETE` | `/api/v1/rules/blacklist/{ip}` | 从黑名单移除 IP |
 | `POST` | `/api/v1/rules/whitelist` | 将 IP/CIDR 加入白名单 |
 | `DELETE` | `/api/v1/rules/whitelist/{ip}` | 从白名单移除 IP |
+| `POST` | `/api/v1/rules/reload` | 重新读取 rules.json 与 config.yaml 中可热更的引擎参数 |
 | `POST` | `/api/v1/engine/start` | 启动实时拦截（Linux，需 root） |
 | `POST` | `/api/v1/engine/stop` | 停止拦截并清理 iptables 规则 |
 | `GET` | `/metrics` | Prometheus 文本指标（与 `/api/v1/*` 同样需要 token） |
@@ -177,6 +179,16 @@ api:
 检测路径不会等待磁盘：`record_alert` 只投递到有界缓冲区，由后台线程批量落盘。缓冲区溢出或批次失败时，`nips_alert_events_dropped_total` / `nips_event_store_write_errors_total` 计数上升，`/api/v1/status` 的 `event_store` 字段也会报告——审计链不完整是可见的，不会静默。数据库不可用时，读取回退到内存中最近 500 条事件，同时 `event_store.degraded` 为 true。
 
 `logging.file` 增加轮转日志文件，`logging.syslog_address` 转发到 syslog（平台套接字，或 `host:port` UDP）；目标不可达时只告警并跳过，不阻塞启动。
+
+### 热加载
+
+`rules.json` 与 `config/config.yaml` 按 mtime 被监视，运行中的引擎最多 30 秒内拾取修改；`POST /api/v1/rules/reload`（或 `cli.py reload`）立即应用。无需重启——重启代价很高，因为 Kitsune 要从零重新训练。
+
+- `rules.json` 按**替换**语义应用，删掉的条目会真正停止生效（启动时是合并语义，只会新增）。
+- `engine.rule_engine.rate_limit.*` 与 `allowed_protocols` 在下一个包即生效。
+- 文件损坏时整体拒绝：在线规则保持原样，`/api/v1/status` 的 `reload.failures` 上升，该次尝试以 `reload_failed` 记入审计。
+- 内核本来就不会执行的条目（回环 / `safe_ips`）与启动时一样被清理，并在 `dropped_unenforceable` 中报告。
+- Kitsune 的 `fm_grace_period`、`ad_grace_period`、`threshold_percentile`、`learning_rate` **不会**热应用——它们描述的是检测器如何训练，改动必须重启；重载摘要会列出这几项。
 
 ---
 
