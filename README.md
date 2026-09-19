@@ -96,8 +96,8 @@ python cli.py stop                   # stop live interception (via API)
 python cli.py status                 # engine status
 python cli.py block 1.2.3.4          # block an IP (POST /api/v1/rules/blacklist)
 python cli.py unblock 1.2.3.4        # unblock an IP (DELETE /api/v1/rules/blacklist/{ip})
-python cli.py whitelist 10.0.0.0/8   # whitelist a subnet (rejects /0 default routes)
-python cli.py unwhitelist 10.0.0.0/8 # remove from whitelist
+python cli.py whitelist --ip 10.0.0.0/8   # whitelist a subnet (rejects /0 default routes)
+python cli.py unwhitelist --ip 10.0.0.0/8 # remove from whitelist
 python cli.py rules                  # list blacklist/whitelist entries
 python cli.py alerts --last 20       # show recent alerts (via API)
 python cli.py test --pcap sample.pcap  # offline detection test (no root needed)
@@ -154,8 +154,6 @@ On `engine/start` the API/CLI read the `interception`, `engine`, `blocking`, and
 | `DELETE` | `/api/v1/rules/whitelist/{ip}` | Remove IP from whitelist |
 | `POST` | `/api/v1/engine/start` | Start live interception (Linux, root) |
 | `POST` | `/api/v1/engine/stop` | Stop interception and clean up iptables |
-
-Full interactive documentation at `/docs`.
 
 **Authentication:** when `api.auth_token` is set in `config.yaml` (or the `NIPS_API_TOKEN` env var is present), every `/api/v1/*` call must carry the header `X-API-Token: <token>`. An empty token disables authentication (development only — the server logs a warning at startup). `/health` stays open (liveness probes).
 
@@ -311,7 +309,7 @@ bash deploy.sh stop
 ```
 
 **Notes:**
-- `deploy.sh` runs 7 verification scripts (`verify_engine_module`, `verify_interception_module`, `verify_block_lifecycle`, `verify_live_exposed_bugs`, `verify_fpr_regression`, `verify_features_module`, `verify_data_module`) instead of `pytest`.
+- `deploy.sh` runs 8 verification scripts (`verify_engine_module`, `verify_interception_module`, `verify_block_lifecycle`, `verify_live_exposed_bugs`, `verify_fpr_regression`, `verify_features_module`, `verify_data_module`, `verify_management_plane`) instead of `pytest`.
 - The container runs as non-root user `nips` for security. Bind-mount `rules.json` from the host — it must exist before `docker compose up` or you'll get an `IsADirectoryError`.
 - `rules.json` contains only **persistent** blacklist entries (operator-added + escalated permanent bans). Temp-ban mirrors live in the ephemeral tier and are never written to disk.
 

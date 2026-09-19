@@ -96,8 +96,8 @@ python cli.py stop                   # 停止实时拦截（通过 API）
 python cli.py status                 # 引擎状态
 python cli.py block 1.2.3.4          # 封禁某个 IP（POST /api/v1/rules/blacklist）
 python cli.py unblock 1.2.3.4        # 解封某个 IP（DELETE /api/v1/rules/blacklist/{ip}）
-python cli.py whitelist 10.0.0.0/8   # 将某个子网加入白名单（拒绝 /0 默认路由）
-python cli.py unwhitelist 10.0.0.0/8 # 从白名单移除
+python cli.py whitelist --ip 10.0.0.0/8   # 将某个子网加入白名单（拒绝 /0 默认路由）
+python cli.py unwhitelist --ip 10.0.0.0/8 # 从白名单移除
 python cli.py rules                  # 列出黑名单/白名单条目
 python cli.py alerts --last 20       # 查看最近告警（通过 API）
 python cli.py test --pcap sample.pcap  # 离线检测测试（无需 root）
@@ -308,7 +308,7 @@ bash deploy.sh stop
 ```
 
 **说明：**
-- `deploy.sh` 运行 7 个验证脚本（`verify_engine_module`、`verify_interception_module`、`verify_block_lifecycle`、`verify_live_exposed_bugs`、`verify_fpr_regression`、`verify_features_module`、`verify_data_module`），而不是 `pytest`。
+- `deploy.sh` 运行 8 个验证脚本（`verify_engine_module`、`verify_interception_module`、`verify_block_lifecycle`、`verify_live_exposed_bugs`、`verify_fpr_regression`、`verify_features_module`、`verify_data_module`、`verify_management_plane`），而不是 `pytest`。
 - 容器出于安全考虑以非 root 用户 `nips` 运行。请从宿主机 bind-mount `rules.json`——它在 `docker compose up` 之前就必须存在，否则会报 `IsADirectoryError`。
 - `rules.json` 只包含**持久化**的黑名单条目（运维添加的 + 升级产生的永久封禁）。临时封禁镜像存在于临时层，从不落盘。
 
