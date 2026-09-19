@@ -12,6 +12,11 @@ from collections import OrderedDict
 from pathlib import Path
 
 from networksecurity.engine.detector import BaseDetector, PacketInfo
+from networksecurity.engine.signature_engine import (
+    Signature,
+    SignatureError,
+    SignatureSet,
+)
 from networksecurity.engine.verdict import Action, ThreatLevel, Verdict
 
 logger = logging.getLogger(__name__)
@@ -92,7 +97,9 @@ class RuleEngine(BaseDetector):
     1. Whitelist  -> ALLOW
     2. Protocol   -> BLOCK (anything outside ``allowed_protocols``)
     3. Blacklist  -> BLOCK (persistent + ephemeral, see below)
-    4. Rate limit -> BLOCK (new connections only: TCP SYN and UDP datagrams)
+    4. Signature -> BLOCK (or count for LOG): operator-declared conditions over
+       source/destination, protocol, ports, TCP flags and a rate threshold
+    5. Rate limit -> BLOCK (new connections only: TCP SYN and UDP datagrams)
     5. None       -> pass to next detector
 
     Two blacklist tiers with different provenance:
@@ -109,7 +116,8 @@ class RuleEngine(BaseDetector):
 
     def __init__(self, window_seconds: float = 1.0, max_connections: int = 1000,
                  allowed_protocols: set[int] | None = None,
-                 allowed_icmp_types: set[int] | None = None) -> None:
+                 allowed_icmp_types: set[int] | None = None,
+                 signatures: list[Signature] | None = None) -> None:
         super().__init__(name="RuleEngine")
         self._whitelist: set[str] = set()
         self._blacklist: set[str] = set()
@@ -136,6 +144,11 @@ class RuleEngine(BaseDetector):
         # overrides it when present (shipped config: 100).
         self._rate_limiter = RateLimiter(window_seconds=window_seconds,
                                          max_connections=max_connections)
+        # Declarative signatures (source + transport + rate conditions).  Empty
+        # by default, so the per-packet cost of having the feature is one
+        # truthiness test.
+        self._signatures = SignatureSet(signatures)
+        self._signature_hits: dict[str, int] = {}
         self._rules: list[dict] = []
         self._blocked_count: int = 0
         # Guards all whitelist/blacklist mutations and reads.  Rules are
@@ -187,6 +200,26 @@ class RuleEngine(BaseDetector):
             return Verdict(action=Action.BLOCK, confidence=1.0,
                            threat_level=ThreatLevel.HIGH,
                            reason="blacklist", detector=self.name)
+
+        # 4. Signatures.  Evaluated after the cheap set lookups so a blacklisted
+        # source is reported as such rather than as a signature hit, and before
+        # the global rate limit so a scoped rule is not masked by it.
+        if len(self._signatures):
+            matched = self._signatures.evaluate(packet, now=packet.timestamp or 0.0)
+            if matched is not None:
+                with self._lock:
+                    self._signature_hits[matched.id] =                         self._signature_hits.get(matched.id, 0) + 1
+                if matched.action == "block":
+                    with self._lock:
+                        self._blocked_count += 1
+                    return Verdict(action=Action.BLOCK, confidence=1.0,
+                                   threat_level=ThreatLevel.MEDIUM,
+                                   reason=f"signature {matched.id}",
+                                   detector=self.name,
+                                   metadata={"signature": matched.to_dict()})
+                # action == "log": counted above and visible in stats(), but the
+                # packet continues to the ML stage — this is how an operator
+                # proves a rule before trusting it with traffic.
 
         # 4. Rate limit — new connections only.  Counting every packet of an
         # established TCP session filled the bucket with a single bulk
@@ -310,8 +343,38 @@ class RuleEngine(BaseDetector):
                 self.add_blacklist(ip)
             for ip in data.get("whitelist", []):
                 self.add_whitelist(ip)
+            if "signatures" in data:
+                self._signatures = SignatureSet.load_json(data["signatures"])
         except Exception:
             logger.exception("Failed to load rules from %s", path)
+
+    # -- signatures ---------------------------------------------------------
+
+    @property
+    def signatures(self) -> list[dict]:
+        """Declared rules as plain dicts, in evaluation order."""
+        return self._signatures.to_list()
+
+    def signature_hits(self) -> dict[str, int]:
+        """Per-rule match counts since start — the evidence a LOG rule needs."""
+        with self._lock:
+            return dict(self._signature_hits)
+
+    def add_signature(self, raw: dict) -> dict:
+        """Validate and install one rule.  Raises SignatureError if unusable."""
+        sig = Signature.parse(raw)
+        try:
+            self._signatures.add(sig)
+        except SignatureError:
+            # Replacing an id is an edit, not a new rule: drop the old one first
+            # so an operator can tune a threshold through the API without
+            # deleting it and racing a traffic burst in between.
+            self._signatures.remove(sig.id)
+            self._signatures.add(sig)
+        return sig.to_dict()
+
+    def remove_signature(self, sid: str) -> bool:
+        return self._signatures.remove(sid)
 
     def reload_rules(self, path: Path) -> dict:
         """Replace the persistent tiers from *path* — hot reload semantics.
@@ -338,6 +401,10 @@ class RuleEngine(BaseDetector):
             except ValueError as exc:
                 raise ValueError(f"invalid rule entry {entry!r}: {exc}") from exc
 
+        signatures = data.get("signatures", [])
+        # Parsed before the swap below: an invalid signature must not take the
+        # IP lists with it.
+        candidate = SignatureSet.load_json(signatures)
         new_bl, new_wl = set(blacklist), set(whitelist)
         with self._lock:
             summary = {
@@ -351,6 +418,10 @@ class RuleEngine(BaseDetector):
             # Pre-parsed CIDR lists are rebuilt here, not per packet.
             self._bl_nets = self._parse_nets(new_bl, "blacklist")
             self._wl_nets = self._parse_nets(new_wl, "whitelist")
+            previous = self._signatures.to_list()
+            self._signatures = candidate
+        summary["signatures_before"] = len(previous)
+        summary["signatures_after"] = len(candidate)
         return summary
 
     def set_rate_limit(self, window_seconds: float, max_connections: int) -> None:
@@ -381,6 +452,9 @@ class RuleEngine(BaseDetector):
         data = {
             "blacklist": self.get_blacklist(),
             "whitelist": self.get_whitelist(),
+            # Operator-authored signatures live alongside the IP lists: they are
+            # persistent policy, not runtime state.
+            "signatures": self._signatures.to_list(),
         }
         payload = json.dumps(data, indent=2)
         path = Path(path)
@@ -466,4 +540,6 @@ class RuleEngine(BaseDetector):
                 # "ICMP type 3 is allowed" without reading config.
                 "allowed_protocols": sorted(self._protocol_allow),
                 "allowed_icmp_types": sorted(self._icmp_allow),
+                "signatures": len(self._signatures),
+                "signature_hits": dict(self._signature_hits),
             }
