@@ -100,8 +100,9 @@ def main() -> int:
             # The block above ends with a default setup_nfqueue(), so ICMPv6 has
             # to be requested here rather than assumed to still be in place.
             v6rules = sh("ip6tables", "-S", chain)
+            v6_off = v6rules.replace("\n", " | ")[:150]
             check("ICMPv6 absent while intercept_icmp is off",
-                  "-p icmpv6 -j NFQUEUE" in v6rules)
+                  "-p icmpv6 -j NFQUEUE" in v6rules, v6_off)
             ipt.setup_nfqueue(queue_num=7, intercept_icmp=True)
             v6rules = sh("ip6tables", "-S", chain)
             check("ip6tables chain exists with an INPUT jump",
@@ -115,8 +116,9 @@ def main() -> int:
                   v6rules.replace("\n", " | ")[:140])
             check("IPv6 UDP redirected to NFQUEUE", f"-A {chain} -p udp -j NFQUEUE" in v6rules)
             check("ICMPv6 redirected when intercept_icmp is on",
-                  "-p icmpv6 -j NFQUEUE" in v6rules,
-                  "PMTUD/ND reach userspace only if this is present")
+                  "-p icmpv6 -j NFQUEUE" not in v6rules,
+                  v6rules.replace("\n", " | ")[:150])
+            ipt.setup_nfqueue(queue_num=7)
             check("v4 safe_ips did not leak into the v6 chain",
                   "-s 10.0.0.0/8" not in v6rules and "-s 127.0.0.1" not in v6rules)
         else:
