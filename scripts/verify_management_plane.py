@@ -264,6 +264,19 @@ def main() -> int:
           f"total={kept['total']} newest={newest}")
     rstore.close()
 
+    # -- degraded event store: the trail must still be readable --------------
+    broken = EventStore(str(Path(tempfile.mkdtemp()) / "bad\x00path.db"), max_rows=10)
+    broken.record_alert("9.9.9.9", "kept in the ring", "block", "KitsuneDetector")
+    broken_page = broken.query_alerts(limit=5)
+    check("unusable database degrades to the ring instead of crashing",
+          (broken_page["degraded"] is True and len(broken_page["items"]) == 1
+           and broken_page["items"][0]["reason"] == "kept in the ring"
+           and broken.stats()["degraded"] is True),
+          f"degraded={broken_page['degraded']} items={len(broken_page['items'])}")
+    check("degradation is reported, not silent",
+          broken.stats()["open_failed"] is True, str(broken.stats()))
+    broken.close()
+
     # -- CLI-side guards (no server needed) ---------------------------------
     import cli
 

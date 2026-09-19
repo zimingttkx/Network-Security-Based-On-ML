@@ -272,7 +272,7 @@ jobs:
         run: |
           python scripts/verify_data_module.py
 
-      - name: Unit test — management plane (app.py + cli.py, 57 checks)
+      - name: Unit test — management plane (app.py + cli.py, 59 checks)
         run: |
           python scripts/verify_management_plane.py
 
@@ -559,3 +559,76 @@ jobs:
       # removes every trace" therefore still has to be checked on a real host:
       # see the project's verification checklist.
 
+
+  # ── 日志落盘与 syslog 转发 ───────────────────────────────────────────
+  # configure_logging 消费 config 的 logging 块，此前只在"本地抓到一条 UDP 报文"
+  # 的层面验过。这里用 runner 真实在跑的 rsyslog（/dev/log）与真实文件，验三条：
+  # 消息确实落到两个 sink、级别确实过滤、目标不可用时只跳过不炸启动。
+  log-sinks:
+    name: Log sinks (file + syslog)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install numpy pyyaml
+
+      - name: Ensure the system log daemon is up
+        run: |
+          sudo systemctl is-active --quiet rsyslog || sudo systemctl restart rsyslog
+          test -e /dev/log
+
+      - name: Records reach the file and the syslog daemon
+        run: |
+          marker="NIPS-SINK-$(date +%s)"
+          LOGGED="$marker" python - <<'PY'
+          import logging, os
+          from networksecurity.observability import configure_logging
+          configure_logging({"level": "INFO", "file": "logs/ci-sinks.log",
+                             "syslog_address": "/dev/log"})
+          logging.getLogger("networksecurity.ci").info(os.environ["LOGGED"])
+          for h in logging.getLogger("networksecurity").handlers:
+              h.flush()
+          PY
+          sleep 1
+          grep -q "$marker" logs/ci-sinks.log || { echo "marker missing from the log file"; exit 1; }
+          sudo grep -q "$marker" /var/log/syslog || { echo "marker missing from /var/log/syslog"; exit 1; }
+          echo "both sinks received the record"
+
+      - name: Level filtering applies
+        run: |
+          marker="NIPS-LEVEL-$(date +%s)"
+          LOGGED="$marker" python - <<'PY'
+          import logging, os
+          from networksecurity.observability import configure_logging
+          configure_logging({"level": "WARNING", "file": "logs/ci-level.log",
+                             "syslog_address": "/dev/null"})
+          log = logging.getLogger("networksecurity.ci")
+          log.info(os.environ["LOGGED"] + " but at info level")
+          log.warning(os.environ["LOGGED"] + " but at warning level")
+          for h in logging.getLogger("networksecurity").handlers:
+              h.flush()
+          PY
+          grep -q "$marker but at warning level" logs/ci-level.log
+          if grep -q "$marker but at info level" logs/ci-level.log; then
+            echo "an INFO record was written under level WARNING"
+            exit 1
+          fi
+
+      - name: An unreachable syslog target must not break startup
+        run: |
+          python - <<'PY'
+          import logging
+          from networksecurity.observability import configure_logging
+          configure_logging({"level": "INFO", "file": "",
+                             "syslog_address": "127.0.0.1:1"})
+          logging.getLogger("networksecurity.ci").info("still running")
+          for h in logging.getLogger("networksecurity").handlers:
+              h.flush()
+          PY
+          echo "survived an unusable syslog target"
