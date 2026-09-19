@@ -1,0 +1,47 @@
+# NIPS management API.
+#
+# Paths assume the checkout lives at /opt/nips with a venv at /opt/nips/venv;
+# override with a drop-in (systemctl edit nips-api) rather than editing this
+# file, so an upgrade does not overwrite your host's layout.
+[Unit]
+Description=NIPS network intrusion prevention system - management API
+Documentation=file:/opt/nips/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# simple, not Type=exec: exec support landed in systemd 253 and would be an
+# unknown type on Ubuntu 22.04 (249) / Debian 12 (252), failing the unit.
+Type=simple
+User=nips
+Group=nips
+WorkingDirectory=/opt/nips
+Environment=PATH=/opt/nips/venv/bin:/usr/local/bin:/usr/bin:/bin
+# The token belongs in a root-only EnvironmentFile (0600), not in config.yaml
+# inside a world-readable checkout.
+# EnvironmentFile=/etc/nips/api.env
+ExecStart=/opt/nips/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5s
+
+# Hardening.  This process can rewrite firewall rules, so: no shell tools, no
+# home, no kernel module loading, no writes outside its own tree.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/opt/nips
+
+# Deliberately NOT set:
+#   MemoryDenyWriteExecute - numpy and TensorFlow map executable memory; the
+#     service would fail at import, which is not a policy boundary.
+#   PrivateNetwork         - the API has to accept connections.
+TimeoutStopSec=15s
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

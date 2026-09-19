@@ -1,0 +1,38 @@
+# NIPS live interception (NFQUEUE + iptables).
+#
+# Requires root: cli.py start checks geteuid() and refuses to run otherwise, so
+# capabilities alone are not enough - the process must actually be uid 0.
+# This unit is separate from the API on purpose: only the process that installs
+# kernel rules holds NET_ADMIN, the web-facing one does not.
+[Unit]
+Description=NIPS network intrusion prevention system - live interception
+Documentation=file:/opt/nips/README.md
+After=network-online.target nips-api.service
+Wants=nips-api.service
+
+[Service]
+# simple, not Type=exec: exec support landed in systemd 253 and would be an
+# unknown type on Ubuntu 22.04 (249) / Debian 12 (252), failing the unit.
+Type=simple
+User=root
+WorkingDirectory=/opt/nips
+Environment=PATH=/opt/nips/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/nips/venv/bin/python cli.py start
+Restart=on-failure
+RestartSec=10s
+
+# The SIGTERM handler lifts our NFQUEUE redirect and flushes the NIPS chain.
+# Stopping earlier leaves the kernel redirect in place with nothing draining the
+# queue, which stalls every matched packet until the nfqueue timeout - a
+# self-inflicted outage, so this timeout has to be generous.
+KillSignal=SIGTERM
+TimeoutStopSec=90s
+SendSIGKILL=yes
+
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
