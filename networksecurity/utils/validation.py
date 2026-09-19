@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
 def validate_ip_or_cidr(value: str) -> str:
     """Validate and normalize an IP address or CIDR network.
-    
-    Returns the normalized value, or raises ValueError if invalid.
-    Rejects prefixlen==0 (entire networks like 0.0.0.0/0).
+
+    Returns the normalized value, or raises ValueError if invalid.  Without
+    this, any string (10 MB of garbage, a typo'd CIDR) entered the rule sets:
+    garbage bloats rules.json (written on every POST), and a malformed CIDR
+    silently matches nothing — the rule LOOKS active but blocks no traffic,
+    the worst failure mode for a rule.  prefixlen==0 networks (0.0.0.0/0) are
+    refused too: as a blacklist entry that is a self-inflicted outage, as a
+    whitelist entry it disables every detection layer.
     """
     value = value.strip()
     if not value:
@@ -29,11 +33,14 @@ def validate_ip_or_cidr(value: str) -> str:
     # Try as CIDR
     try:
         net = ipaddress.ip_network(value, strict=False)
-        if net.prefixlen == 0:
-            raise ValueError(f"{value!r} is a default route — whitelist cannot cover entire internet")
-        return str(net)
-    except ValueError as e:
-        raise ValueError(f"{value!r} is not a valid IP address or CIDR network") from e
+    except ValueError:
+        raise ValueError(
+            f"{value!r} is not a valid IP address or CIDR network") from None
+    # Checked outside the parse-failure branch so the operator sees WHY /0 was
+    # refused instead of a misleading "not a valid CIDR".
+    if net.prefixlen == 0:
+        raise ValueError(f"{value!r} is a default route — it would cover the entire internet")
+    return str(net)
 
 
 def blacklist_refusal(ip: str, safe_ips: list[str] | None = None) -> str | None:
