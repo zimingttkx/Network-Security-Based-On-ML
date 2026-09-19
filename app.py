@@ -167,6 +167,7 @@ from networksecurity.utils.validation import (
     sweep_refused_entries,
     validate_ip_or_cidr,
 )
+from networksecurity.engine.signature_engine import SignatureError
 from networksecurity.utils.reload import ReloadProbe
 
 
@@ -556,6 +557,45 @@ async def apply_reload(request: Request):
            detail=json.dumps({k: summary[k] for k in summary if k != "errors"},
                              default=str)[:200])
     return {"status": "reloaded", **summary}
+
+
+# --- Signature rules -------------------------------------------------------
+
+@app.get("/api/v1/signatures", dependencies=[Depends(require_token)])
+async def list_signatures():
+    """Declared rules in evaluation order, plus their match counters."""
+    return {"items": pipeline.rule_engine.signatures,
+            "hits": pipeline.rule_engine.signature_hits()}
+
+
+@app.post("/api/v1/signatures", dependencies=[Depends(require_token)])
+async def create_signature(spec: dict, request: Request):
+    """Add or edit a signature.  Re-posting an existing id replaces that rule.
+
+    Validation lives in the engine (Signature.parse) rather than being
+    duplicated in a request model, so the API, rules.json and hot reload all
+    refuse exactly the same things — a rule with no matchers, a /0 source, a
+    tcp_flags matcher on a non-TCP protocol.
+    """
+    try:
+        stored = pipeline.rule_engine.add_signature(spec)
+    except SignatureError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    pipeline.rule_engine.save_rules(RULES_FILE)
+    _audit(request, target=stored["id"], result="signature_upsert",
+           detail=json.dumps(stored, default=str)[:200])
+    return {"status": "ok", "signature": stored,
+            "signatures": pipeline.rule_engine.signatures}
+
+
+@app.delete("/api/v1/signatures/{sid}", dependencies=[Depends(require_token)])
+async def delete_signature(sid: str, request: Request):
+    removed = pipeline.rule_engine.remove_signature(sid)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"no signature with id {sid!r}")
+    pipeline.rule_engine.save_rules(RULES_FILE)
+    _audit(request, target=sid, result="signature_remove")
+    return {"status": "ok", "signatures": pipeline.rule_engine.signatures}
 
 
 # --- Engine control --------------------------------------------------------
