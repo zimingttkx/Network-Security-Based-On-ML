@@ -10,8 +10,14 @@ Commands:
     whitelist --ip IP     Add IP/CIDR to whitelist
     unwhitelist --ip IP   Remove IP/CIDR from whitelist
     rules            List all blacklist/whitelist entries
-    alerts           Show recent alerts (via API)
+    reload           Re-read rules.json / engine knobs in the running engine
+    signature        Add, list or delete declarative signature rules
+    alerts           Show stored alerts (via API, filters and export)
+    audit            Show the management audit trail (via API)
     test --pcap FILE Offline detection from pcap file
+
+Global --url / --token (before the subcommand) select the management API; they
+default to $NIPS_API_URL / $NIPS_API_TOKEN and then http://127.0.0.1:8000.
 """
 
 from __future__ import annotations
@@ -198,15 +204,26 @@ def cmd_start(args) -> None:
 # NIPS_API_TOKEN env var).  CLI commands go through _api_request so they pick
 # the token up automatically instead of failing with a bare 401.
 
-API_BASE = "http://127.0.0.1:8000"
+def _api_base() -> str:
+    """Where the management API lives.
+
+    Hardcoding 127.0.0.1:8000 meant the CLI could only ever talk to an API on
+    the same host and port: no remote administration, no second instance, no
+    non-default port.  --url wins, then NIPS_API_URL, then the localhost default.
+    """
+    return (getattr(_api_base, "_override", None)
+            or os.environ.get("NIPS_API_URL")
+            or "http://127.0.0.1:8000")
 
 
 def _api_request(path: str, method: str = "GET",
                  payload: dict | None = None) -> bytes:
     from networksecurity.utils.config import load_api_config
-    token = load_api_config()["auth_token"]
+    token = getattr(_api_request, "_token_override", None)
+    if token is None:
+        token = load_api_config()["auth_token"]
     data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(f"{API_BASE}{path}", data=data, method=method)
+    req = urllib.request.Request(f"{_api_base()}{path}", data=data, method=method)
     req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("X-API-Token", token)
@@ -499,6 +516,11 @@ def main() -> None:
         prog="nips",
         description="Network Intrusion Prevention System CLI",
     )
+    parser.add_argument("--url", default=None,
+                        help="management API base URL (default: $NIPS_API_URL or "
+                             "http://127.0.0.1:8000); put it before the subcommand")
+    parser.add_argument("--token", default=None,
+                        help="X-API-Token value (default: $NIPS_API_TOKEN or config api.auth_token)")
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("start", help="Start live interception (Linux, requires root)")
@@ -583,6 +605,10 @@ def main() -> None:
         "audit": cmd_audit,
         "test": cmd_test,
     }
+    if args.url:
+        _api_base._override = args.url.rstrip("/")
+    if args.token:
+        _api_request._token_override = args.token
     dispatch[args.command](args)
 
 
