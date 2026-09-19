@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import sys
 import tempfile
+import time
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -49,8 +51,12 @@ def main() -> int:
     from fastapi.testclient import TestClient
     from networksecurity.utils.validation import validate_ip_or_cidr
 
-    # Never let the suite touch the developer's rules.json.
+    # Never let the suite touch the developer's rules.json or event database.
     appmod.RULES_FILE = Path(tempfile.mkstemp(prefix="nips_rules_", suffix=".json")[1])
+    from networksecurity.observability import EventStore
+
+    tmp_db = Path(tempfile.mkdtemp(prefix="nips_events_")) / "events.db"
+    appmod.event_store = EventStore(tmp_db, max_rows=5000, retention_days=7)
 
     # -- import-time integrity ---------------------------------------------
     names = [type(d).__name__ for d in appmod.pipeline._detectors]
@@ -97,6 +103,56 @@ def main() -> int:
               c.post("/api/v1/engine/stop").json().get("status") in ("not_running", "stopped"))
         check("GET /api/v1/blocks without interceptor",
               c.get("/api/v1/blocks").json() == {"items": []})
+
+        # -- durable events: alerts + audit land in SQLite ------------------
+        c.post("/api/v1/rules/blacklist", json={"ip": "203.0.113.44", "reason": "verify"})
+        c.post("/api/v1/rules/blacklist", json={"ip": "bad-ip"})   # 422, before handler
+        store = appmod.event_store
+        store.flush(3.0)
+
+        alerts = c.get("/api/v1/alerts?limit=100").json()
+        check("alerts persisted and queryable",
+              any(a["source_ip"] == "203.0.113.44" for a in alerts["items"]),
+              f"total={alerts['total']}")
+        audit_results = {a["result"] for a in c.get("/api/v1/audit?limit=100").json()["items"]}
+        check("audit records an accepted change", "blacklist_add" in audit_results,
+              str(sorted(audit_results))[:70])
+        check("audit records a pre-handler rejection (422)", "422" in audit_results,
+              str(sorted(audit_results))[:70])
+
+        filtered = c.get("/api/v1/alerts?limit=20&source_ip=203.0.113.44").json()
+        check("alerts filter by source_ip", filtered["total"] >= 1
+              and all(i["source_ip"] == "203.0.113.44" for i in filtered["items"]))
+        now_iso = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        minute_ago = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None).isoformat()
+        tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).replace(tzinfo=None).isoformat()
+        windowed = c.get(f"/api/v1/alerts?limit=20&since={minute_ago}&until={tomorrow}").json()
+        future_only = c.get(f"/api/v1/alerts?limit=20&since={now_iso}&until={tomorrow}").json()
+        check("alerts ISO window includes recent and excludes future-only",
+              windowed.get("total", 0) >= 1 and future_only.get("total", -1) == 0,
+              f"past={windowed.get('total')} future={future_only.get('total')}")
+        check("alerts epoch since accepted",
+              c.get(f"/api/v1/alerts?limit=20&since={time.time() - 60}").json().get("total", 0) >= 1)
+        check("invalid timestamp rejected",
+              c.get("/api/v1/alerts?since=not-a-time").status_code == 422)
+        check("oversized limit rejected", c.get("/api/v1/alerts?limit=5000").status_code == 422)
+
+        csv_r = c.get("/api/v1/alerts?limit=5&format=csv")
+        check("alerts CSV export", csv_r.status_code == 200
+              and "text/csv" in csv_r.headers.get("content-type", "")
+              and csv_r.text.splitlines()[0].startswith("timestamp,source_ip"),
+              csv_r.headers.get("content-type", ""))
+        jsonl = c.get("/api/v1/audit?limit=5&format=jsonl")
+        check("audit JSONL export", jsonl.status_code == 200
+              and all(line.startswith("{") for line in jsonl.text.strip().splitlines()))
+
+        metrics = c.get("/metrics")
+        check("/metrics exposition renders",
+              metrics.status_code == 200 and "nips_up 1" in metrics.text
+              and "nips_blacklist_size" in metrics.text,
+              f"{len(metrics.text.splitlines())} lines")
+        check("event store reports healthy", store.stats()["degraded"] is False,
+              str(store.stats()))
 
         # -- the detection chain actually runs through the app's pipeline ---
         from networksecurity.engine import Action, PacketInfo
