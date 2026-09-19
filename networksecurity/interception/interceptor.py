@@ -67,12 +67,19 @@ class Interceptor:
         safe_ips: list[str] | None = None,
         on_verdict: Callable[[PacketInfo, Verdict], None] | None = None,
         block_policy: BlockPolicy | None = None,
+        reload_probe: Callable[[], dict | None] | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._queue_num = queue_num
         self._nfqueue = NFQueueHandler(queue_num=queue_num)
         self._iptables = IptablesManager(safe_ips=safe_ips)
         self._block_policy = block_policy or BlockPolicy()
+        # Optional mtime probe supplied by the management plane: it knows where
+        # rules.json and config.yaml live, this class must not go looking for
+        # them.  Called from the sweeper so a hand-edited rule file takes effect
+        # without restarting (a restart would re-train Kitsune from zero).
+        self._reload_probe = reload_probe
+        self._last_reload: dict | None = None
         self._running: bool = False
         self._blocked: set[str] = set()
         self._blocked_lock: threading.Lock = threading.Lock()
@@ -185,9 +192,19 @@ class Interceptor:
         logger.info("Interceptor set up — NFQUEUE + iptables active")
 
     async def _temp_ban_sweeper(self) -> None:
-        """Lift expired temp bans and retry enforcement the kernel refused."""
+        """Lift expired temp bans, retry refused enforcement, pick up rule edits."""
         while True:
             await asyncio.sleep(30.0)
+            if self._reload_probe is not None:
+                try:
+                    summary = await asyncio.to_thread(self._reload_probe)
+                    if summary:
+                        self._last_reload = summary
+                        logger.info("rules/config reloaded: %s", summary)
+                except Exception:
+                    # A failed probe must not kill the sweeper: expired temp
+                    # bans would stop being lifted, silently over-blocking hosts.
+                    logger.exception("rule reload probe failed")
             try:
                 lifted = self._block_policy.expire_temp_bans()
             except Exception:
@@ -489,6 +506,9 @@ class Interceptor:
             "nfqueue_parse_failed": self._nfqueue.parse_failed_count,
             "detection_loop_stale_seconds": stale,
             "detection_unavailable_drops": self._unavailable_drops,
+            # Last hot-reload summary (rules.json / config.yaml), or None when
+            # nothing has reloaded since start.
+            "last_reload": self._last_reload,
             "pipeline": self._pipeline.status(),
         }
 
