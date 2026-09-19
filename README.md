@@ -411,6 +411,7 @@ bash deploy.sh stop
 **Notes:**
 - `deploy.sh` runs 8 verification scripts (`verify_engine_module`, `verify_interception_module`, `verify_block_lifecycle`, `verify_live_exposed_bugs`, `verify_fpr_regression`, `verify_features_module`, `verify_data_module`, `verify_management_plane`) instead of `pytest`.
 - The container runs as non-root user `nips` for security. Bind-mount `rules.json` from the host — it must exist before `docker compose up` or you'll get an `IsADirectoryError`.
+- **The container is the management plane only.** NFQUEUE and iptables need the host network stack, so the interceptor runs on the host (`cli.py start` or the systemd unit). Deploying only the container gives you an API that reports and edits rules but drops no traffic — a dashboard, not a prevention system.
 - `rules.json` contains only **persistent** blacklist entries (operator-added + escalated permanent bans). Temp-ban mirrors live in the ephemeral tier and are never written to disk.
 
 ### Linux host
@@ -424,6 +425,29 @@ python app.py
 
 # Or use CLI directly (requires root for live interception)
 sudo python cli.py start
+```
+
+### systemd
+
+Two units under `deploy/systemd/`, meant to be installed as `nips-api.service` and `nips-interceptor.service` after editing the `/opt/nips` paths (use `systemctl edit` drop-ins rather than editing the shipped file):
+
+```bash
+sudo cp deploy/systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nips-api nips-interceptor
+```
+
+They are deliberately separate: only the interceptor holds the privileges that rewrite the firewall, and the web-facing process does not. The interceptor needs real root (`cli.py start` checks `geteuid()`), so capabilities alone will not satisfy it. Stop behaviour matters — the SIGTERM handler removes the NFQUEUE redirect, so `TimeoutStopSec` is generous; killing it faster leaves a kernel redirect with nothing draining the queue, which stalls traffic until the nfqueue timeout.
+
+### Remote administration
+
+The API listens on `api.host`/`api.port` and speaks plain HTTP. It has one shared token and no per-user identity, so it is designed to sit behind a TLS-terminating reverse proxy that also enforces source addresses or client certificates — not to be published directly. The shipped docker-compose binds it to `127.0.0.1:8000` for the same reason.
+
+The CLI targets `http://127.0.0.1:8000` by default; point it elsewhere per invocation or by environment:
+
+```bash
+python cli.py --url https://nips.internal:8443 --token "$NIPS_API_TOKEN" status
+NIPS_API_URL=http://10.0.0.5:8000 python cli.py alerts --last 20
 ```
 
 ---

@@ -273,6 +273,25 @@ def main() -> int:
     check("cli: connection error is not a refusal",
           not cli._refused_by_api(urllib.error.URLError("connection refused")))
 
+    # CLI endpoint selection
+    import importlib
+    default_base = cli._api_base()
+    os.environ["NIPS_API_URL"] = "http://10.0.0.5:9000"
+    env_base = cli._api_base()
+    del os.environ["NIPS_API_URL"]
+    cli._api_base._override = "https://nips.internal:8443"
+    flag_base = cli._api_base()
+    del cli._api_base._override
+    check("cli: --url beats $NIPS_API_URL beats the localhost default",
+          default_base == "http://127.0.0.1:8000"
+          and env_base == "http://10.0.0.5:9000"
+          and flag_base == "https://nips.internal:8443",
+          f"{default_base} / {env_base} / {flag_base}")
+    cli._api_request._token_override = "explicit"
+    check("cli: --token overrides the configured token",
+          getattr(cli._api_request, "_token_override", None) == "explicit")
+    del cli._api_request._token_override
+
     for value, want_ok in [("1.2.3.4", True), ("10.0.0.0/8", True),
                            ("0.0.0.0/0", False), ("::/0", False),
                            ("garbage", False), ("", False), ("10.0.0.0/33", False)]:

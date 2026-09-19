@@ -409,6 +409,7 @@ bash deploy.sh stop
 **说明：**
 - `deploy.sh` 运行 8 个验证脚本（`verify_engine_module`、`verify_interception_module`、`verify_block_lifecycle`、`verify_live_exposed_bugs`、`verify_fpr_regression`、`verify_features_module`、`verify_data_module`、`verify_management_plane`），而不是 `pytest`。
 - 容器出于安全考虑以非 root 用户 `nips` 运行。请从宿主机 bind-mount `rules.json`——它在 `docker compose up` 之前就必须存在，否则会报 `IsADirectoryError`。
+- **容器只承载管理面。** NFQUEUE 与 iptables 需要宿主网络栈，因此拦截器跑在宿主机上（`cli.py start` 或 systemd 单元）。只部署容器，你得到的是一个能查看和修改规则、但不丢弃任何流量的 API——那是仪表盘，不是防御系统。
 - `rules.json` 只包含**持久化**的黑名单条目（运维添加的 + 升级产生的永久封禁）。临时封禁镜像存在于临时层，从不落盘。
 
 ### Linux 宿主机
@@ -422,6 +423,29 @@ python app.py
 
 # 或直接使用 CLI（实时拦截需要 root）
 sudo python cli.py start
+```
+
+### systemd
+
+`deploy/systemd/` 下有两个单元，改好 `/opt/nips` 路径后作为 `nips-api.service` 与 `nips-interceptor.service` 安装（建议用 `systemctl edit` 的 drop-in 覆盖，不要直接改发行文件）：
+
+```bash
+sudo cp deploy/systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nips-api nips-interceptor
+```
+
+两者刻意分开：只有拦截器持有会改防火墙的权限，面向网络的那个进程不持有。拦截器需要真正的 root（`cli.py start` 会检查 `geteuid()`），只给 capability 不满足它。停止行为很关键——SIGTERM 处理函数会撤掉 NFQUEUE 重定向，所以 `TimeoutStopSec` 给得很宽；提前杀掉它会让内核重定向留在原位而无人消费队列，直到 nfqueue 超时才恢复，等于自己制造一次断网。
+
+### 远程管理
+
+API 监听在 `api.host`/`api.port`，说的是明文 HTTP。它只有一个共享 token、没有按用户身份，因此设计上应当放在做 TLS 终结、并额外校验源地址或客户端证书的反向代理之后，而不是直接暴露。随附的 docker-compose 绑定 `127.0.0.1:8000` 也是同样理由。
+
+CLI 默认指向 `http://127.0.0.1:8000`，可每次指定或用环境变量改：
+
+```bash
+python cli.py --url https://nips.internal:8443 --token "$NIPS_API_TOKEN" status
+NIPS_API_URL=http://10.0.0.5:8000 python cli.py alerts --last 20
 ```
 
 ---
