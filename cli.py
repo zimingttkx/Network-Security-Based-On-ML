@@ -331,6 +331,60 @@ def cmd_reload(args) -> None:
             print(f"  {key}: {resp[key]}")
 
 
+def cmd_signature(args) -> None:
+    """Manage declarative signature rules through the API."""
+    if args.action == "list":
+        try:
+            resp = json.loads(_api_request("/api/v1/signatures"))
+        except Exception as e:  # noqa: BLE001
+            print(f"ERROR: could not list signatures: {e}", file=sys.stderr)
+            sys.exit(1)
+        for item in resp.get("items", []):
+            hits = resp.get("hits", {}).get(item["id"], 0)
+            print(f"{item['id']:20} {item['action']:5} hits={hits:<6} "
+                  + " ".join(f"{k}={v}" for k, v in item.items()
+                             if k not in ("id", "action")))
+        if not resp.get("items"):
+            print("(no signatures defined)")
+        return
+
+    if args.action == "delete":
+        try:
+            _api_request(f"/api/v1/signatures/{args.id}", method="DELETE")
+        except urllib.error.HTTPError as e:
+            print(f"ERROR: {e.code} {e.read().decode(errors='replace')[:200]}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:  # noqa: BLE001
+            print(f"ERROR: could not reach the API: {e}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Removed signature {args.id}.")
+        return
+
+    spec: dict = {"id": args.id, "action": args.action_kind}
+    for key, value in (("src", args.src), ("dst", args.dst), ("protocol", args.protocol),
+                       ("dport", args.dport), ("sport", args.sport),
+                       ("min_packets", args.min_packets), ("comment", args.comment)):
+        if value not in (None, ""):
+            spec[key] = value
+    if args.tcp_flags is not None:
+        spec["tcp_flags"] = args.tcp_flags
+    if args.window is not None:
+        spec["window_seconds"] = args.window
+    try:
+        resp = json.loads(_api_request("/api/v1/signatures", method="POST", payload=spec))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        print(f"ERROR: the API refused this signature (HTTP {e.code}): {body[:300]}",
+              file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:  # noqa: BLE001
+        print(f"ERROR: could not reach the API: {e}", file=sys.stderr)
+        print("Signatures live only in the running engine and rules.json; the "
+              "API must be reachable to add one.", file=sys.stderr)
+        sys.exit(1)
+    print("Saved: " + json.dumps(resp["signature"], default=str))
+
+
 def cmd_rules(args) -> None:
     print("Blacklist:")
     for ip in pipeline.rule_engine.get_blacklist():
@@ -454,6 +508,29 @@ def main() -> None:
     sub.add_parser("reload",
                    help="Re-read rules.json / engine knobs in the running engine")
 
+    p = sub.add_parser("signature",
+                       help="Manage declarative signature rules (src + port + rate)")
+    sig_sub = p.add_subparsers(dest="action", required=True)
+    sig_sub.add_parser("list", help="List signatures and their hit counts")
+    p_del = sig_sub.add_parser("delete", help="Remove a signature by id")
+    p_del.add_argument("id", help="signature id")
+    p_add = sig_sub.add_parser("add", help="Add or edit a signature")
+    p_add.add_argument("--id", required=True, help="rule id (letters, digits, - _ .)")
+    p_add.add_argument("--src", default=None, help="source IP or CIDR")
+    p_add.add_argument("--dst", default=None, help="destination IP or CIDR")
+    p_add.add_argument("--protocol", default=None, help="tcp, udp, icmp or a number")
+    p_add.add_argument("--dport", type=int, default=None, help="destination port")
+    p_add.add_argument("--sport", type=int, default=None, help="source port")
+    p_add.add_argument("--tcp-flags", default=None,
+                       help="exact TCP flags, decimal or hex (0x02 = SYN)")
+    p_add.add_argument("--min-packets", type=int, default=None,
+                       help="only fire after this many matches in the window")
+    p_add.add_argument("--window", type=float, default=None, help="rate window seconds")
+    p_add.add_argument("--action", dest="action_kind", default="block",
+                       choices=["block", "log"],
+                       help="log counts matches without dropping")
+    p_add.add_argument("--comment", default=None)
+
     p = sub.add_parser("block", help="Add IP to blacklist")
     p.add_argument("ip")
     p = sub.add_parser("unblock", help="Remove IP from blacklist")
@@ -501,6 +578,7 @@ def main() -> None:
         "unwhitelist": cmd_unwhitelist,
         "rules": cmd_rules,
         "reload": cmd_reload,
+        "signature": cmd_signature,
         "alerts": cmd_alerts,
         "audit": cmd_audit,
         "test": cmd_test,
