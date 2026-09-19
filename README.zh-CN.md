@@ -35,8 +35,8 @@ LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流
 
 ### 算法
 
-- **Kitsune (NDSS'18)** — AfterImage 增量统计（100 维特征）+ KitNET 自编码器集成。在线训练，无需标签。
-- **LUCID (IEEE TNSM 2020)** — 在 10 包流窗口（每包 11 维特征）上跑的 1D CNN。默认关闭，需要训练好的模型。
+- **Kitsune (NDSS'18)** — AfterImage 增量统计（90 维特征）+ KitNET 自编码器集成。在线训练，无需标签。当链路层头部缺失（实时 NFQUEUE 场景）时，MAC 通道使用 `(protocol, ttl)` 代理键，避免方差退化为零。宽限期（`fm_grace_period`、`ad_grace_period`）允许在检测开始前先预热；此期间数据包只记录不拦截。
+- **LUCID (IEEE TNSM 2020)** — 在 10 包流窗口（每包 11 维特征）上跑的 1D CNN。默认关闭，需要训练好的模型，且在配置中设置 `engine.lucid.model_path`。
 
 > **关于协议过滤：** 规则引擎的协议白名单只包含 TCP(6) 和 UDP(17)。其他任何协议——包括 **ICMP(1)**——默认都会被拦截。也就是说，合法的 ICMP（ping、PMTUD、traceroute）同样会被丢弃，除非其源地址在白名单中。如果你运行的网络依赖 ICMP，请把相关源地址加入白名单，或在启用实时拦截前先收紧该策略。
 
@@ -72,26 +72,67 @@ pip install -e ".[lucid]"     # 或：pip install tensorflow
 pip install scapy
 ```
 
-### 3. 运行 API
+### 3. 配置
+
+`config/config.yaml` 同时驱动引擎和实时拦截：
+
+- `engine.kitsune.*`：宽限期、阈值百分位、learning_rate（传给 AfterImage）
+- `engine.lucid.model_path`：设置路径即启用 LUCID；空字符串表示禁用
+- `api.auth_token`：设置后启用认证；空字符串表示关闭认证（仅开发环境）
+- `interception.safe_ips`：添加永远不会被封禁的 IP（回环默认包含）
+
+### 4. 运行 API
 
 ```bash
 python app.py
-# API 文档见 http://localhost:8000/docs
+# /docs、/redoc 和 OpenAPI schema 在生产环境中全部关闭。
 ```
 
-### 4. CLI
+### 5. CLI
 
 ```bash
 python cli.py start                  # 启动实时拦截（Linux，需 root）
 python cli.py stop                   # 停止实时拦截（通过 API）
 python cli.py status                 # 引擎状态
-python cli.py block 1.2.3.4          # 封禁某个 IP
-python cli.py unblock 1.2.3.4        # 解封某个 IP
-python cli.py whitelist 10.0.0.0/8   # 将某个子网加入白名单
+python cli.py block 1.2.3.4          # 封禁某个 IP（POST /api/v1/rules/blacklist）
+python cli.py unblock 1.2.3.4        # 解封某个 IP（DELETE /api/v1/rules/blacklist/{ip}）
+python cli.py whitelist 10.0.0.0/8   # 将某个子网加入白名单（拒绝 /0 默认路由）
+python cli.py unwhitelist 10.0.0.0/8 # 从白名单移除
 python cli.py rules                  # 列出黑名单/白名单条目
 python cli.py alerts --last 20       # 查看最近告警（通过 API）
 python cli.py test --pcap sample.pcap  # 离线检测测试（无需 root）
 ```
+
+#### 配置示例
+
+```yaml
+interception:
+  nfqueue_num: 0
+  safe_ips:                 # 永远不会被封锁的 IP（回环受保护）
+    - "127.0.0.1"
+    - "::1"
+engine:
+  kitsune:
+    fm_grace_period: 5000   # 特征映射训练包数
+    ad_grace_period: 50000  # 异常检测器训练包数
+    threshold_percentile: 99.0
+  rule_engine:
+    allowed_protocols: [6, 17]   # TCP、UDP；其余全部拦截
+    rate_limit:
+      window_seconds: 1.0
+      max_connections_per_window: 100
+blocking:                    # BLOCK 判决升级策略（见"实时拦截"）
+  strikes_threshold: 5       # 窗口内累计 BLOCK 次数达到该值触发临时封禁
+  strikes_window: 300.0
+  temp_ban_seconds: 600.0
+  temp_ban_count_to_perm: 3  # 完成的临时封禁次数达到该值触发永久封禁
+api:
+  auth_token: ""             # 空 = 关闭认证（仅开发）；NIPS_API_TOKEN 环境变量优先
+  cors_origins:              # 显式白名单——不支持 "*"
+    - "http://localhost:8000"
+```
+
+`engine/start` 时 API/CLI 从该文件读取 `interception`、`engine`、`blocking`、`api` 各块并在运行时应用。文件缺失或格式错误时，各加载器回退到安全默认值（包含回环保护），不会崩溃。
 
 ---
 
@@ -112,8 +153,6 @@ python cli.py test --pcap sample.pcap  # 离线检测测试（无需 root）
 | `POST` | `/api/v1/engine/start` | 启动实时拦截（Linux，需 root） |
 | `POST` | `/api/v1/engine/stop` | 停止拦截并清理 iptables 规则 |
 
-完整的交互式文档见 `/docs`。
-
 **认证：**在 `config.yaml` 中设置 `api.auth_token`（或环境变量 `NIPS_API_TOKEN`）后，所有 `/api/v1/*` 调用都必须携带请求头 `X-API-Token: <token>`。留空表示关闭认证（仅限开发环境，服务启动时会打 WARNING）。`/health` 保持开放（用于存活探测）。
 
 ---
@@ -133,7 +172,7 @@ networksecurity/
     rule_engine.py             # IP 黑名单/白名单、限速
     block_policy.py            # BLOCK 判决升级：strike 累计 → 临时封禁 → 永久封禁
     kitsune/                   # Kitsune 异常检测器（NDSS'18）
-      afterimage.py            # 100 维增量统计
+      afterimage.py            # 90 维增量统计
       kitnet.py                # 自编码器集成
       kitsune.py               # 编排器
       detector_adapter.py      # BaseDetector 适配器
@@ -227,7 +266,7 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 
 为什么在 NSL-KDD 上检出率偏低：NSL-KDD 记录是**流级摘要**，不是真实抓包。把每条流映射成几个包，会丢掉 Kitsune 依赖的时序和突发模式。大流量型攻击（DoS、probe）比内容型攻击（R2L、U2R）更能保留映射后的特征——后者在包级看起来和正常 TCP 没有区别。把各攻击类别的数字当作这一局限性的说明，而不是实测准确率。
 
-规则引擎本身是精确的：黑名单/白名单、协议过滤、限速都是确定性的，且始终在 ML 阶段之前执行。
+规则引擎本身是精确的：黑名单/白名单、协议过滤、限速都是确定性的，且始终在 ML 阶段之前执行。限速只统计 TCP SYN（ACK 未置位）和 UDP 数据报；已建立的 TCP 会话（ACK/数据/FIN）不消耗限速额度。
 
 ### 用真实流量做离线测试
 
@@ -243,6 +282,49 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
   这样能暴露**真实**的误报率（例如合法 ICMP 被协议过滤拦截），下面的合成模拟做不到这一点。注意 Kitsune 大约需要 55k 个正常包才会离开训练模式，所以短抓包主要测的是规则引擎。
 - **合成攻击模拟：** `scripts/attack_simulation.py` 生成带标签的流量并按攻击类别报告检出率。它的 ICMP/SSH 结果反映的是硬性协议规则和可分离的生成器分布，不是生产环境的准确率——快速模式下整体约 20% 的攻击检出率应视为下限，而非准确率声明。
 
+#### Fail-closed 行为
+
+当所有 ML 检测器都损坏或未训练时，流水线会抛出 `DetectionUnavailable` 并丢弃所有规则引擎未做决定的数据包。这是有意为之：在异常检测器不可用时，静默的网络中断比放行未知流量更安全。状态 API 暴露了 `detection_unavailable_drops` 和 `broken_detectors`，运维人员可以据此发现该状态。
+
+---
+
+## 部署
+
+### Docker
+
+```bash
+# 构建并启动
+bash deploy.sh build
+bash deploy.sh start
+
+# 验证测试通过（在容器内运行全部 verify_* 脚本）
+bash deploy.sh test
+
+# 查看日志
+bash deploy.sh logs
+
+# 停止
+bash deploy.sh stop
+```
+
+**说明：**
+- `deploy.sh` 运行 7 个验证脚本（`verify_engine_module`、`verify_interception_module`、`verify_block_lifecycle`、`verify_live_exposed_bugs`、`verify_fpr_regression`、`verify_features_module`、`verify_data_module`），而不是 `pytest`。
+- 容器出于安全考虑以非 root 用户 `nips` 运行。请从宿主机 bind-mount `rules.json`——它在 `docker compose up` 之前就必须存在，否则会报 `IsADirectoryError`。
+- `rules.json` 只包含**持久化**的黑名单条目（运维添加的 + 升级产生的永久封禁）。临时封禁镜像存在于临时层，从不落盘。
+
+### Linux 宿主机
+
+```bash
+# 安装依赖
+pip install -r requirements.txt
+
+# 运行 API 服务
+python app.py
+
+# 或直接使用 CLI（实时拦截需要 root）
+sudo python cli.py start
+```
+
 ---
 
 ## 文档
@@ -252,7 +334,7 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 - [CODE_STYLE.md](CODE_STYLE.md) — 编码规范、导入规则、系统调用校验
 - [SECURITY.md](SECURITY.md) — 漏洞报告、部署最佳实践
 - [CHANGELOG.md](CHANGELOG.md) — 发布历史
-- API 参考：`http://localhost:8000/docs`（Swagger）
+- API 端点：见上文"运行 API"一节（/docs、/redoc 和 OpenAPI 在生产环境中关闭）
 
 ---
 

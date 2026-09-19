@@ -85,7 +85,7 @@ pip install scapy
 
 ```bash
 python app.py
-# No docs at /docs — disabled in production. Use http://localhost:8000/redoc for OpenAPI schema.
+# /docs, /redoc and the OpenAPI schema are all disabled in production.
 ```
 
 ### 5. CLI
@@ -176,7 +176,7 @@ networksecurity/
     rule_engine.py             # IP blacklist/whitelist, rate limiting
     block_policy.py            # BLOCK escalation: strikes → temp ban → permanent ban
     kitsune/                   # Kitsune anomaly detector (NDSS'18)
-      afterimage.py            # 100-dim incremental statistics
+      afterimage.py            # 90-dim incremental statistics
       kitnet.py                # Autoencoder ensemble
       kitsune.py               # Orchestrator
       detector_adapter.py      # BaseDetector adapter
@@ -337,7 +337,7 @@ sudo python cli.py start
 - [CODE_STYLE.md](CODE_STYLE.md) — coding conventions, import rules, system call validation
 - [SECURITY.md](SECURITY.md) — vulnerability reporting, deployment best practices
 - [CHANGELOG.md](CHANGELOG.md) — release history
-- API reference: `http://localhost:8000/redoc` (OpenAPI schema; /docs disabled in production)
+- API endpoints: see the "Run the API" section above (/docs, /redoc and OpenAPI are disabled in production)
 
 ---
 
