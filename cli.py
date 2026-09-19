@@ -134,6 +134,7 @@ def cmd_start(args) -> None:
         load_storage_config,
     )
     from networksecurity.observability import EventStore, configure_logging
+    from networksecurity.utils.reload import ReloadProbe
 
     # The standalone service must honour the logging block and record the same
     # events as the API-driven path.  Both processes open the same WAL database,
@@ -146,6 +147,7 @@ def cmd_start(args) -> None:
         retention_days=storage_cfg["retention_days"],
         queue_size=storage_cfg["queue_size"],
     )
+    reload_probe = ReloadProbe(pipeline.rule_engine, RULES_FILE)
 
     inter_cfg = load_interception_config()
     blocking_cfg = load_blocking_config()
@@ -170,6 +172,7 @@ def cmd_start(args) -> None:
         safe_ips=inter_cfg.get("safe_ips"),
         on_verdict=_record,
         block_policy=policy,
+        reload_probe=reload_probe.probe,
     )
 
     def _shutdown(signum, frame):
@@ -306,6 +309,26 @@ def cmd_whitelist(args) -> None:
     print(f"Whitelisted (local rules.json): {ip}")
 
 
+def cmd_reload(args) -> None:
+    """Ask the running engine to re-read rules.json and the config knobs."""
+    try:
+        resp = json.loads(_api_request("/api/v1/rules/reload", method="POST"))
+    except urllib.error.HTTPError as e:
+        print(f"ERROR: reload failed (HTTP {e.code}): "
+              f"{e.read().decode(errors='replace')[:300]}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:  # noqa: BLE001
+        print(f"ERROR: could not reach the API: {e}", file=sys.stderr)
+        print("Hint: a locally edited rules.json is picked up by a running "
+              "`cli.py start` engine within 30s; this command targets the API-"
+              "started engine.", file=sys.stderr)
+        sys.exit(1)
+    print("Reloaded." if resp.get("status") == "reloaded" else str(resp))
+    for key in ("rules", "rate_limit", "allowed_protocols", "dropped_unenforceable"):
+        if key in resp:
+            print(f"  {key}: {resp[key]}")
+
+
 def cmd_rules(args) -> None:
     print("Blacklist:")
     for ip in pipeline.rule_engine.get_blacklist():
@@ -426,6 +449,8 @@ def main() -> None:
     sub.add_parser("stop", help="Stop live interception (via API)")
     sub.add_parser("status", help="Show engine/interceptor status")
     sub.add_parser("rules", help="List all blacklist/whitelist entries")
+    sub.add_parser("reload",
+                   help="Re-read rules.json / engine knobs in the running engine")
 
     p = sub.add_parser("block", help="Add IP to blacklist")
     p.add_argument("ip")
@@ -473,6 +498,7 @@ def main() -> None:
         "whitelist": cmd_whitelist,
         "unwhitelist": cmd_unwhitelist,
         "rules": cmd_rules,
+        "reload": cmd_reload,
         "alerts": cmd_alerts,
         "audit": cmd_audit,
         "test": cmd_test,
