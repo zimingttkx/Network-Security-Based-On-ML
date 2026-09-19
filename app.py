@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import ipaddress
+import asyncio
 import logging
 import secrets
 import threading
@@ -100,26 +100,25 @@ for _d in pipeline.detectors:
 # not silently no-op as an "active" detector.
 try:
     from networksecurity.utils.config import load_lucid_config
+    from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
     
     _lucid_cfg = load_lucid_config()
     _model_path = _lucid_cfg.get("model_path", "")
     
     if _model_path:
-        from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
-        
         _lucid_adapter = LucidDetectorAdapter(
             time_window=_lucid_cfg["time_window"],
             packets_per_flow=_lucid_cfg["packets_per_flow"],
             enabled=True,
         )
         
-        # Load the model before registering the detector (synchronous call)
-        _loaded = _lucid_adapter.load_model(_model_path)
-        if not _loaded:
-            logger.warning("LUCID model at %r failed to load; detector disabled", _model_path)
-            _lucid_adapter._enabled = False
-        
-        pipeline.add_detector(_lucid_adapter)
+        # Load the model before registering the detector: a detector that
+        # cannot load its weights must not join the pipeline at all.
+        if asyncio.run(_lucid_adapter.load_model(_model_path)):
+            pipeline.add_detector(_lucid_adapter)
+        else:
+            logger.warning("LUCID model at %r failed to load; detector not registered",
+                           _model_path)
     else:
         pipeline.add_detector(LucidDetectorAdapter(enabled=False))
 except ImportError:
@@ -178,29 +177,6 @@ if _rules_swept:
 
 # --- Pydantic models -------------------------------------------------------
 
-def _validate_ip_or_cidr(value: str) -> str:
-    """Reject blacklist/whitelist entries that are not an IP or CIDR.
-
-    Without this, any string (10 MB of garbage, a CVE payload, a typo'd
-    CIDR) entered the rule sets: garbage bloats rules.json (written on
-    every POST), a malformed CIDR silently matches nothing (rule LOOKS
-    active but blocks no traffic — the worst failure mode for a rule).
-    """
-    value = value.strip()
-    import ipaddress as _ipa
-    try:
-        _ipa.ip_address(value)
-        return value
-    except ValueError:
-        pass
-    try:
-        _ipa.ip_network(value, strict=False)
-        return value
-    except ValueError:
-        pass
-    raise ValueError(f"{value!r} is not a valid IP address or CIDR network")
-
-
 class BlacklistEntry(BaseModel):
     ip: str
     reason: str = "manual"
@@ -225,17 +201,9 @@ class WhitelistEntry(BaseModel):
     @field_validator("ip")
     @classmethod
     def _ip_ok(cls, v: str) -> str:
-        v = validate_ip_or_cidr(v)
-        # Reject default routes (0.0.0.0/0, ::/0) — whitelisting the entire
-        # internet is not a feature, it's a misconfiguration that defeats
-        # every detection layer.  The error message makes this explicit.
-        try:
-            net = ipaddress.ip_network(v, strict=False)
-            if net.prefixlen == 0:
-                raise ValueError(f"{v!r} is a default route — whitelist cannot cover entire internet")
-        except ValueError:
-            pass  # single IP, OK
-        return v
+        # Default routes are refused by validate_ip_or_cidr for both rule sets,
+        # so whitelisting the entire internet cannot slip through here.
+        return validate_ip_or_cidr(v)
 
 
 # --- Health -----------------------------------------------------------------
@@ -371,7 +339,7 @@ async def add_blacklist(entry: BlacklistEntry):
     return {"status": "ok", "blacklist": pipeline.rule_engine.get_blacklist()}
 
 
-@app.delete("/api/v1/rules/blacklist/{ip}", dependencies=[Depends(require_token)])
+@app.delete("/api/v1/rules/blacklist/{ip:path}", dependencies=[Depends(require_token)])
 async def remove_blacklist(ip: str):
     pipeline.rule_engine.remove_blacklist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
@@ -400,7 +368,7 @@ async def add_whitelist(entry: WhitelistEntry):
     return {"status": "ok", "whitelist": pipeline.rule_engine.get_whitelist()}
 
 
-@app.delete("/api/v1/rules/whitelist/{ip}", dependencies=[Depends(require_token)])
+@app.delete("/api/v1/rules/whitelist/{ip:path}", dependencies=[Depends(require_token)])
 async def remove_whitelist(ip: str):
     pipeline.rule_engine.remove_whitelist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
