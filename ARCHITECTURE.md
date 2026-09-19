@@ -64,10 +64,17 @@ NIPS is a **server-side Network Intrusion Prevention System** for Linux.
 NIC → iptables NFQUEUE target → nfqueue kernel queue
      → NFQueueHandler._handle_packet()
      → PacketParser.from_raw(bytes)
-     → PacketInfo {src_ip, dst_ip, src_port, dst_port, protocol, packet_size, tcp_flags, ...}
+     → PacketInfo {src_ip, dst_ip, src_port, dst_port, protocol, packet_size, tcp_flags,
+                ttl, icmp_type, icmp_code, ...}   # icmp_* are rule fields only, absent
+                                                # from to_dict() to keep the 90-dim
+                                                # AfterImage vector fixed
      → Interceptor._on_packet(packet_info) → bool
          → DetectionPipeline.process_packet(packet_info)
-             → RuleEngine.process_packet()     # whitelist/blacklist/rate
+             → RuleEngine.process_packet()     # ordered, cheapest first:
+                 # 1 whitelist  2 protocol/ICMP-type  3 blacklist (persistent +
+                 # ephemeral)  4 signatures  5 rate limit.  A signature BLOCK is
+                 # enforced inline like any other rule-engine verdict and does
+                 # not feed BlockPolicy strikes.
              → KitsuneDetector.process_packet() # AfterImage → KitNET
              → LucidDetectorAdapter.process_packet()  # CNN flow detection
          → Verdict {action, confidence, reason}
@@ -92,7 +99,9 @@ networksecurity/
   engine/           # Detection logic.  Pure Python, no OS calls.
     detector.py     # BaseDetector ABC, PacketInfo dataclass
     verdict.py      # Action, ThreatLevel, Verdict types
-    rule_engine.py  # IP whitelist/blacklist, rate limiting
+    rule_engine.py  # IP whitelist/blacklist, rate limiting, signature dispatch
+    signature_engine.py  # Declarative rules: src/dst CIDR + protocol + ports +
+                    # TCP flags + rate threshold; action block or log
     pipeline.py     # DetectionPipeline chain with short-circuit
     block_policy.py # BLOCK escalation policy: strikes → temp ban → permanent ban
     kitsune/        # AfterImage + KitNET anomaly detection (NDSS'18)
@@ -132,6 +141,7 @@ networksecurity/
 interception/ ──imports──→ engine/        ✓ allowed (Interceptor uses Pipeline)
 interception/ ──imports──→ features/      ✓ allowed (optional)
 engine/       ──imports──→ interception/  ✗ FORBIDDEN (engine must not call OS)
+engine/signature_engine.py  standalone  ✓ (no OS calls, no imports outside engine)
 engine/       ──imports──→ features/      ✓ allowed
 app.py/cli.py ──imports──→ engine/        ✓ allowed
 app.py/cli.py ──imports──→ interception/  ✓ allowed (lazy, only for start/stop)

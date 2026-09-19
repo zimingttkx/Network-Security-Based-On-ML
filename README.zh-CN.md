@@ -163,6 +163,9 @@ api:
 | `POST` | `/api/v1/rules/whitelist` | 将 IP/CIDR 加入白名单 |
 | `DELETE` | `/api/v1/rules/whitelist/{ip}` | 从白名单移除 IP |
 | `POST` | `/api/v1/rules/reload` | 重新读取 rules.json 与 config.yaml 中可热更的引擎参数 |
+| `GET` | `/api/v1/signatures` | 已声明的签名规则及其命中计数 |
+| `POST` | `/api/v1/signatures` | 新增或修改签名（重复 id 即替换该条） |
+| `DELETE` | `/api/v1/signatures/{id}` | 删除签名 |
 | `POST` | `/api/v1/engine/start` | 启动实时拦截（Linux，需 root） |
 | `POST` | `/api/v1/engine/stop` | 停止拦截并清理 iptables 规则 |
 | `GET` | `/metrics` | Prometheus 文本指标（与 `/api/v1/*` 同样需要 token） |
@@ -182,6 +185,36 @@ api:
 检测路径不会等待磁盘：`record_alert` 只投递到有界缓冲区，由后台线程批量落盘。缓冲区溢出或批次失败时，`nips_alert_events_dropped_total` / `nips_event_store_write_errors_total` 计数上升，`/api/v1/status` 的 `event_store` 字段也会报告——审计链不完整是可见的，不会静默。数据库不可用时，读取回退到内存中最近 500 条事件，同时 `event_store.degraded` 为 true。
 
 `logging.file` 增加轮转日志文件，`logging.syslog_address` 转发到 syslog（平台套接字，或 `host:port` UDP）；目标不可达时只告警并跳过，不阻塞启动。
+
+### 签名规则
+
+黑名单回答的是"这个源是不是坏的"，限速回答的是"有没有人发得太快"。两者都回答不了这条需求：**"当 203.0.113.0/24 对 TCP/22 超过每分钟 50 次会话时才丢弃"**——直接封网段会连带里面的合法用户，而全局限速无法按源和端口收窄。签名规则就是这个条件的合取：
+
+```bash
+# 先观察：只计数，不丢包
+python cli.py signature add --id ssh-brute --src 203.0.113.0/24 \
+    --protocol tcp --dport 22 --min-packets 50 --window 60 --action log
+python cli.py signature list                    # 规则及其命中计数
+python cli.py signature add --id ssh-brute --src 203.0.113.0/24 \
+    --protocol tcp --dport 22 --min-packets 50 --window 60    # 再改为执行
+python cli.py signature delete ssh-brute
+```
+
+| 字段 | 含义 |
+|---|---|
+| `src` / `dst` | IP 或 CIDR；`/0` 默认路由会被拒绝 |
+| `protocol` | `tcp`、`udp`、`icmp` 或数字 |
+| `dport` / `sport` | 0-65535。只给端口而不给协议时默认按 TCP——这些字节偏移在 ICMP 里是 echo 的 id/序号，在那里匹配端口没有意义 |
+| `tcp_flags` | 对 6 位标志字段做精确匹配（`0x02` = SYN），仅对 TCP 有效 |
+| `min_packets` + `window_seconds` | 同一源在窗口内命中 N 次后才触发 |
+| `action` | `block` 内联丢弃该包；`log` 只计数并放行到 ML 阶段 |
+
+- **没有任何匹配条件**的规则会被拒绝：配合 `action=block`，一次误调用就会丢弃全部流量。
+- 按声明顺序求值、首个命中生效；位置在黑名单之后（被列名的源就按"黑名单命中"上报）、全局限速之前（收窄的规则不会被它掩盖）。
+- 签名 BLOCK 与其他规则引擎判决一样**逐包内联执行**：不计 strike、不下发内核 DROP。对带次数条件的规则这是有意为之——一条持久内核规则会在触发它的条件消失后继续生效。要彻底封源，请用黑名单。
+- 每源的命中计数受 LRU 上限约束（每条规则 1 万个源）：不设上限时，伪造源洪泛会让表每包增长一个条目，把检测功能变成内存耗尽漏洞。
+- 签名持久化在 `rules.json` 的 `"signatures"` 中，并遵循上文的热加载规则：手工编辑最多 30 秒生效（或 `cli.py reload`），且一条非法条目会整份拒绝，而不是应用一半。
+- API：`GET`/`POST /api/v1/signatures`、`DELETE /api/v1/signatures/{id}`；校验实现在引擎里，因此 API、文件与热加载拒绝的规格完全一致。新增与删除都会进审计。
 
 ### 热加载
 

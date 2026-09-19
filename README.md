@@ -166,6 +166,9 @@ On `engine/start` the API/CLI read the `interception`, `engine`, `blocking`, and
 | `POST` | `/api/v1/rules/whitelist` | Add IP/CIDR to whitelist |
 | `DELETE` | `/api/v1/rules/whitelist/{ip}` | Remove IP from whitelist |
 | `POST` | `/api/v1/rules/reload` | Re-read rules.json and the live engine knobs from config.yaml |
+| `GET` | `/api/v1/signatures` | Declared signature rules and their hit counts |
+| `POST` | `/api/v1/signatures` | Add or edit a signature (re-posting an id replaces it) |
+| `DELETE` | `/api/v1/signatures/{id}` | Remove a signature |
 | `POST` | `/api/v1/engine/start` | Start live interception (Linux, root) |
 | `POST` | `/api/v1/engine/stop` | Stop interception and clean up iptables |
 | `GET` | `/metrics` | Prometheus text exposition (token-guarded like `/api/v1/*`) |
@@ -185,6 +188,36 @@ Detection events and every management action are written to SQLite (WAL) at `sto
 The detection path never waits on the disk: `record_alert` only enqueues into a bounded buffer and a background thread writes in batches. If the buffer overflows or a batch fails, the counters in `nips_alert_events_dropped_total` / `nips_event_store_write_errors_total` rise and `/api/v1/status` reports them under `event_store` — an incomplete trail is visible, not silent. When the database is unusable, reads fall back to the most recent 500 in-memory events and `event_store.degraded` is true.
 
 `logging.file` adds a rotating log file and `logging.syslog_address` forwards to syslog (platform socket, or `host:port` over UDP); an unreachable target is reported and skipped rather than blocking startup.
+
+### Signature rules
+
+A blacklist answers "is this source bad"; the rate limiter answers "is anyone sending too fast". Neither answers *"drop TCP/22 traffic from 203.0.113.0/24 once it exceeds 50 sessions a minute"* — banning the subnet would silence the legitimate users behind it, and the global limiter cannot be scoped to one source and one port. A signature is that conjunction:
+
+```bash
+# watch first: counts matches, drops nothing
+python cli.py signature add --id ssh-brute --src 203.0.113.0/24 \
+    --protocol tcp --dport 22 --min-packets 50 --window 60 --action log
+python cli.py signature list                    # rules with their hit counts
+python cli.py signature add --id ssh-brute --src 203.0.113.0/24 \
+    --protocol tcp --dport 22 --min-packets 50 --window 60    # now enforce
+python cli.py signature delete ssh-brute
+```
+
+| field | meaning |
+|---|---|
+| `src` / `dst` | IP or CIDR; a `/0` default route is refused |
+| `protocol` | `tcp`, `udp`, `icmp`, or a number |
+| `dport` / `sport` | 0-65535. Giving a port without a protocol defaults to TCP — those byte offsets are an echo id/sequence in ICMP, so matching them there would be nonsense |
+| `tcp_flags` | exact match on the 6-bit field (`0x02` = SYN); only valid with TCP |
+| `min_packets` + `window_seconds` | fire only after N matches from one source inside the window |
+| `action` | `block` drops that packet inline; `log` counts it and lets it continue to the ML stage |
+
+- A rule with **no matchers** is refused: with `action=block` a single stray call would drop all traffic.
+- Evaluation is declaration order, first match wins, after the blacklist (so a listed source is reported as listed) and before the global rate limit (so a scoped rule is not masked by it).
+- A signature BLOCK is enforced **inline per packet**, like any other rule-engine verdict: it does not count strikes and installs no kernel DROP. That is deliberate for rate-conditioned rules — a persistent kernel rule would outlive the condition that triggered it. To ban a source outright, use the blacklist.
+- Per-source hit counters are LRU-bounded (10k sources per rule); uncapped, a spoofed flood would grow the table one entry per packet and turn a detection feature into memory exhaustion.
+- Signatures persist in `rules.json` under `"signatures"` and follow the hot-reload rules above: a hand edit applies within 30 s (or via `cli.py reload`), and one malformed entry rejects the whole file rather than applying part of it.
+- API: `GET`/`POST /api/v1/signatures` and `DELETE /api/v1/signatures/{id}`; validation lives in the engine, so the API, the file and hot reload refuse exactly the same specs. Upserts and removals are audited.
 
 ### Hot reload
 
