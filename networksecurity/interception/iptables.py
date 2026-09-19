@@ -89,8 +89,8 @@ class IptablesManager:
 
     # --- nfqueue setup / teardown -----------------------------------------
 
-    def setup_nfqueue(self, queue_num: int = 0) -> None:
-        """Redirect incoming TCP/UDP to NFQUEUE.
+    def setup_nfqueue(self, queue_num: int = 0, intercept_icmp: bool = False) -> None:
+        """Redirect incoming TCP/UDP (and optionally ICMP) to NFQUEUE.
 
         Idempotent: safe to call when a previous run left the chain behind
         (e.g. after a crash).  ``_nfqueue_rules_added`` is set *before* any
@@ -153,6 +153,15 @@ class IptablesManager:
                           "-j", "NFQUEUE", "--queue-num", str(queue_num))
             if not self._rule_exists(self.CHAIN, "-p", "udp", "-j", "NFQUEUE", "--queue-num", str(queue_num)):
                 self._run("iptables", "-A", self.CHAIN, "-p", "udp",
+                          "-j", "NFQUEUE", "--queue-num", str(queue_num))
+
+            # ICMP is only inspected when explicitly asked for: the per-type
+            # policy in RuleEngine can do anything useful once these packets
+            # actually reach userspace.  Without this rule ICMP simply bypasses
+            # the IPS rather than being blocked by it.
+            if intercept_icmp and not self._rule_exists(
+                    self.CHAIN, "-p", "icmp", "-j", "NFQUEUE", "--queue-num", str(queue_num)):
+                self._run("iptables", "-A", self.CHAIN, "-p", "icmp",
                           "-j", "NFQUEUE", "--queue-num", str(queue_num))
 
         logger.info(

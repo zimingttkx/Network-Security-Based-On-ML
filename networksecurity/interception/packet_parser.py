@@ -13,6 +13,9 @@ _MAX_IP_HEADER = 60
 _TCP_MIN_HEADER = 20
 _TCP_MAX_HEADER = 60
 _UDP_HEADER = 8
+# ICMP type + code.  The remaining 4 bytes of the ICMP header (id/seq or unused)
+# carry no rule-relevant field here, so only this much is required to be present.
+_ICMP_HEADER = 4
 
 # The live NFQUEUE hook sits on INPUT (see IptablesManager.setup_nfqueue), so
 # every packet reaching from_raw is inbound.
@@ -77,6 +80,7 @@ class PacketParser:
         dst_ip = socket.inet_ntoa(data[16:20])
 
         src_port = dst_port = tcp_flags = window_size = 0
+        icmp_type = icmp_code = 0
         transport_header_len = 0
 
         if protocol == 6:  # TCP
@@ -101,6 +105,12 @@ class PacketParser:
             src_port = struct.unpack("!H", data[ihl:ihl + 2])[0]
             dst_port = struct.unpack("!H", data[ihl + 2:ihl + 4])[0]
             transport_header_len = _UDP_HEADER
+        elif protocol == 1:  # ICMP: type and code drive the per-type policy
+            if len(data) < ihl + _ICMP_HEADER or total_len < ihl + _ICMP_HEADER:
+                return None
+            icmp_type = data[ihl]
+            icmp_code = data[ihl + 1]
+            transport_header_len = _ICMP_HEADER
         # Any other protocol keeps ports/window at 0 and is still returned: the
         # rule engine's allowed_protocols filter blocks it, which is a more
         # auditable outcome than a silent parse failure.
@@ -116,6 +126,8 @@ class PacketParser:
             payload_size=max(0, total_len - ihl - transport_header_len),
             window_size=window_size,
             direction=_LIVE_DIRECTION,
+            icmp_type=icmp_type,
+            icmp_code=icmp_code,
         )
 
     @staticmethod
@@ -126,6 +138,8 @@ class PacketParser:
             src_port=d.get("src_port", 0),
             dst_port=d.get("dst_port", 0),
             protocol=d.get("protocol", 6),
+            icmp_type=d.get("icmp_type", 0),
+            icmp_code=d.get("icmp_code", 0),
             packet_size=d.get("packet_size", 0),
             timestamp=d.get("timestamp", 0.0),
             src_mac=d.get("src_mac", ""),

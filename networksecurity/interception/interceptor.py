@@ -68,6 +68,7 @@ class Interceptor:
         on_verdict: Callable[[PacketInfo, Verdict], None] | None = None,
         block_policy: BlockPolicy | None = None,
         reload_probe: Callable[[], dict | None] | None = None,
+        intercept_icmp: bool = False,
     ) -> None:
         self._pipeline = pipeline
         self._queue_num = queue_num
@@ -79,6 +80,7 @@ class Interceptor:
         # them.  Called from the sweeper so a hand-edited rule file takes effect
         # without restarting (a restart would re-train Kitsune from zero).
         self._reload_probe = reload_probe
+        self._intercept_icmp = intercept_icmp
         self._last_reload: dict | None = None
         self._running: bool = False
         self._blocked: set[str] = set()
@@ -168,7 +170,7 @@ class Interceptor:
             # letting these drift (e.g. config.yaml nfqueue_num != 0) would send
             # every packet to a queue nobody reads, where the kernel queue
             # timeout freezes all traffic.
-            self._iptables.setup_nfqueue(self._queue_num)
+            self._iptables.setup_nfqueue(self._queue_num, intercept_icmp=self._intercept_icmp)
             self._nfqueue.set_callback(self._on_packet)
             self._running = True
             self._pipeline.start()
