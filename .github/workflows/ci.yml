@@ -335,3 +335,31 @@ jobs:
 
           asyncio.run(quick_test())
           "
+
+  # ── 内核规则实测（Linux）─────────────────────────────────────────────
+  # 其余测试验证的是我们自己的记账；这一 job 验证真正决定丢包的
+  # 东西——内核里的规则集。用独立 netns 运行：netfilter 规则是
+  # 按 netns 隔离的，runner 自身的网络不受影响，也不会污染宿主。
+  kernel-rules:
+    name: Kernel rules (Linux, netns)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install numpy pyyaml
+
+      - name: Create isolated network namespace
+        run: sudo ip netns add nips-verify
+
+      - name: Verify real iptables behaviour
+        run: sudo ip netns exec nips-verify python scripts/verify_kernel_rules.py
+
+      - name: Remove namespace
+        if: always()
+        run: sudo ip netns del nips-verify || true
