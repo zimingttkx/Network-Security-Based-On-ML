@@ -108,7 +108,8 @@ class RuleEngine(BaseDetector):
     """
 
     def __init__(self, window_seconds: float = 1.0, max_connections: int = 1000,
-                 allowed_protocols: set[int] | None = None) -> None:
+                 allowed_protocols: set[int] | None = None,
+                 allowed_icmp_types: set[int] | None = None) -> None:
         super().__init__(name="RuleEngine")
         self._whitelist: set[str] = set()
         self._blacklist: set[str] = set()
@@ -125,6 +126,10 @@ class RuleEngine(BaseDetector):
         # Overridable via config.yaml -> engine.rule_engine.allowed_protocols.
         self._protocol_allow: set[int] = set(
             allowed_protocols) if allowed_protocols else {6, 17}
+        # ICMP types that pass even though protocol 1 is not in
+        # ``allowed_protocols``.  Empty by default, which preserves the historic
+        # "all ICMP blocked" behaviour for anything that reaches the engine.
+        self._icmp_allow: set[int] = set(allowed_icmp_types or ())
         # Sliding-window rate limiter.  The code default cap is generous
         # (1000 conns/s per source IP) to avoid false-blocking busy-but-
         # legitimate clients; config.yaml -> engine.rule_engine.rate_limit
@@ -162,14 +167,18 @@ class RuleEngine(BaseDetector):
                            threat_level=ThreatLevel.SAFE,
                            reason="whitelist", detector=self.name)
 
-        # 2. Protocol filter
+        # 2. Protocol filter.  ICMP(1) is special-cased by type: blocking the
+        # whole protocol also kills Path MTU Discovery (type 3 "frag needed"),
+        # which blackholes large connections on paths that need it, so an
+        # operator can allow individual types instead of none of it.
         if packet.protocol not in self._protocol_allow:
-            with self._lock:
-                self._blocked_count += 1
-            return Verdict(action=Action.BLOCK, confidence=1.0,
-                           threat_level=ThreatLevel.MEDIUM,
-                           reason=f"protocol {packet.protocol} not allowed",
-                           detector=self.name)
+            if not (packet.protocol == 1 and packet.icmp_type in self._icmp_allow):
+                with self._lock:
+                    self._blocked_count += 1
+                return Verdict(action=Action.BLOCK, confidence=1.0,
+                               threat_level=ThreatLevel.MEDIUM,
+                               reason=f"protocol {packet.protocol} not allowed",
+                               detector=self.name)
 
         # 3. Blacklist check (persistent + ephemeral temp-ban mirrors)
         if self._is_blacklisted(packet.src_ip):
@@ -353,6 +362,11 @@ class RuleEngine(BaseDetector):
         with self._lock:
             self._protocol_allow = set(protocols)
 
+    def set_allowed_icmp_types(self, types_: set[int]) -> None:
+        """Swap the ICMP type allowlist (hot reload)."""
+        with self._lock:
+            self._icmp_allow = set(types_)
+
     def save_rules(self, path: Path) -> None:
         """Persist the persistent blacklist/whitelist to a JSON file (atomic).
 
@@ -448,4 +462,8 @@ class RuleEngine(BaseDetector):
                 "ephemeral_blacklist_size": len(self._ephemeral_blacklist),
                 "blocked_count": self._blocked_count,
                 "packet_count": self._packet_count,
+                # Policy in force, so an operator can tell "ICMP is blocked" from
+                # "ICMP type 3 is allowed" without reading config.
+                "allowed_protocols": sorted(self._protocol_allow),
+                "allowed_icmp_types": sorted(self._icmp_allow),
             }

@@ -26,6 +26,11 @@ class PacketInfo:
     window_size: int = 0
     # Flow direction using LUCID's convention: 0 = outbound, 1 = inbound.
     direction: int = 0
+    # ICMP type/code, 0 for every other protocol.  Rule fields only: deliberately
+    # absent from to_dict(), so the AfterImage feature vector (and its 90-dim
+    # contract) cannot shift because a header field was added here.
+    icmp_type: int = 0
+    icmp_code: int = 0
 
     def to_dict(self) -> dict:
         return {
