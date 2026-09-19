@@ -257,7 +257,7 @@ networksecurity/
       detector_adapter.py      # BaseDetector adapter
   interception/                # Linux traffic interception
     nfqueue_handler.py         # NFQUEUE binding and packet capture
-    packet_parser.py           # Raw IPv4 packet parser
+    packet_parser.py           # Raw IPv4/IPv6 packet parser
     iptables.py                # iptables rule management
     interceptor.py             # Live interceptor (nfqueue + pipeline)
   features/                    # Feature extraction
@@ -313,8 +313,9 @@ The interceptor:
 - Enforces BLOCK verdicts through an escalation policy (`blocking:` in `config.yaml`) that applies **only to ML-detector BLOCKs**. Rule-engine verdicts (blacklist hit, rate limit, protocol filter) are deterministic and already enforced inline on every packet, so they never count strikes and cannot escalate — this also guarantees an operator's blacklist entry can never be modified by the ban lifecycle. A single ML BLOCK only inline-drops that packet and counts a strike against the source. Crossing `strikes_threshold` inside the rolling window triggers a **temp ban** — kernel DROP plus a rule-engine blacklist *mirror* with a TTL, lifted automatically on expiry (only the mirror is removed; an operator's own entry is never touched). Repeated temp bans escalate to a **permanent ban**, which is mirrored into `rules.json`; on the next start it is loaded back into the rule engine and enforced per-packet in userspace — the kernel DROP itself is **not** reinstalled
 - Removes all of its iptables rules on shutdown
 
-**IPv4 only.** Only IPv4 TCP/UDP traffic is redirected to NFQUEUE and parsed. Inbound IPv6 traffic is neither inspected nor blocked — it bypasses the IPS entirely. On dual-stack hosts, protect IPv6 separately (e.g. `ip6tables` policy) or disable it.
+**Dual-stack, with an honest fallback.** IPv4 *and* IPv6 TCP/UDP are redirected into NFQUEUE, parsed (including the IPv6 extension-header chain) and blocked through `ip6tables`. If `ip6tables` is unavailable the interceptor starts anyway, refuses every IPv6 block instead of pretending, and reports the gap: `ipv6_intercepted: false` in `/api/v1/status` and `nips_ipv6_intercepted 0` in `/metrics`. Check that gauge on any dual-stack host — a silently uninspected second address family is exactly the failure an operator would not notice until an incident.
 
+Three parsing limits remain, all fail-closed and all counted in `nfqueue_parse_failed`: non-first IP fragments carry no transport header, so they are dropped rather than misread; AH/ESP packets cannot be walked without authenticating them, so they are dropped rather than parsed as if the ciphertext were a TCP header; and an IPv6 extension chain deeper than six hops is treated as crafted.
 `Interceptor` reads `safe_ips` and `nfqueue_num` from `config.yaml`; a missing or unparseable file falls back to safe defaults (loopback protection included) rather than starting unprotected.
 
 A detection timeout drops only the in-flight packet (fail-closed); it never commits a permanent block, so a slow verdict cannot ban a legitimate IP.

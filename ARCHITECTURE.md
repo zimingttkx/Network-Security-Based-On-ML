@@ -109,7 +109,7 @@ networksecurity/
 
   interception/     # OS-level traffic capture and blocking (Linux only)
     nfqueue_handler.py  # NFQUEUE bind → raw bytes → callback(bool)
-    packet_parser.py    # Raw IPv4/TCP/UDP binary → PacketInfo
+    packet_parser.py    # Raw IPv4 / IPv6(+ext headers) / TCP,UDP,ICMP binary → PacketInfo
     iptables.py         # iptables rule add/remove/cleanup
     interceptor.py      # Orchestrator: nfqueue + pipeline + iptables
 

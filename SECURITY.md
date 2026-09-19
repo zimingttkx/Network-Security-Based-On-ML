@@ -52,6 +52,6 @@ Response: acknowledgment within 72 hours, status update within 7 days.
 2. Set `api.auth_token` (or `NIPS_API_TOKEN`) before exposing the API; keep the API bound to loopback (the bundled `docker-compose.yml` already publishes `127.0.0.1:8000` only) or behind an authenticated reverse proxy
 3. Whitelist your management IP before starting interception
 4. Validate offline first: run `python cli.py test --pcap <capture>.pcap` on a real capture before enabling live interception
-5. **IPv4 only**: the IPS neither inspects nor blocks inbound IPv6 traffic. On dual-stack hosts, protect IPv6 separately (e.g. an `ip6tables` default-drop policy) or disable it
+5. **IPv6 depends on `ip6tables`**: when it is missing, IPv6 traffic is neither inspected nor blocked and IPv6 blocks are refused. `/api/v1/status` reports `ipv6_intercepted: false` and `/metrics` reports `nips_ipv6_intercepted 0` — verify that gauge on dual-stack hosts rather than assuming coverage
 6. Keep dependencies updated
 7. Watch blocked-IP logs and `GET /api/v1/blocks` (live temp/perm ban state)

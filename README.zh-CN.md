@@ -254,7 +254,7 @@ networksecurity/
       detector_adapter.py      # BaseDetector 适配器
   interception/                # Linux 流量拦截
     nfqueue_handler.py         # NFQUEUE 绑定与数据包捕获
-    packet_parser.py           # 原始 IPv4 数据包解析器
+    packet_parser.py           # 原始 IPv4/IPv6 数据包解析器
     iptables.py                # iptables 规则管理
     interceptor.py             # 实时拦截器（nfqueue + pipeline）
   features/                    # 特征提取
@@ -311,8 +311,9 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 - 通过升级策略（`config.yaml` 的 `blocking:`）执行 BLOCK 判决，且**仅对 ML 检测器的 BLOCK 生效**。规则引擎的判决（黑名单命中、限速、协议过滤）是确定性的、已经逐包内联执行，因此不计 strike、不参与升级——这同时保证了操作员的黑名单条目永远不会被封禁生命周期改动。单次 ML BLOCK 只内联丢弃当前包，并给源 IP 计一次 strike。滚动窗口内累计达到 `strikes_threshold` 触发**临时封禁**——内核 DROP 加规则引擎黑名单*镜像*（带 TTL，到期自动解除；解除时只删除镜像，绝不触碰操作员自己的条目）；反复触发临时封禁会升级为**永久封禁**，写入 `rules.json`，下次启动时加载回规则引擎、在用户态逐包拦截——内核 DROP 本身**不会**被重新安装
 - 关闭时清除自己添加的所有 iptables 规则
 
-**仅支持 IPv4。** 只有 IPv4 的 TCP/UDP 流量会被重定向到 NFQUEUE 并被解析。IPv6 入站流量既不检测也不阻断——它会完全绕过本 IPS。在双栈（dual-stack）主机上，请另行防护 IPv6（例如用 `ip6tables` 设置策略）或直接禁用它。
+**双栈，且退化时如实报告。** IPv4 与 IPv6 的 TCP/UDP 都会被重定向进 NFQUEUE、解析（含 IPv6 扩展头链）并通过 `ip6tables` 拦截。若 `ip6tables` 不可用，拦截器照常启动，但会**拒绝**所有 IPv6 封禁而不是假装成功，并把这个缺口报出来：`/api/v1/status` 的 `ipv6_intercepted: false`、`/metrics` 的 `nips_ipv6_intercepted 0`。双栈主机上请确认这个指标——被静默跳过的第二个地址族，正是出事之前没人会注意到的那种缺口。
 
+三条解析限制依旧存在，全部 fail-closed 并计入 `nfqueue_parse_failed`：非首片 IP 分片不含传输头，因此丢弃而不是误读；AH/ESP 包在未认证的情况下无法走完扩展头链，因此丢弃而不是把密文当 TCP 头解析；IPv6 扩展头链超过 6 层视为构造包处理。
 `Interceptor` 从 `config.yaml` 读取 `safe_ips` 和 `nfqueue_num`；配置文件缺失或无法解析时回退到安全默认值（包含回环防护），不会在无保护状态下启动。
 
 检测超时只会内联丢弃当前这个包（fail-closed），绝不提交永久封禁，因此检测慢不会误封合法 IP。
