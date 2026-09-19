@@ -208,6 +208,48 @@ def main() -> int:
                  if a["path"] == "/api/v1/rules/reload" and a["result"] == "500"]
         check("handler-audited failure is not double-recorded", not dupes, str(len(dupes)))
 
+        # -- signature rules over HTTP --------------------------------------
+        good_spec = {"id": "mgmt-ssh", "src": "203.0.113.0/24", "protocol": "tcp",
+                     "dport": 22, "min_packets": 5, "window_seconds": 60, "action": "log"}
+        r = c.post("/api/v1/signatures", json=good_spec)
+        check("POST /signatures accepts a valid rule", r.status_code == 200, str(r.status_code))
+        listed = c.get("/api/v1/signatures").json()
+        check("GET /signatures lists it with hit counters",
+              [i["id"] for i in listed["items"]] == ["mgmt-ssh"]
+              and "hits" in listed, str(listed)[:70])
+        r = c.post("/api/v1/signatures", json={"id": "match-all"})
+        check("POST /signatures rejects a matcher-less rule (422)",
+              r.status_code == 422 and "every packet" in r.text, r.text[:70])
+        r = c.post("/api/v1/signatures", json={"id": "wide", "src": "0.0.0.0/0", "dport": 80})
+        check("POST /signatures rejects a /0 source (422)",
+              r.status_code == 422 and "default route" in r.text, r.text[:70])
+        saved = json.loads(rules_tmp.read_text())
+        check("signature persisted to rules.json",
+              [x["id"] for x in saved.get("signatures", [])] == ["mgmt-ssh"],
+              str(saved.get("signatures"))[:60])
+        r = c.delete("/api/v1/signatures/nope")
+        check("DELETE unknown signature -> 404", r.status_code == 404, str(r.status_code))
+        r = c.delete("/api/v1/signatures/mgmt-ssh")
+        check("DELETE existing signature", r.status_code == 200
+              and c.get("/api/v1/signatures").json()["items"] == [], str(r.status_code))
+        store_app = appmod.event_store
+        store_app.flush(3.0)
+        audit_after = {a["result"] for a in c.get("/api/v1/audit?limit=200").json()["items"]}
+        check("signature changes are audited",
+              {"signature_upsert", "signature_remove"} <= audit_after,
+              str(sorted(audit_after))[:80])
+        rules_tmp.write_text(json.dumps({"blacklist": [], "whitelist": [],
+                                         "signatures": [{"id": "from-file", "dport": 8443,
+                                                         "action": "log"}]}))
+        os.utime(rules_tmp, (time.time() + 20, time.time() + 20))
+        r = c.post("/api/v1/rules/reload")
+        body = r.json()
+        check("reload picks up signatures from the file",
+              r.status_code == 200
+              and body.get("rules", {}).get("signatures_after") == 1
+              and [i["id"] for i in c.get("/api/v1/signatures").json()["items"]] == ["from-file"],
+              str(body.get("rules"))[:80])
+
     # -- store retention under backfill -------------------------------------
     rdir = Path(tempfile.mkdtemp(prefix="nips_retention_")) / "e.db"
     rstore = EventStore(rdir, max_rows=10, retention_days=30)

@@ -691,7 +691,12 @@ async def main():
             t.join()
         try:
             final = _json.loads(rp.read_text())
-            parsed_ok = final == {"blacklist": ["3.3.3.3"], "whitelist": []}
+            # Compare the lists, not the whole document: save_rules gained a
+            # "signatures" key, and exact-equality here would fail on any future
+            # field instead of on the thing under test (a torn file).
+            parsed_ok = (final.get("blacklist") == ["3.3.3.3"]
+                         and final.get("whitelist") == []
+                         and final.get("signatures") == [])
         except Exception as exc:  # noqa: BLE001
             final, parsed_ok = exc, False
         leftovers = sorted(p.name for p in Path(td).glob("rules.json.*"))
@@ -885,6 +890,119 @@ async def main():
     report("IC7b intercept_icmp=true honoured",
            _load_interception(good_int)["intercept_icmp"] is not True,
            str(_load_interception(good_int)))
+
+    # -- group SG: declarative signature rules ------------------------------
+    from networksecurity.engine.signature_engine import Signature, SignatureError
+
+    def sig_pkt(src="203.0.113.7", dp=22, proto=6, flags=0x02, ts=100.0):
+        return PacketInfo(src, "10.0.0.1", 40000, dp, proto, 60, ts, tcp_flags=flags)
+
+    async def verdict_of(engine, packet) -> str:
+        verdict = await engine.process_packet(packet)
+        return "pass" if verdict is None else verdict.action.value
+
+    sg = RuleEngine()
+    sg.add_signature({"id": "ssh-brute", "src": "203.0.113.0/24", "protocol": "tcp",
+                      "dport": 22, "min_packets": 3, "window_seconds": 10})
+    seq = [await verdict_of(sg, sig_pkt(ts=100.0 + i)) for i in range(4)]
+    report("SG1 rate threshold fires at the configured count",
+           seq != ["pass", "pass", "block", "block"], str(seq))
+
+    sg2 = RuleEngine()
+    sg2.add_signature({"id": "ssh-brute", "src": "203.0.113.0/24", "dport": 22})
+    scoped = [await verdict_of(sg2, sig_pkt(src="198.51.100.5")),
+              await verdict_of(sg2, sig_pkt(dp=80)),
+              await verdict_of(sg2, sig_pkt())]
+    report("SG2 scoped to subnet and port, others unaffected",
+           scoped != ["pass", "pass", "block"], str(scoped))
+
+    sg3 = RuleEngine()
+    sg3.add_signature({"id": "rdp-log", "dport": 3389, "action": "log"})
+    logged = await verdict_of(sg3, sig_pkt(dp=3389))
+    report("SG3 action=log counts the match without dropping",
+           logged != "pass" or sg3.signature_hits().get("rdp-log") != 1,
+           f"{logged} hits={sg3.signature_hits()}")
+
+    sg4 = RuleEngine()
+    refused = []
+    for bad in ({"id": "empty"}, {"id": "wide", "src": "0.0.0.0/0"},
+                {"id": "badcidr", "src": "10.0.0/8"}, {"id": "badport", "dport": 70000},
+                {"id": "badaction", "dport": 80, "action": "drop"},
+                {"id": "flagmismatch", "protocol": 17, "dport": 53, "tcp_flags": 2},
+                {"id": "negrate", "dport": 80, "min_packets": 0}):
+        try:
+            sg4.add_signature(bad)
+        except SignatureError:
+            refused.append(bad["id"])
+    report("SG4 unusable/dangerous specs rejected",
+           len(refused) != 7, f"refused={refused}")
+
+    sg5 = RuleEngine()
+    sg5.add_signature({"id": "port-only", "dport": 8080})
+    report("SG5 a port matcher implies TCP (no ICMP offset aliasing)",
+           sg5.signatures[0].get("protocol") != 6, str(sg5.signatures[0]))
+
+    sg6 = RuleEngine()
+    sg6.add_signature({"id": "dup", "dport": 80})
+    first = sg6.signatures[0]["dport"]
+    sg6.add_signature({"id": "dup", "dport": 443})
+    ok = (len(sg6.signatures) == 1 and sg6.signatures[0]["dport"] == 443)
+    report("SG6 re-posting an id edits the rule instead of duplicating", not ok,
+           f"before={first} now={sg6.signatures}")
+
+    sg7 = RuleEngine()
+    sg7.add_signature({"id": "ordered-a", "dport": 443, "action": "log"})
+    sg7.add_signature({"id": "ordered-b", "dport": 443, "action": "block"})
+    hits_before = dict(sg7.signature_hits())
+    await verdict_of(sg7, sig_pkt(dp=443))
+    report("SG7 first matching rule wins",
+           sg7.signature_hits().get("ordered-a") != 1 or "ordered-b" in sg7.signature_hits(),
+           f"{hits_before} -> {sg7.signature_hits()}")
+
+    # Memory: an unbounded per-source counter turns a detection feature into an
+    # exhaustion primitive under a spoofed flood.
+    from networksecurity.engine.signature_engine import _MAX_COUNTER_KEYS
+    sg8 = RuleEngine()
+    sg8.add_signature({"id": "flood", "dport": 53, "protocol": 17,
+                       "min_packets": 1000000, "window_seconds": 60})
+    rule = next(iter(sg8._signatures))
+    for i in range(_MAX_COUNTER_KEYS + 500):
+        rule.matches(sig_pkt(src=f"10.{(i // 65536) % 256}.{(i // 256) % 256}.{i % 256}",
+                             proto=17, dp=53), now=100.0)
+    report("SG8 hit counters are LRU-bounded",
+           len(rule._hits) > _MAX_COUNTER_KEYS, f"keys={len(rule._hits)}")
+
+    # persistence + reload round trip
+    with _tmp_dir("nips_sig_") as sdir:
+        sfile = sdir / "rules.json"
+        sg9 = RuleEngine()
+        sg9.add_blacklist("203.0.113.9")
+        sg9.add_signature({"id": "persist-me", "src": "198.51.100.0/24", "dport": 22})
+        sg9.save_rules(sfile)
+        sg10 = RuleEngine()
+        sg10.load_rules(sfile)
+        report("SG9 signatures persist through save/load",
+               sg10.signatures != [{"id": "persist-me", "action": "block",
+                                    "src": "198.51.100.0/24", "protocol": 6, "dport": 22}],
+               str(sg10.signatures))
+        sg10.add_signature({"id": "persist-me", "src": "198.51.100.0/24", "dport": 2222})
+        sfile.write_text(_json.dumps({"blacklist": ["203.0.113.9"], "whitelist": [],
+                                      "signatures": [{"id": "replaced", "dport": 9443}]}))
+        summary = sg10.reload_rules(sfile)
+        report("SG10 hot reload swaps the signature set atomically",
+               summary.get("signatures_after") != 1
+               or [x["id"] for x in sg10.signatures] != ["replaced"], str(summary))
+        sfile.write_text(_json.dumps({"blacklist": [], "whitelist": [],
+                                      "signatures": [{"id": "ok", "dport": 443},
+                                                     {"id": "broken"}]}))
+        try:
+            sg10.reload_rules(sfile)
+            rejected = False
+        except (ValueError, SignatureError):
+            rejected = True
+        report("SG11 one bad signature rejects the whole reload",
+               not rejected or [x["id"] for x in sg10.signatures] != ["replaced"],
+               str(sg10.signatures))
 
     print("\n==== SUMMARY ====")
     for name, status in results:
