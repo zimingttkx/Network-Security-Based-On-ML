@@ -133,18 +133,12 @@ class IptablesManager:
             # legacy iptables).
             guard_count = 0
             for ip in self._safe_ips:
-                # IPv6 addresses belong in ip6tables; legacy `iptables -C/-I -s ::1`
-                # behaves unpredictably (often errors rather than cleanly reporting
-                # absence), so do NOT let _rule_exists' probe on ::1 masquerade as
-                # "already installed" and silently skip the rule.  For IPv4 we still
-                # probe to stay idempotent; for IPv6 we just attempt the insert and
-                # tolerate failure.  Either way an ip6tables rule is not part of the
-                # IPv4 chain, so it never counts toward the DROP offset.
-                if ":" in ip:  # looks like IPv6
-                    try:
-                        self._run("ip6tables", "-I", self.CHAIN, "-s", ip, "-j", "ACCEPT")
-                    except (subprocess.CalledProcessError, RuntimeError):
-                        logger.warning("Could not add IPv6 safe IP %s — skipping", ip)
+                # IPv6 safe IPs are guarded in the ip6tables chain by
+                # _setup_nfqueue_v6; an `iptables -s ::1` rule is meaningless in
+                # the IPv4 chain, and the v6 chain does not exist yet at this
+                # point, so the previous attempt here always failed and logged a
+                # warning on every start.
+                if ":" in ip:
                     continue
                 if self._insert_guard("-s", ip, "-j", "ACCEPT"):
                     guard_count += 1
@@ -254,10 +248,16 @@ class IptablesManager:
         if not self._nfqueue_rules_added:
             return
         with self._lock:
+            # _rc, not _run: _run turns a missing binary into RuntimeError even
+            # with check=False, so on a host without ip6tables teardown aborted
+            # half-way and left the v4 ruleset in place with no listener.
+            # Teardown has to be best-effort by construction.
             for tool in ("iptables", "ip6tables"):
-                self._run(tool, "-D", "INPUT", "-j", self.CHAIN, check=False)
-                self._run(tool, "-F", self.CHAIN, check=False)
-                self._run(tool, "-X", self.CHAIN, check=False)
+                if tool == "ip6tables" and not self._ipv6_ready:
+                    continue
+                self._rc(tool, "-D", "INPUT", "-j", self.CHAIN)
+                self._rc(tool, "-F", self.CHAIN)
+                self._rc(tool, "-X", self.CHAIN)
             self._nfqueue_rules_added = False
             self._guard_rule_count = 0
             self._guard_rule_count_v6 = 0

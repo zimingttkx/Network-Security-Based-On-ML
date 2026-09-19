@@ -665,6 +665,40 @@ try:
            not (any("iptables -X NIPS" in c for c in teardown6)
                 and any("ip6tables -X NIPS" in c for c in teardown6)))
 
+    # Teardown must survive a missing binary: _run turns FileNotFoundError into
+    # RuntimeError even with check=False, which aborted cleanup_all() halfway and
+    # left the v4 ruleset installed with no listener draining the queue.
+    def _fake_no_v6_exec(args, **kwargs):
+        # Raise, do not return 127: the real absence of the binary surfaces as
+        # FileNotFoundError inside subprocess.run, and that is the exact case
+        # _run converts into RuntimeError. A 127 return code would let the buggy
+        # teardown pass while a missing binary still broke it.
+        if args[0] == "ip6tables":
+            raise FileNotFoundError(2, "No such file or directory: 'ip6tables'")
+        v6_absent_commands.append(list(args))
+        fc = FakeCompleted()
+        if args[1:2] == ["-C"]:
+            fc.returncode = 1
+        return fc
+
+    v6_absent_commands = []
+    ipt_mod.subprocess.run = _fake_no_v6_exec
+    mgr_absent = ipt_mod.IptablesManager(safe_ips=["127.0.0.1", "::1"])
+    raised = ""
+    try:
+        mgr_absent.setup_nfqueue(queue_num=5)
+        mgr_absent.block_ip("2001:db8::1")
+        mgr_absent.block_ip("203.0.113.5")
+        mgr_absent.cleanup_all()
+    except Exception as exc:  # noqa: BLE001
+        raised = f"{type(exc).__name__}: {exc}"
+    finally:
+        ipt_mod.subprocess.run = _fake_no_v6_exec
+    report("V12 teardown completes when ip6tables is missing", bool(raised), raised or "clean")
+    report("V13 v4 chain still torn down in that case",
+           not any(" ".join(c) == "iptables -X NIPS" for c in v6_absent_commands))
+    ipt_mod.subprocess.run = _fake_no_v6_exec
+
     # ip6tables missing -> v6 must be refused, not silently mirrored.
     no_v6_commands: list[list[str]] = []
 
