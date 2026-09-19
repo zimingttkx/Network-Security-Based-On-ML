@@ -16,6 +16,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
+
+# Works under `sudo ip netns exec ... python scripts/...`, where the caller's
+# PYTHONPATH is reset and sys.path[0] is scripts/ rather than the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 RESULTS: list[tuple[str, bool, str]] = []
 
