@@ -166,6 +166,7 @@ from networksecurity.utils.validation import (
     sweep_refused_entries,
     validate_ip_or_cidr,
 )
+from networksecurity.utils.reload import ReloadProbe
 
 
 def _record_alert(source_ip: str, reason: str, action: str, detector: str) -> None:
@@ -187,6 +188,10 @@ def _audit(request: Request, *, target: str, result: str, detail: str = "") -> N
         result=result,
         detail=detail,
     )
+    # Tell the middleware this request is already covered, so a handler-level
+    # refusal (e.g. reload_failed on a 500) is not recorded a second time as a
+    # bare status code.  The scope dict is the one object shared by both.
+    request.scope["nips_audited"] = True
 
 
 @app.middleware("http")
@@ -198,7 +203,8 @@ async def _audit_rejected_requests(request: Request, call_next):
     the rule endpoints is exactly what an operator wants in the trail.
     """
     response = await call_next(request)
-    if request.url.path.startswith("/api/v1") and response.status_code >= 400:
+    if (request.url.path.startswith("/api/v1") and response.status_code >= 400
+            and not request.scope.get("nips_audited")):
         event_store.record_audit(
             actor=request.client.host if request.client else "unknown",
             method=request.method, path=request.url.path, target="",
@@ -241,6 +247,11 @@ for _ip in sweep_refused_entries(pipeline.rule_engine):
     _rules_swept = True
 if _rules_swept:
     pipeline.rule_engine.save_rules(RULES_FILE)
+
+# Watches rules.json and config.yaml.  Passed to the interceptor so a
+# hand-edited rule takes effect on the next sweep, and exposed through
+# POST /api/v1/rules/reload for an explicit, audited apply.
+reload_probe = ReloadProbe(pipeline.rule_engine, RULES_FILE)
 
 # --- Pydantic models -------------------------------------------------------
 
@@ -343,10 +354,14 @@ async def engine_status():
         "blocked_ips": pipeline.rule_engine.get_blacklist(),
         "kernel_blocked_ips": kernel_blocked,
         "detection_loop_stale_seconds": detect_stale,
+        "last_reload": inter_status.get("last_reload"),
         # Event persistence health: a non-zero dropped/write_errors count
         # means the audit trail is incomplete, which an operator must be able
         # to see without reading logs.
         "event_store": event_store.stats(),
+        # Reload counters: a rising "failures" means the operator's edits to
+        # rules.json / config.yaml are being rejected and never applied.
+        "reload": reload_probe.stats(),
     }
     return status
 
@@ -522,6 +537,26 @@ async def remove_whitelist(ip: str, request: Request):
     return {"status": "ok", "whitelist": pipeline.rule_engine.get_whitelist()}
 
 
+@app.post("/api/v1/rules/reload", dependencies=[Depends(require_token)])
+async def apply_reload(request: Request):
+    """Re-read rules.json and the live engine knobs from config.yaml.
+
+    Detection keeps running: the swap happens under the rule engine's lock, and
+    a malformed file leaves the previous rule set in place and reports the
+    error rather than applying half of it.  Kitsune's grace periods and
+    threshold are deliberately not re-applied — see the summary.
+    """
+    summary = reload_probe.probe(force=True) or {}
+    if summary.get("errors"):
+        _audit(request, target="rules", result="reload_failed",
+               detail="; ".join(summary["errors"])[:200])
+        raise HTTPException(status_code=500, detail=summary["errors"])
+    _audit(request, target="rules", result="reload",
+           detail=json.dumps({k: summary[k] for k in summary if k != "errors"},
+                             default=str)[:200])
+    return {"status": "reloaded", **summary}
+
+
 # --- Engine control --------------------------------------------------------
 
 @app.post("/api/v1/engine/start", dependencies=[Depends(require_token)])
@@ -589,6 +624,7 @@ async def engine_start(request: Request):
                     pkt.src_ip, v.reason, v.action.value, v.detector
                 ) if v.action.value == "block" else None,
                 block_policy=policy,
+                reload_probe=reload_probe.probe,
             )
 
             # Reuse the Interceptor's own setup so the detection event loop is
