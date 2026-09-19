@@ -62,3 +62,20 @@ api:
 
 logging:
   level: "INFO"                 # DEBUG, INFO, WARNING, ERROR
+  # Rotating log file. "" keeps console output only. Relative paths resolve
+  # against the repository root, so a systemd WorkingDirectory cannot move them.
+  file: ""                      # e.g. "logs/nips.log"
+  max_bytes: 10485760           # rotate at 10 MiB
+  backups: 5                    # keep 5 rotated files
+  # Forward to syslog. "" picks the platform socket when one exists
+  # (/dev/log on Linux, /var/run/syslog on macOS); "host:port" sends UDP.
+  syslog_address: ""
+
+# Durable management-plane storage: detection alerts and the audit trail of
+# every rule/engine change. SQLite (WAL); the detection path only enqueues, so
+# a slow or broken disk cannot stall packet handling.
+storage:
+  events_db: "data/events.db"
+  max_rows: 200000              # hard cap per table, oldest rows pruned first
+  retention_days: 30            # rows older than this are purged
+  queue_size: 10000             # in-memory buffer; events are dropped (and counted) when full

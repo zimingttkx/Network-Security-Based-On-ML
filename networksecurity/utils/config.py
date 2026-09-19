@@ -326,3 +326,102 @@ def load_lucid_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
                                    int, lo=2, name="engine.lucid.packets_per_flow"),
         "model_path": model_path,
     }
+
+
+# Repository root, used to resolve relative storage paths so a systemd unit
+# with a different WorkingDirectory still finds the same database.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+_DEFAULT_STORAGE = {
+    "events_db": "data/events.db",
+    "max_rows": 200_000,
+    "retention_days": 30.0,
+    "queue_size": 10_000,
+}
+
+
+def load_storage_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
+    """Return the ``storage`` block (event database and retention knobs).
+
+    Relative ``events_db`` paths resolve against the repository root.  An
+    unusable database location does not disable persistence: the caller falls
+    back to the in-memory ring and reports it through /api/v1/status.
+    """
+    data = _load_mapping(path)
+    storage = _as_mapping(data, "storage")
+    d = _DEFAULT_STORAGE
+
+    db = storage.get("events_db", d["events_db"])
+    if not isinstance(db, str) or not db.strip():
+        logger.warning("storage.events_db=%r is not a usable path; using default %r",
+                       db, d["events_db"])
+        db = d["events_db"]
+    db_path = Path(db.strip()).expanduser()
+    if not db_path.is_absolute():
+        db_path = _REPO_ROOT / db_path
+
+    return {
+        "events_db": str(db_path),
+        "max_rows": _valid(storage.get("max_rows", d["max_rows"]), d["max_rows"], int, lo=1000,
+                           name="storage.max_rows"),
+        "retention_days": _valid(storage.get("retention_days", d["retention_days"]), d["retention_days"],
+                                 float, lo=1e-6, name="storage.retention_days"),
+        "queue_size": _valid(storage.get("queue_size", d["queue_size"]), d["queue_size"], int, lo=100,
+                             name="storage.queue_size"),
+    }
+
+
+_DEFAULT_LOGGING = {
+    "level": "INFO",
+    "file": "",
+    "max_bytes": 10_485_760,
+    "backups": 5,
+    "syslog_address": "",
+}
+
+
+def load_logging_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
+    """Return the ``logging`` block (level, rotating file, syslog target).
+
+    This block existed in config.yaml without any reader, so a configured
+    level or syslog target silently did nothing.
+    """
+    data = _load_mapping(path)
+    log = _as_mapping(data, "logging")
+    d = _DEFAULT_LOGGING
+
+    level = log.get("level", d["level"])
+    if not isinstance(level, str) or not level.strip():
+        logger.warning("logging.level=%r is not a string; using %r", level, d["level"])
+        level = d["level"]
+
+    file_target = log.get("file", d["file"])
+    if file_target is None:
+        file_target = ""
+    if not isinstance(file_target, str):
+        logger.warning("logging.file=%r is not a string; logging to console only",
+                       file_target)
+        file_target = ""
+    if file_target.strip():
+        resolved = Path(file_target.strip()).expanduser()
+        if not resolved.is_absolute():
+            resolved = _REPO_ROOT / resolved
+        file_target = str(resolved)
+
+    syslog_address = log.get("syslog_address", d["syslog_address"])
+    if syslog_address is None:
+        syslog_address = ""
+    if not isinstance(syslog_address, str):
+        logger.warning("logging.syslog_address=%r is not a string; syslog disabled",
+                       syslog_address)
+        syslog_address = ""
+
+    return {
+        "level": level.strip().upper(),
+        "file": file_target.strip(),
+        "max_bytes": _valid(log.get("max_bytes", d["max_bytes"]), d["max_bytes"], int, lo=1024,
+                            name="logging.max_bytes"),
+        "backups": _valid(log.get("backups", d["backups"]), d["backups"], int, lo=0, hi=100,
+                          name="logging.backups"),
+        "syslog_address": syslog_address.strip(),
+    }
