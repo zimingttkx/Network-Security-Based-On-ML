@@ -95,6 +95,7 @@ pipeline.set_rule_engine(RuleEngine(
     window_seconds=_engine_cfg["rule_engine"]["window_seconds"],
     max_connections=_engine_cfg["rule_engine"]["max_connections"],
     allowed_protocols=set(_engine_cfg["rule_engine"]["allowed_protocols"]),
+    allowed_icmp_types=set(_engine_cfg["rule_engine"]["allowed_icmp_types"]),
 ))
 pipeline.add_detector(KitsuneDetector(
     max_autoencoder_size=_engine_cfg["kitsune"]["max_autoencoder_size"],
@@ -625,6 +626,7 @@ async def engine_start(request: Request):
                 ) if v.action.value == "block" else None,
                 block_policy=policy,
                 reload_probe=reload_probe.probe,
+                intercept_icmp=inter_cfg.get("intercept_icmp", False),
             )
 
             # Reuse the Interceptor's own setup so the detection event loop is

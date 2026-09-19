@@ -70,6 +70,7 @@ def _build_pipeline() -> DetectionPipeline:
         window_seconds=_engine_cfg["rule_engine"]["window_seconds"],
         max_connections=_engine_cfg["rule_engine"]["max_connections"],
         allowed_protocols=set(_engine_cfg["rule_engine"]["allowed_protocols"]),
+        allowed_icmp_types=set(_engine_cfg["rule_engine"]["allowed_icmp_types"]),
     ))
     pipeline.add_detector(KitsuneDetector(
         max_autoencoder_size=_engine_cfg["kitsune"]["max_autoencoder_size"],
@@ -173,6 +174,7 @@ def cmd_start(args) -> None:
         on_verdict=_record,
         block_policy=policy,
         reload_probe=reload_probe.probe,
+        intercept_icmp=inter_cfg.get("intercept_icmp", False),
     )
 
     def _shutdown(signum, frame):
