@@ -26,9 +26,20 @@ engine:
       # own legitimate peer.
       max_connections_per_window: 100
     allowed_protocols: [6, 17]  # TCP, UDP
+    # ICMP types that pass even though protocol 1 is not in allowed_protocols.
+    # Blocking the whole protocol also breaks Path MTU Discovery (type 3), which
+    # blackholes large connections.  Only consulted for packets that actually
+    # reach the pipeline — see interception.intercept_icmp.
+    # e.g. [0, 3, 4, 8, 11, 12] = echo reply, dest-unreach, source-quench,
+    #                          echo, time-exceeded, parameter-problem
+    allowed_icmp_types: []
 
 interception:
   nfqueue_num: 0
+  # Redirect ICMP into NFQUEUE so the per-type policy above can act on it.
+  # Off by default: without it ICMP simply bypasses the IPS (it is not blocked
+  # by it), and turning it on makes ping/PMTUD wait on userspace verdicts.
+  intercept_icmp: false
   safe_ips:                     # never-block IPs
     - "127.0.0.1"
     - "::1"

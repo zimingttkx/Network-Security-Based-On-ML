@@ -117,9 +117,11 @@ class ReloadProbe:
         knobs = engine_cfg["rule_engine"]
         self.rule_engine.set_rate_limit(knobs["window_seconds"], knobs["max_connections"])
         self.rule_engine.set_allowed_protocols(set(knobs["allowed_protocols"]))
+        self.rule_engine.set_allowed_icmp_types(set(knobs["allowed_icmp_types"]))
         summary["rate_limit"] = {"window_seconds": knobs["window_seconds"],
                                  "max_connections": knobs["max_connections"]}
         summary["allowed_protocols"] = sorted(knobs["allowed_protocols"])
+        summary["allowed_icmp_types"] = sorted(knobs["allowed_icmp_types"])
 
     def stats(self) -> dict:
         return {

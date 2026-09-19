@@ -95,6 +95,10 @@ def _valid(value, default, cast, *, lo=None, hi=None, name: str = "value"):
 _DEFAULT_INTERCEPTION = {
     "nfqueue_num": 0,
     "safe_ips": ["127.0.0.1", "::1"],
+    # Off by default: redirecting ICMP into NFQUEUE makes every host on the
+    # segment wait on userspace verdicts for ping/PMTUD, and a stalled detection
+    # loop would drop them fail-closed.
+    "intercept_icmp": False,
 }
 
 
@@ -124,7 +128,13 @@ def load_interception_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
                        "using default %r", raw_safe, _DEFAULT_INTERCEPTION["safe_ips"])
         safe_ips = list(_DEFAULT_INTERCEPTION["safe_ips"])
 
-    return {"nfqueue_num": nfqueue_num, "safe_ips": safe_ips}
+    raw_icmp = inter.get("intercept_icmp", _DEFAULT_INTERCEPTION["intercept_icmp"])
+    if not isinstance(raw_icmp, bool):
+        logger.warning("interception.intercept_icmp=%r is not a boolean; using default",
+                       raw_icmp)
+        raw_icmp = _DEFAULT_INTERCEPTION["intercept_icmp"]
+
+    return {"nfqueue_num": nfqueue_num, "safe_ips": safe_ips, "intercept_icmp": raw_icmp}
 
 
 # Defaults mirror the values documented in config/config.yaml so a missing
@@ -141,6 +151,7 @@ _DEFAULT_ENGINE = {
         "window_seconds": 1.0,
         "max_connections_per_window": 100,
         "allowed_protocols": [6, 17],
+        "allowed_icmp_types": [],
     },
 }
 
@@ -199,12 +210,24 @@ def load_engine_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
                        rd["allowed_protocols"])
         allowed_protocols = list(rd["allowed_protocols"])
 
+    raw_icmp_types = re_cfg.get("allowed_icmp_types", rd["allowed_icmp_types"])
+    if isinstance(raw_icmp_types, list) and all(
+            isinstance(t, int) and not isinstance(t, bool) and 0 <= t <= 255
+            for t in raw_icmp_types):
+        allowed_icmp_types = sorted(set(raw_icmp_types))
+    else:
+        logger.warning("engine.rule_engine.allowed_icmp_types=%r is not a list of "
+                       "ICMP type numbers; using default %r", raw_icmp_types,
+                       rd["allowed_icmp_types"])
+        allowed_icmp_types = list(rd["allowed_icmp_types"])
+
     return {
         "kitsune": kitsune,
         "rule_engine": {
             "window_seconds": window_seconds,
             "max_connections": max_connections,
             "allowed_protocols": allowed_protocols,
+            "allowed_icmp_types": allowed_icmp_types,
         },
     }
 
