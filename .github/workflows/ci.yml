@@ -515,15 +515,14 @@ jobs:
           # start() for real, so the import has to resolve or the unit fails on
           # the first packet path it touches.
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libnetfilter-queue-dev python3-dev gcc
+          # The NetfilterQueue sdist is unmaintained and does not build against
+          # CPython 3.12, so take the distro's own binding instead and let the
+          # venv see system site-packages.
+          sudo apt-get install -y --no-install-recommends python3-netfilterqueue
           sudo mkdir -p /opt/nips
           sudo cp -a . /opt/nips/
-          sudo python3 -m venv /opt/nips/venv
+          sudo python3 -m venv --system-site-packages /opt/nips/venv
           sudo /opt/nips/venv/bin/pip install -q numpy pandas pyyaml fastapi uvicorn httpx scikit-learn
-          # setuptools/wheel first: python3.12 venvs no longer include them, and
-          # the netfilterqueue binding is a source build that needs them present.
-          sudo /opt/nips/venv/bin/pip install -q setuptools wheel
-          sudo /opt/nips/venv/bin/pip install -q --no-build-isolation NetfilterQueue
           sudo useradd --create-home --shell /bin/bash nips
           sudo chown -R nips:nips /opt/nips
 
