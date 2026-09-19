@@ -520,6 +520,9 @@ jobs:
           sudo cp -a . /opt/nips/
           sudo python3 -m venv /opt/nips/venv
           sudo /opt/nips/venv/bin/pip install -q numpy pandas pyyaml fastapi uvicorn httpx scikit-learn
+          # setuptools/wheel first: python3.12 venvs no longer include them, and
+          # the netfilterqueue binding is a source build that needs them present.
+          sudo /opt/nips/venv/bin/pip install -q setuptools wheel
           sudo /opt/nips/venv/bin/pip install -q --no-build-isolation NetfilterQueue
           sudo useradd --create-home --shell /bin/bash nips
           sudo chown -R nips:nips /opt/nips

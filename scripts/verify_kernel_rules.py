@@ -14,6 +14,7 @@ chain is gone.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +32,16 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def sh(*args: str) -> str:
-    return subprocess.run(args, capture_output=True, text=True).stdout
+    """Run a command and return stdout, or "" if the binary is not present.
+
+    The degradation child runs under a PATH that deliberately contains only a
+    handful of tools, so a missing executable is an expected condition here —
+    and it is exactly what the child is meant to observe.
+    """
+    try:
+        return subprocess.run(args, capture_output=True, text=True).stdout
+    except OSError:
+        return ""
 
 
 def _degrade_child() -> int:
@@ -73,13 +83,15 @@ def _run_degrade_child() -> int:
     import tempfile
 
     bindir = Path(tempfile.mkdtemp(prefix="nips_path_"))
-    real = sh("which", "iptables").strip()
+    # shutil.which, not `which`: the child PATH is deliberately minimal and has
+    # no which(1), so probing with it would report "no iptables" and skip.
+    real = shutil.which("iptables") or ""
     if not real:
         print("SKIP: cannot locate iptables to build a restricted PATH")
         return 0
     os.symlink(real, bindir / "iptables")
     for tool in ("sh", "ip", "uname"):
-        located = sh("which", tool).strip()
+        located = shutil.which(tool)
         if located:
             os.symlink(located, bindir / tool)
     env = dict(os.environ, PATH=str(bindir), PYTHONPATH=str(Path(__file__).resolve().parent.parent))
@@ -98,7 +110,7 @@ def main() -> int:
     if hasattr(sys, "getuid") and sys.getuid() != 0:
         print("SKIP: needs root (run via sudo)")
         return 0
-    if not sh("which", "iptables").strip():
+    if not shutil.which("iptables"):
         print("SKIP: iptables not installed")
         return 0
 

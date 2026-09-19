@@ -160,10 +160,10 @@ class LucidDetector:
             
             timesteps = input_shape[1]
             n_features = input_shape[2]
-            if timesteps != self.params['time_steps'] or n_features != self.params['n_features']:
+            if timesteps != self.cnn.params['time_steps'] or n_features != self.cnn.params['n_features']:
                 logger.warning(
                     "model input_shape=%s doesn't match detector params=%s; skipping load",
-                    input_shape, (self.params['time_steps'], self.params['n_features'])
+                    input_shape, (self.cnn.params['time_steps'], self.cnn.params['n_features'])
                 )
                 return False
             
@@ -210,8 +210,8 @@ class LucidDetector:
         try:
             # Predict with shape validation
             n_samples = sample.shape[0]
-            expected_timesteps = self.params['time_steps']
-            expected_features = self.params['n_features']
+            expected_timesteps = self.cnn.params['time_steps']
+            expected_features = self.cnn.params['n_features']
             
             if sample.ndim != 3 or sample.shape[1] != expected_timesteps or sample.shape[2] != expected_features:
                 logger.warning(

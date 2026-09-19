@@ -4,6 +4,7 @@
 Each check prints PASS (no bug) or CONFIRMED (bug reproduced) with evidence.
 """
 import sys
+import importlib.util
 import tempfile
 from pathlib import Path
 
@@ -11,6 +12,13 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# train_test_split needs scikit-learn, which is a runtime dependency but not a
+# guaranteed one in every interpreter this script gets pointed at. Say so and
+# exit 0 instead of dying halfway through the checklist with an ImportError.
+if importlib.util.find_spec("sklearn") is None:
+    print("SKIP: scikit-learn is required for train_test_split checks")
+    sys.exit(0)
 
 from networksecurity.data.dataset_loader import DatasetLoader
 
@@ -67,21 +75,33 @@ assert n_inf == 0, f"isinf count={n_inf} — sklearn/Keras would raise"
 print("[PASS] Infinity sanitized: isinf count = 0")
 
 # --- Check 6: parquet file through the loader --------------------------------
+# A runtime image (the Dockerfile) ships no parquet engine and no dataset, and
+# pandas raises ImportError on read rather than reporting "not installed".  The
+# check has to degrade to SKIP: crashing here would read as a data-layer bug
+# when all it found was an image that never meant to load training data.
 pq = Path("datasets/unsw-nb15/UNSW_NB15_training-set.parquet")
-if pq.exists():
+_parquet_engine = importlib.util.find_spec("pyarrow") or importlib.util.find_spec("fastparquet")
+if not pq.exists():
+    print("[SKIP] parquet file not found")
+elif _parquet_engine is None:
+    print("[SKIP] no parquet engine installed (pyarrow/fastparquet); "
+          "runtime images do not ship one")
+else:
     X, y = DatasetLoader("unsw-nb15").load(pq)
     assert X.shape[0] > 0 and set(np.unique(y)) <= {0, 1}
     print(f"[PASS] parquet via DatasetLoader.load: X={X.shape}")
-else:
-    print("[SKIP] parquet file not found")
 
 # --- Check 7: unsw_sample.csv real file --------------------------------------
-X, y = DatasetLoader("unsw-nb15").load("datasets/unsw-nb15/unsw_sample.csv")
-assert X.shape[1] > 0 and set(np.unique(y)) <= {0, 1}
-print(f"[PASS] real unsw_sample.csv: X={X.shape}, attack_ratio={y.mean():.2f}")
+sample_csv = Path("datasets/unsw-nb15/unsw_sample.csv")
+if not sample_csv.exists():
+    print("[SKIP] bundled unsw_sample.csv not present")
+else:
+    X, y = DatasetLoader("unsw-nb15").load(str(sample_csv))
+    assert X.shape[1] > 0 and set(np.unique(y)) <= {0, 1}
+    print(f"[PASS] real unsw_sample.csv: X={X.shape}, attack_ratio={y.mean():.2f}")
 
 # --- Check 8: train/test split on the real UNSW parquet (via pandas, then loader API)
-if pq.exists():
+if pq.exists() and _parquet_engine is not None:
     df = pd.read_parquet(pq)
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
         df.head(2000).to_csv(f, index=False)
