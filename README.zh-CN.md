@@ -38,7 +38,7 @@ LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流
 - **Kitsune (NDSS'18)** — AfterImage 增量统计（90 维特征）+ KitNET 自编码器集成。在线训练，无需标签。当链路层头部缺失（实时 NFQUEUE 场景）时，MAC 通道使用 `(protocol, ttl)` 代理键，避免方差退化为零。宽限期（`fm_grace_period`、`ad_grace_period`）允许在检测开始前先预热；此期间数据包只记录不拦截。
 - **LUCID (IEEE TNSM 2020)** — 在 10 包流窗口（每包 11 维特征）上跑的 1D CNN。默认关闭，需要训练好的模型，且在配置中设置 `engine.lucid.model_path`。
 
-> **关于协议过滤：** 规则引擎的协议白名单只包含 TCP(6) 和 UDP(17)。其他任何协议——包括 **ICMP(1)**——默认都会被拦截。也就是说，合法的 ICMP（ping、PMTUD、traceroute）同样会被丢弃，除非其源地址在白名单中。如果你运行的网络依赖 ICMP，请把相关源地址加入白名单，或在启用实时拦截前先收紧该策略。
+> **关于协议过滤：** 规则引擎的协议白名单只包含 TCP(6) 与 UDP(17)，凡是被它检查到的其他协议——包括 **ICMP(1)**——都会拦截。但在实时拦截中，只有 TCP 与 UDP 会被导入 NFQUEUE（`interception.intercept_icmp` 默认关闭），因此 ICMP 在那里**既不被检查、也不被拦截**：由主机自身的防火墙决定。把 `interception.intercept_icmp` 设为 true 才能让 ICMP 进入流水线，然后用 `engine.rule_engine.allowed_icmp_types` 按类型放行——整协议封禁会一并打断 Path MTU Discovery（type 3 "frag needed"），导致大连接被黑洞，所以有用的配置是"按类型放行"而不是一刀切封禁。离线 pcap 测试（`cli.py test --pcap`）确实会走到协议过滤，因为不论何种协议，包都会进入引擎。
 
 ---
 
@@ -81,6 +81,7 @@ pip install scapy
 - `api.auth_token`：设置后启用认证；空字符串表示关闭认证（仅开发环境）
 - `api.host` / `api.port`：`python app.py` 的监听地址与端口
 - `interception.safe_ips`：添加永远不会被封禁的 IP（回环默认包含）
+- `interception.intercept_icmp` / `engine.rule_engine.allowed_icmp_types`：ICMP 策略（见上文协议过滤说明）
 - `storage.*`：事件库路径、行数上限与保留窗口（见"告警、审计与指标"）
 - `logging.*`：日志级别、轮转文件与 syslog 转发
 
@@ -116,6 +117,7 @@ python cli.py test --pcap sample.pcap  # 离线检测测试（无需 root）
 ```yaml
 interception:
   nfqueue_num: 0
+  intercept_icmp: false     # 把 ICMP 也导入 NFQUEUE，按类型策略才会生效
   safe_ips:                 # 永远不会被封锁的 IP（回环受保护）
     - "127.0.0.1"
     - "::1"
@@ -126,6 +128,7 @@ engine:
     threshold_percentile: 99.0
   rule_engine:
     allowed_protocols: [6, 17]   # TCP、UDP；其余全部拦截
+    allowed_icmp_types: []       # 协议 1 未列入时仍放行的 ICMP 类型，例如 [0, 3, 4, 8, 11] 可保住 PMTUD 与 ping
     rate_limit:
       window_seconds: 1.0
       max_connections_per_window: 100
@@ -270,6 +273,7 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 - 写入 iptables 规则，把流量重定向到 NFQUEUE
 - 回环流量完全不进检测流水线——`lo` 接口到达的包在 NFQUEUE 规则之前就被 ACCEPT；回环源地址（`127.0.0.0/8`、`::1`）永远不会被永久封禁（本机流量不可能是攻击者；封掉 DNS stub `127.0.0.53` 会静默瘫痪本机域名解析）
 - 不动 SSH（22 端口）
+- 除非开启 `interception.intercept_icmp`，只把 TCP 与 UDP 导入 NFQUEUE；开启后由 `allowed_icmp_types` 决定引擎接受哪些 ICMP 类型
 - 通过升级策略（`config.yaml` 的 `blocking:`）执行 BLOCK 判决，且**仅对 ML 检测器的 BLOCK 生效**。规则引擎的判决（黑名单命中、限速、协议过滤）是确定性的、已经逐包内联执行，因此不计 strike、不参与升级——这同时保证了操作员的黑名单条目永远不会被封禁生命周期改动。单次 ML BLOCK 只内联丢弃当前包，并给源 IP 计一次 strike。滚动窗口内累计达到 `strikes_threshold` 触发**临时封禁**——内核 DROP 加规则引擎黑名单*镜像*（带 TTL，到期自动解除；解除时只删除镜像，绝不触碰操作员自己的条目）；反复触发临时封禁会升级为**永久封禁**，写入 `rules.json`，下次启动时加载回规则引擎、在用户态逐包拦截——内核 DROP 本身**不会**被重新安装
 - 关闭时清除自己添加的所有 iptables 规则
 
@@ -319,7 +323,7 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
   # 离线检测——无需 root
   python cli.py test --pcap cap.pcap
   ```
-  这样能暴露**真实**的误报率（例如合法 ICMP 被协议过滤拦截），下面的合成模拟做不到这一点。注意 Kitsune 大约需要 55k 个正常包才会离开训练模式，所以短抓包主要测的是规则引擎。
+  这样能暴露**真实**的误报率（例如合法 ICMP 被协议过滤拦截——离线路径中 ICMP 确实会进入引擎，而实时链路在 `intercept_icmp: false` 下不会）。注意 Kitsune 大约需要 55k 个正常包才会离开训练模式，所以短抓包主要测的是规则引擎。
 - **合成攻击模拟：** `scripts/attack_simulation.py` 生成带标签的流量并按攻击类别报告检出率。它的 ICMP/SSH 结果反映的是硬性协议规则和可分离的生成器分布，不是生产环境的准确率——快速模式下整体约 20% 的攻击检出率应视为下限，而非准确率声明。
 
 #### Fail-closed 行为

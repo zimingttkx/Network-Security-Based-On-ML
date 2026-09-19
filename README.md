@@ -38,7 +38,7 @@ LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pip
 - **Kitsune (NDSS'18)** — AfterImage incremental statistics (90 features) + a KitNET autoencoder ensemble. Trains online, no labels needed. When link-layer headers are absent (live NFQUEUE), the MAC channel uses a `(protocol, ttl)` proxy key so it never collapses to zero variance. Grace periods (`fm_grace_period`, `ad_grace_period`) allow warmup before detection starts; during this time packets are logged but not blocked.
 - **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model and `engine.lucid.model_path` set in config.
 
-> **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17) only. Any other protocol — including **ICMP(1)** — is blocked by default. This means legitimate ICMP (ping, PMTUD, traceroute) is also dropped unless its source is whitelisted. If you run on a network that relies on ICMP, either whitelist the relevant sources or constrain the policy before enabling live interception.
+> **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17); anything else it inspects is blocked, including **ICMP(1)**. In live interception, however, only TCP and UDP are redirected into NFQUEUE (`interception.intercept_icmp` is off by default) — so there ICMP is **not inspected and not blocked**: the host's own firewall decides. Turn `interception.intercept_icmp: true` on to bring ICMP into the pipeline, then allow individual types through `engine.rule_engine.allowed_icmp_types` — blocking the whole protocol also breaks Path MTU Discovery (type 3, "frag needed"), which blackholes large connections, so a type list is the useful setting rather than an all-or-nothing ban. Offline pcap runs (`cli.py test --pcap`) do exercise the protocol filter, since those packets reach the engine whatever their protocol.
 
 ---
 
@@ -81,6 +81,7 @@ pip install scapy
 - `api.auth_token`: set to enable authentication; empty string disables auth (development mode)
 - `api.host` / `api.port`: what `python app.py` binds to
 - `interception.safe_ips`: add IPs that must never be blocked (loopback included by default)
+- `interception.intercept_icmp` / `engine.rule_engine.allowed_icmp_types`: ICMP policy (see the protocol-filtering note above)
 - `storage.*`: event database path, row cap and retention window (see "Alerts, audit and metrics")
 - `logging.*`: level, rotating file target and syslog forwarding
 
@@ -118,6 +119,7 @@ python cli.py test --pcap sample.pcap  # offline detection test (no root needed)
 ```yaml
 interception:
   nfqueue_num: 0
+  intercept_icmp: false     # redirect ICMP into NFQUEUE so the type policy applies
   safe_ips:                 # IPs that are never blocked (loopback is protected)
     - "127.0.0.1"
     - "::1"
@@ -128,6 +130,8 @@ engine:
     threshold_percentile: 99.0
   rule_engine:
     allowed_protocols: [6, 17]   # TCP, UDP; everything else blocked
+    allowed_icmp_types: []       # ICMP types that pass despite protocol 1 not being listed,
+                                 # e.g. [0, 3, 4, 8, 11] to keep PMTUD and ping alive
     rate_limit:
       window_seconds: 1.0
       max_connections_per_window: 100
@@ -271,6 +275,7 @@ The interceptor:
 - Installs iptables rules to redirect traffic into NFQUEUE
 - Leaves loopback traffic untouched — everything arriving on `lo` is ACCEPTed before the NFQUEUE rules, and loopback sources (`127.0.0.0/8`, `::1`) are never eligible for a permanent block (host-local traffic cannot be an attacker; blocking the DNS stub `127.0.0.53` would silently break host DNS)
 - Leaves SSH (port 22) untouched
+- Redirects only TCP and UDP into NFQUEUE unless `interception.intercept_icmp` is on; with it on, `allowed_icmp_types` decides which ICMP types the engine then accepts
 - Enforces BLOCK verdicts through an escalation policy (`blocking:` in `config.yaml`) that applies **only to ML-detector BLOCKs**. Rule-engine verdicts (blacklist hit, rate limit, protocol filter) are deterministic and already enforced inline on every packet, so they never count strikes and cannot escalate — this also guarantees an operator's blacklist entry can never be modified by the ban lifecycle. A single ML BLOCK only inline-drops that packet and counts a strike against the source. Crossing `strikes_threshold` inside the rolling window triggers a **temp ban** — kernel DROP plus a rule-engine blacklist *mirror* with a TTL, lifted automatically on expiry (only the mirror is removed; an operator's own entry is never touched). Repeated temp bans escalate to a **permanent ban**, which is mirrored into `rules.json`; on the next start it is loaded back into the rule engine and enforced per-packet in userspace — the kernel DROP itself is **not** reinstalled
 - Removes all of its iptables rules on shutdown
 
@@ -320,7 +325,7 @@ Two paths exercise the detection pipeline **without** root or iptables — usefu
   # offline detection — no root needed
   python cli.py test --pcap cap.pcap
   ```
-  This surfaces the **real** false-positive rate (e.g. legitimate ICMP being blocked by the protocol filter), which the synthetic sim below does not. Note Kitsune needs ~55k normal packets before it leaves training mode, so short captures mostly exercise the rule engine.
+  This surfaces the **real** false-positive rate (e.g. legitimate ICMP being blocked by the protocol filter — in this offline path ICMP does reach the engine, unlike live interception with `intercept_icmp: false`), which the synthetic sim below does not. Note Kitsune needs ~55k normal packets before it leaves training mode, so short captures mostly exercise the rule engine.
 - **Synthetic attack simulation:** `scripts/attack_simulation.py` generates labeled traffic and reports per-attack detection rates. Its ICMP/SSH results reflect the hard protocol rule and a separable generator distribution, not production accuracy — treat the overall ~20% attack detection in fast mode as a floor, not a claim.
 
 #### Fail-closed behavior
