@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
+import json
 import logging
 import secrets
 import threading
@@ -10,12 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, field_validator
 
 from networksecurity.engine import DetectionPipeline, RuleEngine
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
+from networksecurity.observability import EventStore, configure_logging, render_metrics
 
 # --- Application -----------------------------------------------------------
 
@@ -30,9 +35,18 @@ app = FastAPI(
 # CORS + auth come from config (api block).  "*" origins are gone: this API
 # can blacklist/whitelist arbitrary IPs and start/stop the interception
 # engine, so an open-CORS management surface was a remote-DoS primitive.
-from networksecurity.utils.config import load_api_config
+from networksecurity.utils.config import (
+    load_api_config,
+    load_logging_config,
+    load_storage_config,
+)
 
-logger = logging.getLogger(__name__)
+# Log routing comes first: everything below (including the "auth is off"
+# warning) should already reach the configured file/syslog sinks.  The
+# "networksecurity." prefix is deliberate — configure_logging owns that
+# subtree and leaves uvicorn's own logger alone.
+logger = logging.getLogger("networksecurity.app")
+configure_logging(load_logging_config())
 
 _api_cfg = load_api_config()
 API_AUTH_TOKEN: str = _api_cfg["auth_token"]
@@ -129,8 +143,18 @@ except Exception:
 _interceptor: object | None = None  # Interceptor | None
 _interceptor_thread: threading.Thread | None = None
 
-alerts: list[dict] = []
-_alerts_lock: threading.Lock = threading.Lock()
+# Alerts and the management audit trail live in SQLite, not in a list that a
+# restart wipes: an operator investigating an incident at 09:00 needs the
+# verdicts from 03:00.  Producers only enqueue (see EventStore) so the
+# detection path never waits on the disk.
+_storage_cfg = load_storage_config()
+event_store = EventStore(
+    _storage_cfg["events_db"],
+    max_rows=_storage_cfg["max_rows"],
+    retention_days=_storage_cfg["retention_days"],
+    queue_size=_storage_cfg["queue_size"],
+)
+
 _start_lock: threading.Lock = threading.Lock()
 start_time: datetime = datetime.now(tz=timezone.utc)
 
@@ -145,16 +169,59 @@ from networksecurity.utils.validation import (
 
 
 def _record_alert(source_ip: str, reason: str, action: str, detector: str) -> None:
-    with _alerts_lock:
-        alerts.insert(0, {
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-            "source_ip": source_ip,
-            "reason": reason,
-            "action": action,
-            "detector": detector,
-        })
-        if len(alerts) > 500:
-            alerts.pop()
+    event_store.record_alert(source_ip, reason, action, detector)
+
+
+def _audit(request: Request, *, target: str, result: str, detail: str = "") -> None:
+    """Record a management-plane action: who changed what, and whether it took.
+
+    The actor is the peer address of the connection.  There is no per-user
+    identity yet (the API has one shared token), so ``actor`` answers "which
+    host", not "which person" — see the README's authentication note.
+    """
+    event_store.record_audit(
+        actor=request.client.host if request.client else "unknown",
+        method=request.method,
+        path=request.url.path,
+        target=target,
+        result=result,
+        detail=detail,
+    )
+
+
+@app.middleware("http")
+async def _audit_rejected_requests(request: Request, call_next):
+    """Audit attempts the framework itself refuses.
+
+    A malformed or unauthorised request never reaches a handler, so the
+    handler-level ``_audit`` call cannot see it — yet a burst of 401s against
+    the rule endpoints is exactly what an operator wants in the trail.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/api/v1") and response.status_code >= 400:
+        event_store.record_audit(
+            actor=request.client.host if request.client else "unknown",
+            method=request.method, path=request.url.path, target="",
+            result=str(response.status_code), detail="rejected before handler")
+    return response
+
+
+def _parse_time_bound(value: str | None) -> float | None:
+    """Accept epoch seconds or an ISO8601 timestamp as a query filter."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=422,
+                            detail=f"invalid timestamp {value!r}: use epoch seconds or ISO8601")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _blacklist_refusal(ip: str) -> str | None:
@@ -276,6 +343,10 @@ async def engine_status():
         "blocked_ips": pipeline.rule_engine.get_blacklist(),
         "kernel_blocked_ips": kernel_blocked,
         "detection_loop_stale_seconds": detect_stale,
+        # Event persistence health: a non-zero dropped/write_errors count
+        # means the audit trail is incomplete, which an operator must be able
+        # to see without reading logs.
+        "event_store": event_store.stats(),
     }
     return status
 
@@ -292,13 +363,81 @@ async def stats_overview():
 
 # --- Alerts ----------------------------------------------------------------
 
+_ALERT_FIELDS = ("timestamp", "source_ip", "reason", "action", "detector")
+_AUDIT_FIELDS = ("timestamp", "actor", "method", "path", "target", "result", "detail")
+
+
+def _serialize_export(items: list[dict], fields: tuple[str, ...], fmt: str) -> str:
+    if fmt == "csv":
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=list(fields), extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(items)
+        return out.getvalue()
+    return "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in items)
+
+
 @app.get("/api/v1/alerts", dependencies=[Depends(require_token)])
-async def get_alerts(limit: int = 50, offset: int = 0):
-    with _alerts_lock:
-        return {
-            "total": len(alerts),
-            "items": list(alerts[offset : offset + limit]),
-        }
+async def get_alerts(request: Request, limit: int = 50, offset: int = 0,
+                     source_ip: str | None = None, action: str | None = None,
+                     since: str | None = None, until: str | None = None,
+                     format: str = "json"):
+    """Detection/block events, newest first, with optional filters.
+
+    ``since``/``until`` take epoch seconds or ISO8601.  ``format=csv`` or
+    ``jsonl`` returns a download for shipping to a SIEM; both stay bounded by
+    ``limit`` (max 1000 rows per request) so an export cannot exhaust memory.
+    """
+    if not 1 <= limit <= 1000:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 1000")
+    page = event_store.query_alerts(
+        limit=limit, offset=offset, source_ip=source_ip, action=action,
+        since=_parse_time_bound(since), until=_parse_time_bound(until))
+    if format in ("csv", "jsonl"):
+        _audit(request, target=f"alerts?format={format}&limit={limit}",
+               result="export", detail=f"total={page['total']}")
+        media = "text/csv" if format == "csv" else "application/x-ndjson"
+        return PlainTextResponse(
+            _serialize_export(page["items"], _ALERT_FIELDS, format), media_type=media,
+            headers={"Content-Disposition": f'attachment; filename="alerts.{format}"'})
+    if format != "json":
+        raise HTTPException(status_code=422, detail="format must be json, csv or jsonl")
+    return page
+
+
+@app.get("/api/v1/audit", dependencies=[Depends(require_token)])
+async def get_audit(request: Request, limit: int = 50, offset: int = 0,
+                    actor: str | None = None, result: str | None = None,
+                    since: str | None = None, until: str | None = None,
+                    format: str = "json"):
+    """Who changed which rule or engine state, and whether it was accepted.
+
+    ``actor`` is the peer address of the connection: the API has one shared
+    token, so this identifies the host, not a named user.
+    """
+    if not 1 <= limit <= 1000:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 1000")
+    page = event_store.query_audit(
+        limit=limit, offset=offset, actor=actor, result=result,
+        since=_parse_time_bound(since), until=_parse_time_bound(until))
+    if format in ("csv", "jsonl"):
+        media = "text/csv" if format == "csv" else "application/x-ndjson"
+        return PlainTextResponse(
+            _serialize_export(page["items"], _AUDIT_FIELDS, format), media_type=media,
+            headers={"Content-Disposition": f'attachment; filename="audit.{format}"'})
+    if format != "json":
+        raise HTTPException(status_code=422, detail="format must be json, csv or jsonl")
+    return page
+
+
+@app.get("/metrics", dependencies=[Depends(require_token)])
+async def metrics():
+    """Prometheus text exposition.  Guarded by the token like every other
+    non-``/health`` route: the gauges describe live firewall policy."""
+    return PlainTextResponse(
+        render_metrics(pipeline=pipeline, store=event_store,
+                       interceptor=_interceptor, started_at=start_time.timestamp()),
+        media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 # --- Rule management -------------------------------------------------------
@@ -325,7 +464,7 @@ async def get_blocks():
 
 
 @app.post("/api/v1/rules/blacklist", dependencies=[Depends(require_token)])
-async def add_blacklist(entry: BlacklistEntry):
+async def add_blacklist(entry: BlacklistEntry, request: Request):
     pipeline.rule_engine.add_blacklist(entry.ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
     # Promote any temp-ban mirror for this IP to an operator entry, so the
@@ -336,11 +475,13 @@ async def add_blacklist(entry: BlacklistEntry):
         except Exception:
             logger.exception("Failed to promote blacklist entry for %s", entry.ip)
     _record_alert(entry.ip, entry.reason, "block", "rule_engine")
+    _audit(request, target=entry.ip, result="blacklist_add", detail=entry.reason)
     return {"status": "ok", "blacklist": pipeline.rule_engine.get_blacklist()}
 
 
 @app.delete("/api/v1/rules/blacklist/{ip:path}", dependencies=[Depends(require_token)])
-async def remove_blacklist(ip: str):
+async def remove_blacklist(ip: str, request: Request):
+    present = ip in pipeline.rule_engine.get_blacklist()
     pipeline.rule_engine.remove_blacklist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
     # Keep the kernel-level enforcement in sync: if the interceptor
@@ -353,6 +494,8 @@ async def remove_blacklist(ip: str):
             unblocked = _interceptor.unblock_ip(ip)
         except Exception:
             logger.exception("Failed to lift kernel block for %s", ip)
+    _audit(request, target=ip, result="blacklist_remove",
+           detail=f"was_listed={present} kernel_block_removed={unblocked}")
     return {
         "status": "ok",
         "kernel_block_removed": unblocked,
@@ -361,24 +504,28 @@ async def remove_blacklist(ip: str):
 
 
 @app.post("/api/v1/rules/whitelist", dependencies=[Depends(require_token)])
-async def add_whitelist(entry: WhitelistEntry):
+async def add_whitelist(entry: WhitelistEntry, request: Request):
     pipeline.rule_engine.add_whitelist(entry.ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
     _record_alert(entry.ip, "whitelist", "allow", "rule_engine")
+    _audit(request, target=entry.ip, result="whitelist_add")
     return {"status": "ok", "whitelist": pipeline.rule_engine.get_whitelist()}
 
 
 @app.delete("/api/v1/rules/whitelist/{ip:path}", dependencies=[Depends(require_token)])
-async def remove_whitelist(ip: str):
+async def remove_whitelist(ip: str, request: Request):
+    present = ip in pipeline.rule_engine.get_whitelist()
     pipeline.rule_engine.remove_whitelist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
+    _audit(request, target=ip, result="whitelist_remove",
+           detail=f"was_listed={present}")
     return {"status": "ok", "whitelist": pipeline.rule_engine.get_whitelist()}
 
 
 # --- Engine control --------------------------------------------------------
 
 @app.post("/api/v1/engine/start", dependencies=[Depends(require_token)])
-async def engine_start():
+async def engine_start(request: Request):
     """Start live interception (Linux, requires root)."""
     global _interceptor, _interceptor_thread
 
@@ -480,11 +627,13 @@ async def engine_start():
                 "pipeline": pipeline.status(),
             }
 
-    return await _start_locked()
+    result = await _start_locked()
+    _audit(request, target="engine", result="start", detail=str(result.get("status")))
+    return result
 
 
 @app.post("/api/v1/engine/stop", dependencies=[Depends(require_token)])
-async def engine_stop():
+async def engine_stop(request: Request):
     """Stop live interception and clean up iptables rules."""
     global _interceptor
 
@@ -496,6 +645,7 @@ async def engine_stop():
     except Exception:
         logger.exception("Error stopping interceptor")
     pipeline.rule_engine.save_rules(RULES_FILE)
+    _audit(request, target="engine", result="stop")
     return {"status": "stopped"}
 
 
@@ -517,7 +667,12 @@ async def _shutdown():
 @app.on_event("shutdown")
 async def fastapi_shutdown():
     await _shutdown()
+    # Drain the queued events before exiting; a restart must not swallow the
+    # last seconds of verdicts.
+    event_store.close()
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    # host/port come from config.yaml's api block; they used to be hardcoded
+    # here, so the shipped config values were dead.
+    uvicorn.run("app:app", host=_api_cfg["host"], port=_api_cfg["port"], reload=False)
