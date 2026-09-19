@@ -51,29 +51,41 @@ def _degrade_child() -> int:
     is the point: the branch under test decides what happens when the OS has no
     ip6tables at all, and a stub cannot catch an error raised from the exec path.
     """
+    import traceback
+
     from networksecurity.interception.iptables import IptablesManager
 
     failures = 0
+
+    def child_check(name: str, ok: bool, detail: str = "") -> None:
+        # Printed as it goes: a crash halfway through must still show which
+        # assertions already held.
+        nonlocal failures
+        print(("PASS       " if ok else "FAIL       ") + name
+              + (f"  [{detail}]" if detail else ""), flush=True)
+        failures += 0 if ok else 1
+
     mgr = IptablesManager(safe_ips=["127.0.0.1"])
-    checks: list[tuple[str, bool, str]] = []
     try:
         mgr.setup_nfqueue(queue_num=9, intercept_icmp=True)
-        checks.append(("setup succeeds without ip6tables", mgr._nfqueue_rules_added, ""))
-        checks.append(("ipv6_ready reports False", mgr.ipv6_ready is False, str(mgr.ipv6_ready)))
-        checks.append(("IPv4 chain still built",
-                       f"-N {mgr.CHAIN}" in sh("iptables", "-S"),
-                       sh("iptables", "-S").replace("\n", " | ")[:120]))
+        child_check("setup succeeds without ip6tables", mgr._nfqueue_rules_added is True)
+        child_check("ipv6_ready reports False", mgr.ipv6_ready is False, str(mgr.ipv6_ready))
+        child_check("IPv4 chain still built",
+                    f"-N {mgr.CHAIN}" in sh("iptables", "-S"),
+                    sh("iptables", "-S").replace("\n", " | ")[:140])
         refused = mgr.block_ip("2001:db8::2")
-        checks.append(("IPv6 block refused (no phantom enforcement)", refused is False, str(refused)))
+        child_check("IPv6 block refused (no phantom enforcement)", refused is False, str(refused))
         v4_ok = mgr.block_ip("203.0.113.9")
-        checks.append(("IPv4 block still enforced", v4_ok is True, str(v4_ok)))
-        checks.append(("no IPv6 rule anywhere in the v4 ruleset",
-                       "2001:db8::2" not in sh("iptables", "-S"), ""))
+        child_check("IPv4 block still enforced", v4_ok is True, str(v4_ok))
+        child_check("no IPv6 rule anywhere in the v4 ruleset",
+                    "2001:db8::2" not in sh("iptables", "-S"))
+        child_check("IPv6 block left no mirror in the ruleset",
+                    "2001:db8::2" not in str(mgr.blocked_ips()), str(mgr.blocked_ips()))
+    except Exception:
+        traceback.print_exc()
+        failures += 1
     finally:
         mgr.cleanup_all()
-    for name, ok, detail in checks:
-        print(f"{'PASS' if ok else 'FAIL':10} {name}" + (f"  [{detail}]" if detail else ""))
-        failures += 0 if ok else 1
     return 1 if failures else 0
 
 
@@ -99,7 +111,9 @@ def _run_degrade_child() -> int:
                           text=True, env=env)
     print(done.stdout.strip())
     if done.stderr.strip():
-        print("  stderr:", done.stderr.strip()[:200])
+        # Full stderr: the first 200 characters were a log warning, which hid
+        # the traceback that actually explained the child's failure.
+        print("  stderr:", done.stderr.strip()[-1500:])
     return done.returncode
 
 
