@@ -97,6 +97,12 @@ def main() -> int:
 
         # -- IPv6 rules (same kernel family, different ruleset) --------------
         if has_v6:
+            # The block above ends with a default setup_nfqueue(), so ICMPv6 has
+            # to be requested here rather than assumed to still be in place.
+            v6rules = sh("ip6tables", "-S", chain)
+            check("ICMPv6 absent while intercept_icmp is off",
+                  "-p icmpv6 -j NFQUEUE" in v6rules)
+            ipt.setup_nfqueue(queue_num=7, intercept_icmp=True)
             v6rules = sh("ip6tables", "-S", chain)
             check("ip6tables chain exists with an INPUT jump",
                   f"-N {chain}" in sh("ip6tables", "-S")
