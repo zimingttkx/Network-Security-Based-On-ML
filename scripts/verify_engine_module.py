@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cross-validation for engine/ module (pipeline, rule_engine, kitsune, lucid adapters)."""
 import asyncio
+import random
 import sys
 import time
 from pathlib import Path
@@ -515,14 +516,23 @@ async def main():
          "packet_size": 100, "protocol": 6, "tcp_flags": 0x02}
         for i in range(20)
     ]
+    train_error = None
     try:
-        detector.train_from_packets(train_packets, epochs=1, verbose=0)
-    except Exception:
-        pass  # TF may not be available
-    
+        detector.train_from_packets(train_packets, epochs=1, verbose=0,
+                                    attackers=["1.1.1.1"], victims=["2.2.2.2"])
+    except Exception as exc:  # noqa: BLE001
+        train_error = exc  # TensorFlow (or no complete window) is expected here
+
+    # An AttributeError here means the training path calls something the parser
+    # no longer provides — the failure mode that let a deleted parse_batch hide
+    # behind a swallowed exception for a whole release.
+    report("L6 train_from_packets reaches the parser without a dangling call",
+           isinstance(train_error, AttributeError),
+           f"{type(train_error).__name__}: {train_error}")
+
     # Online buffer should still be empty
     ok = len(detector.parser.flows) == 0
-    report("L6 train_from_packets uses local parser", not ok,
+    report("L6b train_from_packets uses local parser", not ok,
            f"online buffer size={len(detector.parser.flows)}")
 
     # --- C1-C10: utils.config validation ------------------------------------
@@ -1003,6 +1013,65 @@ async def main():
         report("SG11 one bad signature rejects the whole reload",
                not rejected or [x["id"] for x in sg10.signatures] != ["replaced"],
                str(sg10.signatures))
+
+    # -- group LT: LUCID training data path (no TensorFlow needed) ----------
+    from networksecurity.engine.lucid.dataset_parser import LucidDatasetParser
+
+    def labelled(flows: int, packets_per_flow: int, attack_from: int):
+        rows = []
+        for f in range(flows):
+            src = f"203.0.113.{f}" if f >= attack_from else f"10.0.0.{f}"
+            for i in range(packets_per_flow):
+                rows.append({"src_ip": src, "dst_ip": "198.51.100.1",
+                             "src_port": 4000 + f, "dst_port": 80, "protocol": 6,
+                             "packet_size": 200 + i, "tcp_flags": 0x02,
+                             "timestamp": f * 1.5 + i * 0.02})
+        return rows
+
+    lt_rows = labelled(8, 10, 5)
+    _seeded = lt_rows[:]
+    random.Random(11).shuffle(_seeded)
+    X_lt, y_lt = LucidDatasetParser(time_window=10.0, packets_per_flow=10).build_samples(
+        _seeded, attackers=["203.0.113.0/24"], victims=[])
+    ok = (X_lt.shape == (8, 10, 11) and sorted(y_lt.tolist()) == [0, 0, 0, 0, 0, 1, 1, 1])
+    report("LT1 shuffled input yields ordered windows via the online path", not ok,
+           f"{X_lt.shape} y={y_lt.tolist()}")
+
+    X_cidr, y_cidr = LucidDatasetParser(time_window=10.0, packets_per_flow=10).build_samples(
+        lt_rows, attackers=["203.0.113.6", "203.0.113.7"], victims=[])
+    ok = y_cidr.tolist() == [0, 0, 0, 0, 0, 0, 1, 1]
+    report("LT2 CIDR and single-address labelers agree", not ok, str(y_cidr.tolist()))
+
+    try:
+        LucidDatasetParser().set_attack_info(["10.0.0/8"], [])
+        net_rejected = False
+    except ValueError:
+        net_rejected = True
+    report("LT3 a malformed label address is refused, not skipped", not net_rejected,
+           f"rejected={net_rejected}")
+
+    X_none, y_none = LucidDatasetParser().build_samples([])
+    report("LT4 empty input yields empty arrays of the right shape",
+           X_none.shape != (0, 10, 11) or y_none.shape != (0,),
+           f"{X_none.shape} {y_none.shape}")
+
+    lt_detect = LucidDetector()
+    refused = ""
+    for kwargs in ({}, {"attackers": ["10.0.0.0/8", "203.0.113.0/24"]}):
+        try:
+            lt_detect.train_from_packets(labelled(8, 10, 5), epochs=1, verbose=0, **kwargs)
+            refused = "accepted"
+        except ValueError as exc:
+            refused = str(exc)[:40]
+        except AttributeError as exc:
+            refused = f"AttributeError {exc}"
+            break
+        except Exception as exc:  # noqa: BLE001
+            refused = f"{type(exc).__name__}"
+            break
+    report("LT5 one-sided label sets are refused before fitting",
+           refused == "accepted" or "degenerate" not in refused and "AttributeError" not in refused,
+           refused)
 
     print("\n==== SUMMARY ====")
     for name, status in results:

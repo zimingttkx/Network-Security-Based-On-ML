@@ -248,7 +248,7 @@ jobs:
         run: |
           python scripts/verify_fpr_regression.py
 
-      - name: Unit test — engine module (78 checks)
+      - name: Unit test — engine module (84 checks)
         run: |
           python scripts/verify_engine_module.py
 
