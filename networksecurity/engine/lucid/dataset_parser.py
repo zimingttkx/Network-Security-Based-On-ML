@@ -5,6 +5,7 @@ Based on doriguzzi/lucid-ddos (IEEE TNSM 2020).
 Converts raw network traffic into the input format required by the LUCID CNN.
 """
 
+import ipaddress
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -99,9 +100,13 @@ class LucidDatasetParser:
         # and the number is what an operator needs, not each occurrence.
         self.expired_flows: int = 0
 
-        # Attacker/victim IPs (for labeling)
+        # Attacker/victim addresses (for labeling).  Kept as raw strings for the
+        # exact-match fast path, and as parsed networks so an operator can say
+        # "175.45.176.0/22" instead of enumerating a capture's worth of hosts.
         self.attacker_ips: set = set()
         self.victim_ips: set = set()
+        self._attacker_nets: list = []
+        self._victim_nets: list = []
 
     def _register_flow(self, flow_id: str, flow: "FlowSample") -> None:
         """Insert a flow, evicting the oldest if over capacity."""
@@ -112,9 +117,42 @@ class LucidDatasetParser:
         self.flows[flow_id] = flow
     
     def set_attack_info(self, attackers: list[str], victims: list[str]):
-        """Set attacker and victim IPs."""
-        self.attacker_ips = set(attackers)
-        self.victim_ips = set(victims)
+        """Set attacker and victim addresses; each entry is an IP or a CIDR.
+
+        Parsing happens here, once, rather than per packet.  A bad entry raises
+        instead of being skipped: a typo in an attacker list silently unlabels
+        exactly the traffic the model was supposed to learn to catch.
+        """
+        self.attacker_ips = {str(a).strip() for a in attackers if str(a).strip()}
+        self.victim_ips = {str(v).strip() for v in victims if str(v).strip()}
+        self._attacker_nets = self._parse_nets(self.attacker_ips, "attackers")
+        self._victim_nets = self._parse_nets(self.victim_ips, "victims")
+
+    @staticmethod
+    def _parse_nets(addresses: set[str], field: str) -> list:
+        nets = []
+        for entry in sorted(addresses):
+            try:
+                # Always a network: a bare address becomes /32, so the
+                # membership test below has one shape to handle.
+                nets.append(ipaddress.ip_network(entry, strict=False))
+            except ValueError as exc:
+                raise ValueError(
+                    f"{field} entry {entry!r} is neither an IP address nor a CIDR: {exc}") from exc
+        return nets
+
+    @staticmethod
+    def _in_hosts(address: str, exact: set[str], nets: list) -> bool:
+        """Exact string match first; the network scan only runs on a miss."""
+        if not address:
+            return False
+        if address in exact:
+            return True
+        try:
+            host = ipaddress.ip_address(address)
+        except ValueError:
+            return False
+        return any(host.version == net.version and host in net for net in nets)
     
     def _get_flow_id(self, packet: dict) -> str:
         """Generate flow ID (5-tuple)."""
@@ -138,8 +176,10 @@ class LucidDatasetParser:
         """
         src_ip = packet.get('src_ip', '')
         dst_ip = packet.get('dst_ip', '')
-        return (src_ip in self.attacker_ips or dst_ip in self.attacker_ips
-                or src_ip in self.victim_ips or dst_ip in self.victim_ips)
+        return (self._in_hosts(src_ip, self.attacker_ips, self._attacker_nets)
+                or self._in_hosts(dst_ip, self.attacker_ips, self._attacker_nets)
+                or self._in_hosts(src_ip, self.victim_ips, self._victim_nets)
+                or self._in_hosts(dst_ip, self.victim_ips, self._victim_nets))
 
     def _sweep_expired(self, now: float) -> None:
         """Drop flows whose window elapsed without reaching a full sample.
@@ -229,6 +269,55 @@ class LucidDatasetParser:
 
         return None
     
+    def build_samples(self, packets, *, attackers=None, victims=None,
+                      max_samples: int | None = None):
+        """Turn a labelled packet sequence into ``(X, y)`` via the online path.
+
+        Training and inference must extract features identically — otherwise a
+        model learns one representation and is scored against another — so this
+        feeds :meth:`process_packet`, the same code the detector runs live,
+        instead of carrying a second implementation.
+
+        Packets are sorted by timestamp first: the stale-window sweep assumes
+        time moves forward, which an unordered CSV or pcap would otherwise break
+        by expiring every flow it is mid-way through.  Incomplete windows are
+        dropped, never zero-padded.
+        """
+        empty = (np.zeros((0, self.packets_per_flow, self.n_features), dtype=np.float32),
+                 np.zeros((0,), dtype=np.int8))
+        if not packets:
+            return empty
+        if attackers is not None or victims is not None:
+            self.set_attack_info(list(attackers or []), list(victims or []))
+
+        def _key(item):
+            index, packet = item
+            if not isinstance(packet, dict):
+                raise ValueError(
+                    f"packet {index} is {type(packet).__name__}, expected a dict with "
+                    "src_ip/dst_ip/protocol/timestamp keys")
+            try:
+                return float(packet.get("timestamp", 0.0))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"packet {index} has a non-numeric timestamp "
+                    f"{packet.get('timestamp')!r}") from exc
+
+        ordered = [packet for _, packet in sorted(enumerate(packets), key=_key)]
+        xs, ys = [], []
+        for packet in ordered:
+            completed = self.process_packet(packet)
+            if completed is None:
+                continue
+            sample, label = completed
+            xs.append(sample)
+            ys.append(label)
+            if max_samples is not None and len(xs) >= max_samples:
+                break
+        if not xs:
+            return empty
+        return (np.asarray(xs, dtype=np.float32), np.asarray(ys, dtype=np.int8))
+
     def _create_sample(self, flow: FlowSample) -> np.ndarray:
         """Create sample matrix from a completed window."""
         sample = np.zeros((self.packets_per_flow, self.n_features), dtype=np.float32)
