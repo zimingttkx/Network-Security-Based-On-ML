@@ -7,7 +7,8 @@ Commands:
     status           Show engine/interceptor status
     block IP         Add IP to blacklist
     unblock IP       Remove IP from blacklist
-    whitelist IP     Add IP/CIDR to whitelist
+    whitelist --ip IP     Add IP/CIDR to whitelist
+    unwhitelist --ip IP   Remove IP/CIDR from whitelist
     rules            List all blacklist/whitelist entries
     alerts           Show recent alerts (via API)
     test --pcap FILE Offline detection from pcap file
@@ -22,6 +23,7 @@ import logging
 import os
 import signal
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -43,6 +45,16 @@ def _validate_ip(args) -> str:
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _refused_by_api(exc: Exception) -> bool:
+    """True when the API answered and rejected the request (4xx).
+
+    A 4xx is a deliberate refusal, not an unreachable engine.  Treating it as
+    "unreachable" would fall back to rules.json and persist exactly the entry
+    the API just rejected (loopback, default route, malformed CIDR).
+    """
+    return isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500
 
 
 def _build_pipeline() -> DetectionPipeline:
@@ -74,26 +86,25 @@ def _build_pipeline() -> DetectionPipeline:
     # trained model is provided, so it does not silently no-op as "active".
     try:
         from networksecurity.utils.config import load_lucid_config
+        from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
         
         _lucid_cfg = load_lucid_config()
         _model_path = _lucid_cfg.get("model_path", "")
         
         if _model_path:
-            from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
-            
             _lucid_adapter = LucidDetectorAdapter(
                 time_window=_lucid_cfg["time_window"],
                 packets_per_flow=_lucid_cfg["packets_per_flow"],
                 enabled=True,
             )
             
-            # Load the model before registering the detector
-            _loaded = asyncio.run(_lucid_adapter.load_model(_model_path))
-            if not _loaded:
-                logger.warning("LUCID model at %r failed to load; detector disabled", _model_path)
-                _lucid_adapter._enabled = False
-            
-            pipeline.add_detector(_lucid_adapter)
+            # Load the model before registering the detector: a detector that
+            # cannot load its weights must not join the pipeline at all.
+            if asyncio.run(_lucid_adapter.load_model(_model_path)):
+                pipeline.add_detector(_lucid_adapter)
+            else:
+                logger.warning("LUCID model at %r failed to load; detector not registered",
+                               _model_path)
         else:
             pipeline.add_detector(LucidDetectorAdapter(enabled=False))
     except ImportError:
@@ -205,53 +216,68 @@ def cmd_block(args) -> None:
     fallback for "engine not running" and is announced loudly: editing the
     file does NOT update a running engine's in-memory rule engine, and a
     later engine-side save would silently overwrite the change."""
+    ip = _validate_ip(args)
     try:
         _api_request("/api/v1/rules/blacklist", method="POST",
-                     payload={"ip": args.ip, "reason": "manual"})
-        print(f"Blocked (live engine): {args.ip}")
+                     payload={"ip": ip, "reason": "manual"})
+        print(f"Blocked (live engine): {ip}")
         return
     except Exception as e:  # noqa: BLE001
+        if _refused_by_api(e):
+            print(f"ERROR: API refused {ip} (HTTP {e.code}): "
+                  f"{e.read().decode(errors='replace')[:200]}", file=sys.stderr)
+            sys.exit(1)
         print(f"WARNING: API unreachable ({e})", file=sys.stderr)
         print("WARNING: falling back to local rules.json — a RUNNING engine "
               "will not see this change until restart.", file=sys.stderr)
-    pipeline.rule_engine.add_blacklist(args.ip)
+    pipeline.rule_engine.add_blacklist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
-    print(f"Blocked (local rules.json): {args.ip}")
+    print(f"Blocked (local rules.json): {ip}")
 
 
 def cmd_unblock(args) -> None:
     """Lift a blacklist entry.  The API path also removes the kernel DROP and
     the escalation record the interceptor may have installed; the local
     fallback cannot, so it warns explicitly about the half-unblocked state."""
+    ip = _validate_ip(args)
     try:
-        _api_request(f"/api/v1/rules/blacklist/{args.ip}", method="DELETE")
-        print(f"Unblocked (live engine): {args.ip}")
+        _api_request(f"/api/v1/rules/blacklist/{ip}", method="DELETE")
+        print(f"Unblocked (live engine): {ip}")
         return
     except Exception as e:  # noqa: BLE001
+        if _refused_by_api(e):
+            print(f"ERROR: API refused {ip} (HTTP {e.code}): "
+                  f"{e.read().decode(errors='replace')[:200]}", file=sys.stderr)
+            sys.exit(1)
         print(f"WARNING: API unreachable ({e})", file=sys.stderr)
         print("WARNING: falling back to local rules.json — if the engine is "
               "running, its kernel DROP / temp ban for this IP STAYS in place "
               "until restart.", file=sys.stderr)
-    pipeline.rule_engine.remove_blacklist(args.ip)
+    pipeline.rule_engine.remove_blacklist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
-    print(f"Unblocked (local rules.json): {args.ip}")
+    print(f"Unblocked (local rules.json): {ip}")
 
 
 def cmd_whitelist(args) -> None:
     """Whitelist an IP/CIDR — through the API when reachable, local fallback
     with the same running-engine caveat as ``cmd_block``."""
+    ip = _validate_ip(args)
     try:
         _api_request("/api/v1/rules/whitelist", method="POST",
-                     payload={"ip": args.ip})
-        print(f"Whitelisted (live engine): {args.ip}")
+                     payload={"ip": ip})
+        print(f"Whitelisted (live engine): {ip}")
         return
     except Exception as e:  # noqa: BLE001
+        if _refused_by_api(e):
+            print(f"ERROR: API refused {ip} (HTTP {e.code}): "
+                  f"{e.read().decode(errors='replace')[:200]}", file=sys.stderr)
+            sys.exit(1)
         print(f"WARNING: API unreachable ({e})", file=sys.stderr)
         print("WARNING: falling back to local rules.json — a RUNNING engine "
               "will not see this change until restart.", file=sys.stderr)
-    pipeline.rule_engine.add_whitelist(args.ip)
+    pipeline.rule_engine.add_whitelist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
-    print(f"Whitelisted (local rules.json): {args.ip}")
+    print(f"Whitelisted (local rules.json): {ip}")
 
 
 def cmd_rules(args) -> None:
@@ -265,17 +291,22 @@ def cmd_rules(args) -> None:
 
 def cmd_unwhitelist(args) -> None:
     """Remove an entry from whitelist."""
+    ip = _validate_ip(args)
     try:
-        _api_request(f"/api/v1/rules/whitelist/{args.ip}", method="DELETE")
-        print(f"Unwhitelisted (live engine): {args.ip}")
+        _api_request(f"/api/v1/rules/whitelist/{ip}", method="DELETE")
+        print(f"Unwhitelisted (live engine): {ip}")
         return
     except Exception as e:  # noqa: BLE001
+        if _refused_by_api(e):
+            print(f"ERROR: API refused {ip} (HTTP {e.code}): "
+                  f"{e.read().decode(errors='replace')[:200]}", file=sys.stderr)
+            sys.exit(1)
         print(f"WARNING: API unreachable ({e})", file=sys.stderr)
         print("WARNING: falling back to local rules.json — a RUNNING engine "
               "will not see this change until restart.", file=sys.stderr)
-    pipeline.rule_engine.remove_whitelist(args.ip)
+    pipeline.rule_engine.remove_whitelist(ip)
     pipeline.rule_engine.save_rules(RULES_FILE)
-    print(f"Unwhitelisted (local rules.json): {args.ip}")
+    print(f"Unwhitelisted (local rules.json): {ip}")
 
 
 def cmd_alerts(args) -> None:
