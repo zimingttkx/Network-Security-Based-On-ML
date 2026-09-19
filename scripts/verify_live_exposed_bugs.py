@@ -78,8 +78,9 @@ class StubIptables:
         self.setup_queue: int | None = None
         self._safe_ips = safe_ips or []
 
-    def setup_nfqueue(self, queue_num: int = 0) -> None:
+    def setup_nfqueue(self, queue_num: int = 0, intercept_icmp: bool = False) -> None:
         self.setup_queue = queue_num
+        self.setup_icmp = intercept_icmp
 
     def block_ip(self, ip: str) -> bool:
         if not blockable(ip, self._safe_ips):
