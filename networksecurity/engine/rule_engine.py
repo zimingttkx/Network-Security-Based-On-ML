@@ -65,6 +65,19 @@ class RateLimiter:
             self._buckets.popitem(last=False)
         return len(bucket) <= self._max_conn
 
+    def update(self, window_seconds: float, max_connections: int) -> None:
+        """Change the window/cap in place (config hot reload).
+
+        Existing buckets are kept and reinterpreted under the new window: the
+        next check trims to the new cutoff.  Dropping them outright would
+        forget strikes accumulated seconds ago.
+        """
+        self._window = window_seconds
+        self._max_conn = max_connections
+
+    def limits(self) -> dict:
+        return {"window_seconds": self._window, "max_connections": self._max_conn}
+
     def reset(self, ip: str = "") -> None:
         if ip:
             self._buckets.pop(ip, None)
@@ -290,6 +303,55 @@ class RuleEngine(BaseDetector):
                 self.add_whitelist(ip)
         except Exception:
             logger.exception("Failed to load rules from %s", path)
+
+    def reload_rules(self, path: Path) -> dict:
+        """Replace the persistent tiers from *path* — hot reload semantics.
+
+        ``load_rules`` merges, which is correct at startup but wrong for a
+        reload: an operator who deletes an entry from rules.json must see it
+        stop enforcing.  Every entry is parsed before anything is swapped, so a
+        malformed file rejects the whole reload instead of applying half of it —
+        a half-applied ruleset is the worst possible state for a firewall.
+
+        Raises FileNotFoundError / ValueError / json.JSONDecodeError; the live
+        rule set is untouched in every failure case.
+        """
+        if not path.exists():
+            raise FileNotFoundError(f"rules file {path} not found")
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            raise ValueError(f"rules file {path} must contain a JSON object")
+        blacklist = [str(entry) for entry in data.get("blacklist", [])]
+        whitelist = [str(entry) for entry in data.get("whitelist", [])]
+        for entry in (*blacklist, *whitelist):
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"invalid rule entry {entry!r}: {exc}") from exc
+
+        new_bl, new_wl = set(blacklist), set(whitelist)
+        with self._lock:
+            summary = {
+                "blacklist_added": len(new_bl - self._blacklist),
+                "blacklist_removed": len(self._blacklist - new_bl),
+                "whitelist_added": len(new_wl - self._whitelist),
+                "whitelist_removed": len(self._whitelist - new_wl),
+            }
+            self._blacklist = new_bl
+            self._whitelist = new_wl
+            # Pre-parsed CIDR lists are rebuilt here, not per packet.
+            self._bl_nets = self._parse_nets(new_bl, "blacklist")
+            self._wl_nets = self._parse_nets(new_wl, "whitelist")
+        return summary
+
+    def set_rate_limit(self, window_seconds: float, max_connections: int) -> None:
+        """Swap the rate-limit knobs in place (config reload without restart)."""
+        self._rate_limiter.update(window_seconds, max_connections)
+
+    def set_allowed_protocols(self, protocols: set[int]) -> None:
+        """Swap the protocol allowlist.  Empty input is refused by the caller."""
+        with self._lock:
+            self._protocol_allow = set(protocols)
 
     def save_rules(self, path: Path) -> None:
         """Persist the persistent blacklist/whitelist to a JSON file (atomic).
