@@ -339,6 +339,8 @@ async def engine_status():
         # which were therefore dropped fail-closed.  A rising count here means
         # wire traffic is being discarded before detection ever sees it.
         "nfqueue_parse_failed": inter_status.get("nfqueue_parse_failed"),
+        # False when ip6tables is missing: IPv6 bypasses the IPS entirely.
+        "ipv6_intercepted": inter_status.get("ipv6_ready"),
         # Blocks the kernel refused and temp-ban lifts that failed.  Both are
         # retried by the sweeper, so a list that never drains means the
         # firewall and our view of it have diverged.

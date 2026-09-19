@@ -511,6 +511,10 @@ class Interceptor:
             # Last hot-reload summary (rules.json / config.yaml), or None when
             # nothing has reloaded since start.
             "last_reload": self._last_reload,
+            # False when ip6tables is missing: IPv6 is then neither inspected
+            # nor blocked, and that gap has to be visible to whoever is reading
+            # the status of a dual-stack host.
+            "ipv6_ready": getattr(self._iptables, "ipv6_ready", False),
             "pipeline": self._pipeline.status(),
         }
 

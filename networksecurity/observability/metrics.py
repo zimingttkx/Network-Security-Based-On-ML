@@ -23,6 +23,8 @@ _HEADER = """# HELP nips_up Whether the NIPS management API is responding.
 # TYPE nips_detection_unavailable_drops_total counter
 # HELP nips_nfqueue_parse_failed_total Frames the parser rejected and dropped fail-closed.
 # TYPE nips_nfqueue_parse_failed_total counter
+# HELP nips_ipv6_intercepted 1 when IPv6 is redirected and blockable; 0 means IPv6 bypasses the IPS entirely.
+# TYPE nips_ipv6_intercepted gauge
 # HELP nips_blacklist_size Persistent blacklist entries (rules.json backed).
 # TYPE nips_blacklist_size gauge
 # HELP nips_whitelist_size Whitelist entries.
@@ -85,6 +87,8 @@ def render_metrics(*, pipeline, store, interceptor, started_at: float) -> str:
     lines.append(_line("nips_detection_unavailable_drops_total", drops if drops is not None else 0))
     parse_failed = inter_status.get("nfqueue_parse_failed")
     lines.append(_line("nips_nfqueue_parse_failed_total", parse_failed if parse_failed is not None else 0))
+    ipv6 = inter_status.get("ipv6_ready")
+    lines.append(_line("nips_ipv6_intercepted", 1 if ipv6 else 0))
     stale = inter_status.get("detection_loop_stale_seconds")
     if stale is not None:
         lines.append(_line("nips_detection_loop_stale_seconds", round(float(stale), 3)))
