@@ -216,15 +216,14 @@ class EventStore:
         """
         cutoff = time.time() - self.retention_days * 86400.0
         for table in ("alerts", "audit"):
-            cur.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+            spec = self._SQL[table]
+            cur.execute(spec["purge_age"], (cutoff,))
             if cur.rowcount > 0:
                 self.purged += cur.rowcount
-            cur.execute(f"SELECT count(*) FROM {table}")
+            cur.execute(spec["count_all"])
             total = cur.fetchone()[0]
             if total > self.max_rows:
-                cur.execute(
-                    f"DELETE FROM {table} WHERE id IN "
-                    f"(SELECT id FROM {table} ORDER BY id LIMIT ?)", (total - self.max_rows,))
+                cur.execute(spec["purge_size"], (total - self.max_rows,))
                 if cur.rowcount > 0:
                     self.purged += cur.rowcount
 
@@ -233,16 +232,59 @@ class EventStore:
     def query_alerts(self, *, limit: int = 100, offset: int = 0, source_ip: str | None = None,
                      action: str | None = None, since: float | None = None,
                      until: float | None = None) -> dict:
-        return self._query("alerts", _ALERT_KEYS, {"source_ip": source_ip, "action": action},
+        return self._query("alerts", (source_ip, action),
                            limit=limit, offset=offset, since=since, until=until)
 
     def query_audit(self, *, limit: int = 100, offset: int = 0, actor: str | None = None,
                     result: str | None = None, since: float | None = None,
                     until: float | None = None) -> dict:
-        return self._query("audit", _AUDIT_KEYS, {"actor": actor, "result": result},
+        return self._query("audit", (actor, result),
                            limit=limit, offset=offset, since=since, until=until)
 
-    def _query(self, table: str, keys: tuple[str, ...], eq: dict[str, str | None], *,
+    # Every statement is a literal: no caller-supplied text is ever concatenated
+    # into SQL, and each value arrives as a bound parameter.  Optional equality
+    # filters use "(? IS NULL OR col = ?)" so a single statement covers every
+    # combination.  Time bounds use finite sentinels rather than float('inf') —
+    # SQLite converts IEEE infinities to NULL, which would silently drop rows.
+    _SQL = {
+        "alerts": {
+            "keys": _ALERT_KEYS,
+            "count": ("SELECT count(*) FROM alerts WHERE ts >= ? AND ts <= ?"
+                      " AND (? IS NULL OR source_ip = ?)"
+                      " AND (? IS NULL OR action = ?)"),
+            "page": ("SELECT ts, source_ip, reason, action, detector FROM alerts"
+                     " WHERE ts >= ? AND ts <= ?"
+                     " AND (? IS NULL OR source_ip = ?)"
+                     " AND (? IS NULL OR action = ?)"
+                     " ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?"),
+            "count_all": "SELECT count(*) FROM alerts",
+            "purge_age": "DELETE FROM alerts WHERE ts < ?",
+            # Order by ts, not id: a replayed/backfilled event can carry an
+            # older timestamp than its row id, and the cap must shed the
+            # oldest events.
+            "purge_size": "DELETE FROM alerts WHERE id IN"
+                          " (SELECT id FROM alerts ORDER BY ts ASC, id ASC LIMIT ?)",
+        },
+        "audit": {
+            "keys": _AUDIT_KEYS,
+            "count": ("SELECT count(*) FROM audit WHERE ts >= ? AND ts <= ?"
+                      " AND (? IS NULL OR actor = ?)"
+                      " AND (? IS NULL OR result = ?)"),
+            "page": ("SELECT ts, actor, method, path, target, result, detail FROM audit"
+                     " WHERE ts >= ? AND ts <= ?"
+                     " AND (? IS NULL OR actor = ?)"
+                     " AND (? IS NULL OR result = ?)"
+                     " ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?"),
+            "count_all": "SELECT count(*) FROM audit",
+            "purge_age": "DELETE FROM audit WHERE ts < ?",
+            "purge_size": "DELETE FROM audit WHERE id IN"
+                          " (SELECT id FROM audit ORDER BY ts ASC, id ASC LIMIT ?)",
+        },
+    }
+    _NO_LOWER = 0.0
+    _NO_UPPER = 4e12          # year ~2096; comfortably above any real timestamp
+
+    def _query(self, table: str, eq: tuple[str | None, str | None], *,
                limit: int, offset: int, since: float | None,
                until: float | None) -> dict:
         if self._conn is None:
@@ -250,30 +292,19 @@ class EventStore:
             items = _tail(ring, limit, offset)
             return {"total": len(items), "items": items, "degraded": True}
 
-        clauses: list[str] = []
-        params: list = []
-        for column, value in eq.items():
-            if value:
-                clauses.append(f"{column} = ?")
-                params.append(value)
-        if since is not None:
-            clauses.append("ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("ts <= ?")
-            params.append(until)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        page = max(1, min(int(limit), 1000))
-        skip = max(0, int(offset))
+        spec = self._SQL[table]
+        keys: tuple[str, ...] = spec["keys"]
+        filters = [self._NO_LOWER if since is None else since,
+                   self._NO_UPPER if until is None else until,
+                   eq[0] or None, eq[0] or None,
+                   eq[1] or None, eq[1] or None]
         try:
             with self._lock:
                 cur = self._conn.cursor()
-                cur.execute(f"SELECT count(*) FROM {table}{where}", params)
+                cur.execute(spec["count"], filters)
                 total = int(cur.fetchone()[0])
-                cur.execute(
-                    f"SELECT ts, {', '.join(keys)} FROM {table}{where}"
-                    " ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
-                    [*params, page, skip])
+                cur.execute(spec["page"],
+                            [*filters, max(1, min(int(limit), 1000)), max(0, int(offset))])
                 items = [{"timestamp": _iso(r["ts"]), **{k: r[k] for k in keys}}
                          for r in cur.fetchall()]
             return {"total": total, "items": items, "degraded": False}
@@ -286,18 +317,13 @@ class EventStore:
         """Alert count in a time window, used by the metrics and stats endpoints."""
         if self._conn is None:
             return len(self._recent_alerts)
-        clauses, params = [], []
-        if since is not None:
-            clauses.append("ts >= ?")
-            params.append(since)
-        if until is not None:
-            clauses.append("ts <= ?")
-            params.append(until)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         try:
             with self._lock:
                 cur = self._conn.cursor()
-                cur.execute(f"SELECT count(*) FROM alerts{where}", params)
+                cur.execute(self._SQL["alerts"]["count"],
+                            [self._NO_LOWER if since is None else since,
+                             self._NO_UPPER if until is None else until,
+                             None, None, None, None])
                 return int(cur.fetchone()[0])
         except sqlite3.Error as exc:
             logger.error("event store count failed (%s)", exc)

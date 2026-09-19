@@ -272,7 +272,7 @@ jobs:
         run: |
           python scripts/verify_data_module.py
 
-      - name: Unit test — management plane (app.py + cli.py, 45 checks)
+      - name: Unit test — management plane (app.py + cli.py, 46 checks)
         run: |
           python scripts/verify_management_plane.py
 

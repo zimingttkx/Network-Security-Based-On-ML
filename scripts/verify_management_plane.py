@@ -208,6 +208,20 @@ def main() -> int:
                  if a["path"] == "/api/v1/rules/reload" and a["result"] == "500"]
         check("handler-audited failure is not double-recorded", not dupes, str(len(dupes)))
 
+    # -- store retention under backfill -------------------------------------
+    rdir = Path(tempfile.mkdtemp(prefix="nips_retention_")) / "e.db"
+    rstore = EventStore(rdir, max_rows=10, retention_days=30)
+    now_ts = time.time()
+    for i in range(30):          # insert newest-first, as a replay would
+        rstore.record_alert(f"10.0.0.{i}", "r", "block", "D", ts=now_ts - i)
+    rstore.flush(3.0)
+    kept = rstore.query_alerts(limit=100)
+    newest = kept["items"][0]["source_ip"] if kept["items"] else None
+    check("row cap sheds the oldest events even when backfilled",
+          kept["total"] == 10 and newest == "10.0.0.0",
+          f"total={kept['total']} newest={newest}")
+    rstore.close()
+
     # -- CLI-side guards (no server needed) ---------------------------------
     import cli
 
