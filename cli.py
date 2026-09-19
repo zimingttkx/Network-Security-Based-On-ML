@@ -24,6 +24,7 @@ import os
 import signal
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -126,7 +127,25 @@ def cmd_start(args) -> None:
         sys.exit(1)
 
     from networksecurity.interception import Interceptor
-    from networksecurity.utils.config import load_interception_config, load_blocking_config
+    from networksecurity.utils.config import (
+        load_blocking_config,
+        load_interception_config,
+        load_logging_config,
+        load_storage_config,
+    )
+    from networksecurity.observability import EventStore, configure_logging
+
+    # The standalone service must honour the logging block and record the same
+    # events as the API-driven path.  Both processes open the same WAL database,
+    # so /api/v1/alerts shows verdicts whichever way interception was started.
+    configure_logging(load_logging_config())
+    storage_cfg = load_storage_config()
+    event_store = EventStore(
+        storage_cfg["events_db"],
+        max_rows=storage_cfg["max_rows"],
+        retention_days=storage_cfg["retention_days"],
+        queue_size=storage_cfg["queue_size"],
+    )
 
     inter_cfg = load_interception_config()
     blocking_cfg = load_blocking_config()
@@ -140,10 +159,16 @@ def cmd_start(args) -> None:
         table_max=blocking_cfg["table_max"],
     )
 
+    def _record(pkt, verdict):
+        if verdict.action.value == "block":
+            event_store.record_alert(pkt.src_ip, verdict.reason,
+                                     verdict.action.value, verdict.detector)
+
     interceptor = Interceptor(
         pipeline,
         queue_num=inter_cfg.get("nfqueue_num", 0),
         safe_ips=inter_cfg.get("safe_ips"),
+        on_verdict=_record,
         block_policy=policy,
     )
 
@@ -151,6 +176,7 @@ def cmd_start(args) -> None:
         print("\nShutting down...")
         interceptor.stop()
         pipeline.rule_engine.save_rules(RULES_FILE)
+        event_store.close()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -309,14 +335,52 @@ def cmd_unwhitelist(args) -> None:
     print(f"Unwhitelisted (local rules.json): {ip}")
 
 
+def _fetch_events(path: str, args, extra: dict[str, str | None]) -> bytes:
+    """Build a filtered event query against the API."""
+    params = [f"limit={max(1, min(args.last, 1000))}", f"offset={max(0, args.offset)}"]
+    for key, value in (*extra.items(), ("since", args.since), ("until", args.until)):
+        if value:
+            params.append(f"{key}={urllib.parse.quote(str(value), safe='')}")
+    if args.fmt:
+        params.append(f"format={args.fmt}")
+    return _api_request(f"{path}?{'&'.join(params)}")
+
+
 def cmd_alerts(args) -> None:
-    limit = args.last or 20
+    extra = {"source_ip": args.source_ip, "action": args.action}
     try:
-        resp = json.loads(_api_request(f"/api/v1/alerts?limit={limit}"))
-        for a in resp.get("items", []):
-            print(f"{a['timestamp']}  {a['source_ip']}  [{a['detector']}]  {a['reason']}")
-    except Exception:  # noqa: BLE001
-        print("No alerts available (API not running).")
+        raw = _fetch_events("/api/v1/alerts", args, extra).decode()
+    except Exception as e:  # noqa: BLE001
+        print(f"No alerts available (API not running?): {e}", file=sys.stderr)
+        return
+    if args.fmt in ("csv", "jsonl"):
+        print(raw, end="" if raw.endswith("\n") else "\n")
+        return
+    resp = json.loads(raw)
+    for a in resp.get("items", []):
+        print(f"{a['timestamp']}  {a['source_ip']}  [{a['detector']}]  "
+              f"{a['action']}  {a['reason']}")
+    print(f"-- {len(resp.get('items', []))} of {resp.get('total', 0)} stored"
+          + ("  (database unavailable, showing recent in-memory only)"
+             if resp.get("degraded") else ""))
+
+
+def cmd_audit(args) -> None:
+    """Show the management-plane audit trail: who changed which rule, and result."""
+    extra = {"actor": args.actor, "result": args.result}
+    try:
+        raw = _fetch_events("/api/v1/audit", args, extra).decode()
+    except Exception as e:  # noqa: BLE001
+        print(f"No audit records available (API not running?): {e}", file=sys.stderr)
+        return
+    if args.fmt in ("csv", "jsonl"):
+        print(raw, end="" if raw.endswith("\n") else "\n")
+        return
+    resp = json.loads(raw)
+    for a in resp.get("items", []):
+        print(f"{a['timestamp']}  {a['actor']:15}  {a['method']:6} {a['path']:38} "
+              f"{a['result']}  {a['target']}  {a['detail']}".rstrip())
+    print(f"-- {len(resp.get('items', []))} of {resp.get('total', 0)} stored")
 
 
 async def _run_test(args) -> None:
@@ -373,8 +437,24 @@ def main() -> None:
     p = sub.add_parser("unwhitelist", help="Remove IP/CIDR from whitelist")
     p.add_argument("--ip", required=True, help="IP or CIDR to remove")
 
-    p = sub.add_parser("alerts", help="Show recent alerts")
-    p.add_argument("--last", type=int, default=20)
+    def add_event_flags(parser):
+        parser.add_argument("--last", type=int, default=20, help="rows (1-1000)")
+        parser.add_argument("--offset", type=int, default=0, help="pagination offset")
+        parser.add_argument("--since", default=None, help="epoch seconds or ISO8601")
+        parser.add_argument("--until", default=None, help="epoch seconds or ISO8601")
+        parser.add_argument("--format", dest="fmt", default=None,
+                            choices=["json", "csv", "jsonl"],
+                            help="raw export instead of the table view")
+
+    p = sub.add_parser("alerts", help="Show stored alerts (detection/block events)")
+    add_event_flags(p)
+    p.add_argument("--source-ip", default=None, help="only this source IP")
+    p.add_argument("--action", default=None, help="only this action, e.g. block")
+
+    p = sub.add_parser("audit", help="Show the management-plane audit trail")
+    add_event_flags(p)
+    p.add_argument("--actor", default=None, help="only this client address")
+    p.add_argument("--result", default=None, help="only this result, e.g. blacklist_add or 401")
 
     p = sub.add_parser("test", help="Offline detection from pcap file")
     p.add_argument("--pcap", required=True, help="Path to pcap file")
@@ -394,6 +474,7 @@ def main() -> None:
         "unwhitelist": cmd_unwhitelist,
         "rules": cmd_rules,
         "alerts": cmd_alerts,
+        "audit": cmd_audit,
         "test": cmd_test,
     }
     dispatch[args.command](args)
