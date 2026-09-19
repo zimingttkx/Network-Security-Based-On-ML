@@ -79,7 +79,10 @@ pip install scapy
 - `engine.kitsune.*`：宽限期、阈值百分位、learning_rate（传给 AfterImage）
 - `engine.lucid.model_path`：设置路径即启用 LUCID；空字符串表示禁用
 - `api.auth_token`：设置后启用认证；空字符串表示关闭认证（仅开发环境）
+- `api.host` / `api.port`：`python app.py` 的监听地址与端口
 - `interception.safe_ips`：添加永远不会被封禁的 IP（回环默认包含）
+- `storage.*`：事件库路径、行数上限与保留窗口（见"告警、审计与指标"）
+- `logging.*`：日志级别、轮转文件与 syslog 转发
 
 ### 4. 运行 API
 
@@ -99,7 +102,11 @@ python cli.py unblock 1.2.3.4        # 解封某个 IP（DELETE /api/v1/rules/bl
 python cli.py whitelist --ip 10.0.0.0/8   # 将某个子网加入白名单（拒绝 /0 默认路由）
 python cli.py unwhitelist --ip 10.0.0.0/8 # 从白名单移除
 python cli.py rules                  # 列出黑名单/白名单条目
-python cli.py alerts --last 20       # 查看最近告警（通过 API）
+python cli.py alerts --last 20       # 查看已存储告警（最新在前，走 API）
+python cli.py alerts --source-ip 203.0.113.7 --action block
+python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
+python cli.py audit --last 20        # 谁改了哪条规则，结果如何
+python cli.py audit --result 401     # 被拒绝的管理请求
 python cli.py test --pcap sample.pcap  # 离线检测测试（无需 root）
 ```
 
@@ -143,7 +150,8 @@ api:
 | `GET` | `/health` | 健康检查 |
 | `GET` | `/api/v1/status` | 引擎状态、检测器、已封禁 IP（含内核级封禁）、检测循环健康度 |
 | `GET` | `/api/v1/stats/overview` | 流量与阻断统计 |
-| `GET` | `/api/v1/alerts` | 最近告警日志（分页） |
+| `GET` | `/api/v1/alerts` | 已存储告警：`limit`、`offset`、`source_ip`、`action`、`since`、`until`、`format=json\|csv\|jsonl` |
+| `GET` | `/api/v1/audit` | 管理审计：`limit`、`offset`、`actor`、`result`、`since`、`until`、`format` |
 | `GET` | `/api/v1/rules` | 当前黑名单和白名单 |
 | `GET` | `/api/v1/blocks` | 封禁升级状态（观察中 / 临时封禁 / 永久封禁） |
 | `POST` | `/api/v1/rules/blacklist` | 将 IP 加入黑名单 |
@@ -152,8 +160,23 @@ api:
 | `DELETE` | `/api/v1/rules/whitelist/{ip}` | 从白名单移除 IP |
 | `POST` | `/api/v1/engine/start` | 启动实时拦截（Linux，需 root） |
 | `POST` | `/api/v1/engine/stop` | 停止拦截并清理 iptables 规则 |
+| `GET` | `/metrics` | Prometheus 文本指标（与 `/api/v1/*` 同样需要 token） |
+
+两个 `DELETE` 路由使用 `{ip:path}`，因此 CIDR 条目同样可删除（`/api/v1/rules/blacklist/10.0.0.0%2F8`，或直接写未编码形式）。
 
 **认证：**在 `config.yaml` 中设置 `api.auth_token`（或环境变量 `NIPS_API_TOKEN`）后，所有 `/api/v1/*` 调用都必须携带请求头 `X-API-Token: <token>`。留空表示关闭认证（仅限开发环境，服务启动时会打 WARNING）。`/health` 保持开放（用于存活探测）。
+
+### 告警、审计与指标
+
+检测事件与每一次管理操作都会写入 SQLite（WAL）库 `storage.events_db`（默认 `data/events.db`）——重启不丢数据，`retention_days` 与 `max_rows` 控制文件规模。
+
+- **告警**（`/api/v1/alerts`、`cli.py alerts`）——每次 BLOCK 判决一行，白名单变更也会记录。`format=csv|jsonl` 可导出给 SIEM；单次请求最多 1000 行。
+- **审计**（`/api/v1/audit`、`cli.py audit`）——每条规则/引擎变更，以及每次被拒绝的尝试（401/422）各一行，含对端地址、方法、路径、目标与结果。API 只有一个共享 token，因此 `actor` 标识的是主机，不是具体用户。
+- **指标**（`/metrics`）——处理/拦截包数、检测器状态、黑名单规模、封禁升级计数、事件库健康度。
+
+检测路径不会等待磁盘：`record_alert` 只投递到有界缓冲区，由后台线程批量落盘。缓冲区溢出或批次失败时，`nips_alert_events_dropped_total` / `nips_event_store_write_errors_total` 计数上升，`/api/v1/status` 的 `event_store` 字段也会报告——审计链不完整是可见的，不会静默。数据库不可用时，读取回退到内存中最近 500 条事件，同时 `event_store.degraded` 为 true。
+
+`logging.file` 增加轮转日志文件，`logging.syslog_address` 转发到 syslog（平台套接字，或 `host:port` UDP）；目标不可达时只告警并跳过，不阻塞启动。
 
 ---
 
@@ -192,8 +215,13 @@ networksecurity/
   data/                        # 数据加载
     dataset_loader.py          # NSL-KDD、CICIDS2017、UNSW-NB15（CSV / Parquet）
     pcap_loader.py             # PCAP 文件读取器
+  observability/               # 持久化事件与指标（只做存储/日志）
+    alert_store.py             # SQLite 告警 + 审计，批量写入且不阻塞调用方
+    metrics.py                 # Prometheus 文本指标
+    log_setup.py               # 级别 / 轮转文件 / syslog 路由
   utils/                       # 共享工具
-    config.py                  # config.yaml 读取（engine / api / blocking 块）
+    config.py                  # config.yaml 读取（engine / api / blocking / storage / logging 块）
+    validation.py              # IP/CIDR 校验与黑名单拒绝规则
 scripts/                       # 基准测试、评估与回归检查
   benchmark.py                 # 吞吐量 + 规则引擎准确率
   benchmark_nslkdd.py          # NSL-KDD 检测基准

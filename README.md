@@ -79,7 +79,10 @@ pip install scapy
 - `engine.kitsune.*`: grace periods, threshold percentile, learning_rate (passed to AfterImage)
 - `engine.lucid.model_path`: set a path to enable LUCID; empty string disables it
 - `api.auth_token`: set to enable authentication; empty string disables auth (development mode)
+- `api.host` / `api.port`: what `python app.py` binds to
 - `interception.safe_ips`: add IPs that must never be blocked (loopback included by default)
+- `storage.*`: event database path, row cap and retention window (see "Alerts, audit and metrics")
+- `logging.*`: level, rotating file target and syslog forwarding
 
 ### 4. Run the API
 
@@ -99,7 +102,11 @@ python cli.py unblock 1.2.3.4        # unblock an IP (DELETE /api/v1/rules/black
 python cli.py whitelist --ip 10.0.0.0/8   # whitelist a subnet (rejects /0 default routes)
 python cli.py unwhitelist --ip 10.0.0.0/8 # remove from whitelist
 python cli.py rules                  # list blacklist/whitelist entries
-python cli.py alerts --last 20       # show recent alerts (via API)
+python cli.py alerts --last 20       # stored alerts, newest first (via API)
+python cli.py alerts --source-ip 203.0.113.7 --action block
+python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
+python cli.py audit --last 20        # who changed which rule, and the outcome
+python cli.py audit --result 401     # rejected management attempts
 python cli.py test --pcap sample.pcap  # offline detection test (no root needed)
 ```
 
@@ -145,7 +152,8 @@ On `engine/start` the API/CLI read the `interception`, `engine`, `blocking`, and
 | `GET` | `/health` | Health check |
 | `GET` | `/api/v1/status` | Engine status, detectors, blocked IPs (incl. kernel-level), detection-loop health |
 | `GET` | `/api/v1/stats/overview` | Traffic and blocking statistics |
-| `GET` | `/api/v1/alerts` | Recent alert log (paginated) |
+| `GET` | `/api/v1/alerts` | Stored alerts: `limit`, `offset`, `source_ip`, `action`, `since`, `until`, `format=json\|csv\|jsonl` |
+| `GET` | `/api/v1/audit` | Management audit trail: `limit`, `offset`, `actor`, `result`, `since`, `until`, `format` |
 | `GET` | `/api/v1/rules` | Current blacklist and whitelist |
 | `GET` | `/api/v1/blocks` | Live escalation state (observing / temp-banned / perm-banned) |
 | `POST` | `/api/v1/rules/blacklist` | Add IP to blacklist |
@@ -154,8 +162,23 @@ On `engine/start` the API/CLI read the `interception`, `engine`, `blocking`, and
 | `DELETE` | `/api/v1/rules/whitelist/{ip}` | Remove IP from whitelist |
 | `POST` | `/api/v1/engine/start` | Start live interception (Linux, root) |
 | `POST` | `/api/v1/engine/stop` | Stop interception and clean up iptables |
+| `GET` | `/metrics` | Prometheus text exposition (token-guarded like `/api/v1/*`) |
+
+The two `DELETE` routes take `{ip:path}`, so CIDR entries are removable too (`/api/v1/rules/blacklist/10.0.0.0%2F8` or the unencoded form).
 
 **Authentication:** when `api.auth_token` is set in `config.yaml` (or the `NIPS_API_TOKEN` env var is present), every `/api/v1/*` call must carry the header `X-API-Token: <token>`. An empty token disables authentication (development only — the server logs a warning at startup). `/health` stays open (liveness probes).
+
+### Alerts, audit and metrics
+
+Detection events and every management action are written to SQLite (WAL) at `storage.events_db` (default `data/events.db`) — they survive a restart, and `retention_days` plus `max_rows` bound the file.
+
+- **Alerts** (`/api/v1/alerts`, `cli.py alerts`) — one row per BLOCK verdict, plus whitelist changes. `format=csv|jsonl` exports for a SIEM; each request is capped at 1000 rows.
+- **Audit** (`/api/v1/audit`, `cli.py audit`) — one row per rule/engine change *and* per refused attempt (401/422), with the peer address, method, path, target and outcome. The API has one shared token, so `actor` identifies the host, not a named user.
+- **Metrics** (`/metrics`) — packets processed/blocked, detector state, blacklist sizes, temp-ban counters, event-store health.
+
+The detection path never waits on the disk: `record_alert` only enqueues into a bounded buffer and a background thread writes in batches. If the buffer overflows or a batch fails, the counters in `nips_alert_events_dropped_total` / `nips_event_store_write_errors_total` rise and `/api/v1/status` reports them under `event_store` — an incomplete trail is visible, not silent. When the database is unusable, reads fall back to the most recent 500 in-memory events and `event_store.degraded` is true.
+
+`logging.file` adds a rotating log file and `logging.syslog_address` forwards to syslog (platform socket, or `host:port` over UDP); an unreachable target is reported and skipped rather than blocking startup.
 
 ---
 
@@ -194,8 +217,13 @@ networksecurity/
   data/                        # Data loading
     dataset_loader.py          # NSL-KDD, CICIDS2017, UNSW-NB15 (CSV / Parquet)
     pcap_loader.py             # PCAP file reader
+  observability/               # Durable events and metrics (storage only)
+    alert_store.py             # SQLite alerts + audit trail, batched non-blocking writer
+    metrics.py                 # Prometheus text exposition
+    log_setup.py               # level / rotating file / syslog routing
   utils/                       # Shared helpers
-    config.py                  # config.yaml loading (engine / api / blocking blocks)
+    config.py                  # config.yaml loading (engine / api / blocking / storage / logging)
+    validation.py              # IP/CIDR validation and blacklist refusal rules
 scripts/                       # Benchmarks, evaluation & regression checks
   benchmark.py                 # Throughput + rule-engine accuracy
   benchmark_nslkdd.py          # NSL-KDD detection benchmark

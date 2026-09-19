@@ -112,8 +112,17 @@ networksecurity/
     dataset_loader.py   # NSL-KDD, CICIDS2017, UNSW-NB15 labeled CSV/Parquet loader (header required)
     pcap_loader.py      # scapy pcap reader
 
-  utils/            # Shared configuration loading
-    config.py       # config.yaml readers (engine / api / blocking blocks)
+  observability/    # Durable events and metrics.  Storage/logging only — no
+                    # packet inspection, and no import of engine/ or
+                    # interception/: callers hand it objects.
+    alert_store.py  # SQLite (WAL) alerts + management audit trail, bounded
+                    # non-blocking queue, batched writer thread, retention purge
+    metrics.py      # Prometheus text exposition, rendered from live objects
+    log_setup.py    # level / rotating file / syslog routing for this subtree
+
+  utils/            # Shared configuration and input validation
+    config.py       # config.yaml readers (engine / api / blocking / storage / logging blocks)
+    validation.py   # IP/CIDR validation, blacklist refusal, rule sweep
 ```
 
 ### Dependency Rules
@@ -126,6 +135,10 @@ engine/       ──imports──→ features/      ✓ allowed
 app.py/cli.py ──imports──→ engine/        ✓ allowed
 app.py/cli.py ──imports──→ interception/  ✓ allowed (lazy, only for start/stop)
 app.py/cli.py ──imports──→ utils/         ✓ allowed (config loading)
+app.py/cli.py ──imports──→ observability/  ✓ allowed (management plane owns persistence)
+engine/       ──imports──→ observability/  ✗ FORBIDDEN (detection must not own disk I/O; verdicts reach the store through the caller's on_verdict callback)
+interception/ ──imports──→ observability/  ✗ FORBIDDEN (same reason: a stalled disk write in the NFQUEUE callback fail-closes traffic)
+observability/ ──imports──→ engine/        ✗ FORBIDDEN (receives duck-typed objects; stays testable alone)
 features/     ──imports──→ engine/        ✓ allowed (uses PacketInfo)
 data/         standalone                   ✓ (no internal deps)
 ```
