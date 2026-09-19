@@ -96,39 +96,50 @@ class LucidDetector:
         self.is_trained = True
         return result
     
-    def train_from_packets(self, packets: list[dict], epochs: int = 100, 
-                           validation_split: float = 0.2, verbose: int = 0) -> dict:
+    def train_from_packets(self, packets: list[dict], epochs: int = 100,
+                           validation_split: float = 0.2, verbose: int = 0,
+                           attackers: list[str] | None = None,
+                           victims: list[str] | None = None) -> dict:
+        """Train from packet dicts, reusing the online feature path.
+
+        ``attackers``/``victims`` drive the labels: a window is an attack when a
+        majority of its packets touch one of those addresses.  Passing neither
+        trains on an all-benign set, which is the kind of run that produces a
+        confidently useless model, so it is refused rather than attempted.
         """
-        Train from raw packets.
-        
-        Args:
-            packets: list of packet dicts.
-            epochs: number of training epochs.
-            validation_split: validation set ratio.
-        """
-        # Use a local parser instance so we don't pollute the online buffer.
+        # A local parser so the online buffer keeps its in-flight flows.
         local_parser = LucidDatasetParser(
             time_window=self.time_window,
             packets_per_flow=self.packets_per_flow,
         )
-        X, y = local_parser.parse_batch(packets)
-        
+        X, y = local_parser.build_samples(packets, attackers=attackers, victims=victims)
+
         if len(X) == 0:
-            raise ValueError("Not enough packets to generate training samples")
-        
-        # Split train/validation
+            raise ValueError(
+                f"no complete {self.packets_per_flow}-packet windows in {len(packets)} "
+                f"packets; every flow expired inside its {self.time_window}s window first")
+        classes = int(np.count_nonzero(y))
+        if classes == 0 or classes == len(y):
+            raise ValueError(
+                f"labels are degenerate ({classes} of {len(y)} windows labelled as "
+                "attack); pass attackers/victims so training data has both classes")
+        if len(X) < 4:
+            raise ValueError(
+                f"only {len(X)} training windows; the CNN needs a handful of samples "
+                "per class to fit anything")
+
         n_val = int(len(X) * validation_split)
         if n_val > 0:
             indices = np.random.permutation(len(X))
             X, y = X[indices], y[indices]
-            X_train, X_val = X[n_val:], X[:n_val]
-            y_train, y_val = y[n_val:], y[:n_val]
+            X_train, y_train = X[n_val:], y[n_val:]
+            X_val, y_val = X[:n_val], y[:n_val]
         else:
             X_train, y_train = X, y
-            X_val, y_val = None, None
-        
+            X_val = y_val = None
+
         return self.train(X_train, y_train, X_val, y_val, epochs, verbose)
-    
+
     def load_model(self, path: str) -> bool:
         """Load a pre-trained Keras model from ``path``.
         
