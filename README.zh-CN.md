@@ -36,7 +36,7 @@ LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流
 ### 算法
 
 - **Kitsune (NDSS'18)** — AfterImage 增量统计（90 维特征）+ KitNET 自编码器集成。在线训练，无需标签。当链路层头部缺失（实时 NFQUEUE 场景）时，MAC 通道使用 `(protocol, ttl)` 代理键，避免方差退化为零。宽限期（`fm_grace_period`、`ad_grace_period`）允许在检测开始前先预热；此期间数据包只记录不拦截。
-- **LUCID (IEEE TNSM 2020)** — 在 10 包流窗口（每包 11 维特征）上跑的 1D CNN。默认关闭，需要训练好的模型，且在配置中设置 `engine.lucid.model_path`。
+- **LUCID (IEEE TNSM 2020)** — 在 10 包流窗口（每包 11 维特征）上跑的 1D CNN。默认关闭，需要训练好的模型，且在配置中设置 `engine.lucid.model_path`；权重用 `scripts/train_lucid.py` 生成（见下文"训练 LUCID"）。
 
 > **关于协议过滤：** 规则引擎的协议白名单只包含 TCP(6) 与 UDP(17)，凡是被它检查到的其他协议——包括 **ICMP(1)**——都会拦截。但在实时拦截中，只有 TCP 与 UDP 会被导入 NFQUEUE（`interception.intercept_icmp` 默认关闭），因此 ICMP 在那里**既不被检查、也不被拦截**：由主机自身的防火墙决定。把 `interception.intercept_icmp` 设为 true 才能让 ICMP 进入流水线，然后用 `engine.rule_engine.allowed_icmp_types` 按类型放行——整协议封禁会一并打断 Path MTU Discovery（type 3 "frag needed"），导致大连接被黑洞，所以有用的配置是"按类型放行"而不是一刀切封禁。离线 pcap 测试（`cli.py test --pcap`）确实会走到协议过滤，因为不论何种协议，包都会进入引擎。
 
@@ -275,6 +275,7 @@ scripts/                       # 基准测试、评估与回归检查
   benchmark_nslkdd.py          # NSL-KDD 检测基准
   attack_simulation.py         # 大规模攻击模拟
   build_unsw_pcap.py           # 用内置 UNSW-NB15 流记录重建真实流量 pcap
+  train_lucid.py               # 训练 LUCID CNN 并产出 engine.lucid.model_path 指向的权重
   evaluate_pcap.py             # 端到端 pcap 评估（按攻击类别报告）
   verify_*.py                  # 模块回归检查，含 CI 的 FPR 守卫
 ```
@@ -331,6 +332,27 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 | **CICIDS2017** | 带表头 CSV，含 `Label` 列（大写 L），以及 `Flow ID` / `Timestamp` / `Source IP` / `Destination IP` | 这 4 个元数据列会被自动丢弃。`BENIGN` → 0，其余 → 1。 |
 
 类别型列会做 one-hot 编码（`get_dummies`，`drop_first`），缺失值填 0，结果以 `float32` 返回。若需要训练/测试编码对齐，请用 `train_test_split()`——它会在训练集上拟合编码，再把测试集 reindex 到相同列。
+
+### 训练 LUCID
+
+LUCID 是本项目里唯一有监督的检测器，所以必须先有权重文件，`engine.lucid.model_path` 才有东西可指：
+
+```bash
+# 1. 先看标签意味着什么——不需要 TensorFlow，也不写任何文件
+python scripts/train_lucid.py --pcap capture.pcap \
+    --attackers 203.0.113.0/24 --victims 10.0.0.1 --inspect
+
+# 2. 训练并保存（先 pip install -e ".[lucid]"）
+python scripts/train_lucid.py --pcap capture.pcap \
+    --attackers attackers.txt --victims 10.0.0.1 --out models/lucid_cnn.h5
+```
+
+`--inspect` 会打印抓包能切出多少个完整窗口、攻击/正常的比例、以及有多少流在窗口填满前就过期了——这几个数字决定你写的地址到底有没有标上东西，省掉一次白跑的训练。要点：
+
+- `--attackers`/`--victims` 可以写单个地址或 CIDR。非法条目直接报错而不是跳过：攻击列表里一个拼写错误，恰好会让模型最该学会的那部分流量失去标签。
+- 按 LUCID 的约定，一个窗口里**多数**包的任意一端涉及 attacker 或 victim 地址即算攻击——所以一旦列了 victim，所有流向它的包都会被标成攻击。如果抓包里含该主机的正常业务，就只列 attacker。
+- 训练复用在线特征路径，避免出现"按一种表示训练、按另一种表示打分"。
+- 标签单侧、完整窗口为 0、或窗口少于 4 个都会被拒绝并打印原因，而不是产出一个只预测单一类别却看起来健康的模型。
 
 ---
 

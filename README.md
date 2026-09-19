@@ -36,7 +36,7 @@ LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pip
 ### Algorithms
 
 - **Kitsune (NDSS'18)** — AfterImage incremental statistics (90 features) + a KitNET autoencoder ensemble. Trains online, no labels needed. When link-layer headers are absent (live NFQUEUE), the MAC channel uses a `(protocol, ttl)` proxy key so it never collapses to zero variance. Grace periods (`fm_grace_period`, `ad_grace_period`) allow warmup before detection starts; during this time packets are logged but not blocked.
-- **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model and `engine.lucid.model_path` set in config.
+- **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model and `engine.lucid.model_path` set in config. Produce the model with `scripts/train_lucid.py` (see "Training LUCID" below).
 
 > **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17); anything else it inspects is blocked, including **ICMP(1)**. In live interception, however, only TCP and UDP are redirected into NFQUEUE (`interception.intercept_icmp` is off by default) — so there ICMP is **not inspected and not blocked**: the host's own firewall decides. Turn `interception.intercept_icmp: true` on to bring ICMP into the pipeline, then allow individual types through `engine.rule_engine.allowed_icmp_types` — blocking the whole protocol also breaks Path MTU Discovery (type 3, "frag needed"), which blackholes large connections, so a type list is the useful setting rather than an all-or-nothing ban. Offline pcap runs (`cli.py test --pcap`) do exercise the protocol filter, since those packets reach the engine whatever their protocol.
 
@@ -278,6 +278,7 @@ scripts/                       # Benchmarks, evaluation & regression checks
   benchmark_nslkdd.py          # NSL-KDD detection benchmark
   attack_simulation.py         # Large-scale attack simulation
   build_unsw_pcap.py           # Rebuild real-traffic pcaps from the bundled UNSW-NB15 flows
+  train_lucid.py               # Train the LUCID CNN and write engine.lucid.model_path
   evaluate_pcap.py             # End-to-end pcap evaluation (per attack category)
   verify_*.py                  # Module regression checks, incl. the CI FPR guard
 ```
@@ -333,6 +334,27 @@ Required layout per dataset:
 | **CICIDS2017** | CSV with header, `Label` column (capital L), plus `Flow ID` / `Timestamp` / `Source IP` / `Destination IP` | Those four metadata columns are dropped automatically. `BENIGN` → 0, everything else → 1. |
 
 Categorical columns are one-hot encoded (`get_dummies`, `drop_first`), missing values filled with 0, and the result is returned as `float32`. For aligned train/test encodings use `train_test_split()`, which fits the encoding on the training split and reindexes the test split to the same columns.
+
+### Training LUCID
+
+LUCID is the one detector that is supervised, so it needs a model file before `engine.lucid.model_path` can point at anything:
+
+```bash
+# 1. check what your labels imply — no TensorFlow needed, writes nothing
+python scripts/train_lucid.py --pcap capture.pcap \
+    --attackers 203.0.113.0/24 --victims 10.0.0.1 --inspect
+
+# 2. fit and save (pip install -e ".[lucid]" first)
+python scripts/train_lucid.py --pcap capture.pcap \
+    --attackers attackers.txt --victims 10.0.0.1 --out models/lucid_cnn.h5
+```
+
+`--inspect` prints how many complete windows the capture yields, the attack/benign balance and how many flows expired before filling a window — the numbers that tell you whether the addresses you named label anything at all before you spend a training run. Notes:
+
+- Attacker/victim entries may be single addresses or CIDRs. A malformed one is refused rather than skipped: a typo in an attacker list silently unlabels exactly the traffic the model was meant to learn.
+- Under LUCID's convention a window is an attack if a **majority** of its packets involve an attacker *or* a victim address on either side — so listing a victim marks every flow toward it as attack traffic. Name attackers only if your capture contains ordinary traffic to that host.
+- Training reuses the online feature path, so a model cannot be fitted on one representation and scored against another.
+- One-sided labels, zero complete windows, or fewer than four windows are refused with the reason printed, instead of producing a model that predicts one class and looks healthy.
 
 ---
 
