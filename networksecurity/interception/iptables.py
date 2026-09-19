@@ -85,7 +85,19 @@ class IptablesManager:
         # redirects.  Inserting at position 1 put every DROP over the rules
         # whose whole purpose is to keep the box reachable.
         self._guard_rule_count: int = 0
+        # Same, for the ip6tables chain.  A DROP must land below the v6 guards,
+        # and the two chains are built and counted independently.
+        self._guard_rule_count_v6: int = 0
+        # False when ip6tables is unavailable: IPv6 traffic is then neither
+        # inspected nor blocked, which callers must be able to see rather than
+        # infer from an empty blocked list.
+        self._ipv6_ready: bool = False
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _tool_for(ip: str) -> str:
+        """"ip6tables" for anything that looks like an IPv6 address."""
+        return "ip6tables" if ":" in ip else "iptables"
 
     # --- nfqueue setup / teardown -----------------------------------------
 
@@ -164,22 +176,72 @@ class IptablesManager:
                 self._run("iptables", "-A", self.CHAIN, "-p", "icmp",
                           "-j", "NFQUEUE", "--queue-num", str(queue_num))
 
+            self._setup_nfqueue_v6(queue_num, intercept_icmp)
+
         logger.info(
-            "nfqueue rules added to iptables chain %s (%d guard rules)",
+            "nfqueue rules added to iptables chain %s (%d guard rules, v6 %s)",
             self.CHAIN, self._guard_rule_count,
+            "on" if self._ipv6_ready else "unavailable",
         )
 
-    def _insert_guard(self, *spec: str) -> bool:
+    def _setup_nfqueue_v6(self, queue_num: int, intercept_icmp: bool) -> None:
+        """Mirror the redirect setup into ip6tables.
+
+        IPv6 has its own ruleset, chain and guards; a v4 DROP does not stop a
+        v6 packet, so covering one family only looked like coverage while the
+        dual-stack host stayed open on the other half.  Called with the lock
+        held.  When ip6tables is missing the chain stays v6-free and
+        ``block_ip`` refuses v6 sources instead of pretending.
+        """
+        if self._rc("ip6tables", "-S") != 0:
+            logger.warning("ip6tables unavailable — IPv6 traffic will be neither "
+                           "inspected nor blocked; protect it separately or "
+                           "disable it on this host")
+            self._ipv6_ready = False
+            self._guard_rule_count_v6 = 0
+            return
+        self._ipv6_ready = True
+
+        if self._rc("ip6tables", "-N", self.CHAIN) != 0:
+            self._rc("ip6tables", "-F", self.CHAIN)
+        if not self._rule_exists("INPUT", "-j", self.CHAIN, tool="ip6tables"):
+            self._run("ip6tables", "-I", "INPUT", "-j", self.CHAIN)
+
+        guards = 0
+        for ip in self._safe_ips:
+            if ":" in ip and self._insert_guard("-s", ip, "-j", "ACCEPT", tool="ip6tables"):
+                guards += 1
+        if self._insert_guard("-i", "lo", "-j", "ACCEPT", tool="ip6tables"):
+            guards += 1
+        if self._insert_guard("-p", "tcp", "--dport", "22", "-j", "ACCEPT",
+                              tool="ip6tables"):
+            guards += 1
+        self._guard_rule_count_v6 = guards
+
+        for proto in ("tcp", "udp"):
+            if not self._rule_exists(self.CHAIN, "-p", proto, "-j", "NFQUEUE",
+                                     "--queue-num", str(queue_num), tool="ip6tables"):
+                self._run("ip6tables", "-A", self.CHAIN, "-p", proto,
+                          "-j", "NFQUEUE", "--queue-num", str(queue_num))
+        if intercept_icmp and not self._rule_exists(
+                self.CHAIN, "-p", "icmpv6", "-j", "NFQUEUE", "--queue-num", str(queue_num),
+                tool="ip6tables"):
+            # ICMPv6 carries PMTUD (packet-too-big) and ND; without it a v6 path
+            # silently blackholes anything above the first MTU.
+            self._run("ip6tables", "-A", self.CHAIN, "-p", "icmpv6",
+                      "-j", "NFQUEUE", "--queue-num", str(queue_num))
+
+    def _insert_guard(self, *spec: str, tool: str = "iptables") -> bool:
         """Ensure an ACCEPT guard is present in the chain.
 
         Returns True only when the rule really is there afterwards, so a
         failed insert does not inflate ``_guard_rule_count`` and push later
         DROPs one position too far down.
         """
-        if self._rule_exists(self.CHAIN, *spec):
+        if self._rule_exists(self.CHAIN, *spec, tool=tool):
             return True
         try:
-            self._run("iptables", "-I", self.CHAIN, *spec)
+            self._run(tool, "-I", self.CHAIN, *spec)
         except (subprocess.CalledProcessError, RuntimeError) as exc:
             logger.warning(
                 "Could not add guard rule [%s] — skipping: %s", " ".join(spec), exc,
@@ -192,11 +254,13 @@ class IptablesManager:
         if not self._nfqueue_rules_added:
             return
         with self._lock:
-            self._run("iptables", "-D", "INPUT", "-j", self.CHAIN, check=False)
-            self._run("iptables", "-F", self.CHAIN, check=False)
-            self._run("iptables", "-X", self.CHAIN, check=False)
+            for tool in ("iptables", "ip6tables"):
+                self._run(tool, "-D", "INPUT", "-j", self.CHAIN, check=False)
+                self._run(tool, "-F", self.CHAIN, check=False)
+                self._run(tool, "-X", self.CHAIN, check=False)
             self._nfqueue_rules_added = False
             self._guard_rule_count = 0
+            self._guard_rule_count_v6 = 0
         logger.info("nfqueue rules removed")
 
     # --- IP blocking -------------------------------------------------------
@@ -219,7 +283,13 @@ class IptablesManager:
             # Inserting into a non-existent chain raises CalledProcessError,
             # which would abort before updating ``_blocked`` and desync state
             # from the real firewall.  Skip the insert when the chain is gone.
-            if not self._nfqueue_rules_added or not self._chain_exists(self.CHAIN):
+            tool = self._tool_for(ip)
+            if tool == "ip6tables" and not self._ipv6_ready:
+                logger.warning("block_ip(%s) refused — ip6tables is unavailable, "
+                               "so no chain exists to enforce an IPv6 DROP", ip)
+                return False
+            if (not self._nfqueue_rules_added
+                    or not self._chain_exists(self.CHAIN, tool=tool)):
                 logger.warning(
                     "block_ip(%s) skipped — chain %s gone (likely during teardown)",
                     ip, self.CHAIN,
@@ -227,14 +297,15 @@ class IptablesManager:
                 return False
             if ip in self._blocked:
                 return True
-            position = str(self._guard_rule_count + 1)
+            guards = (self._guard_rule_count_v6 if tool == "ip6tables"
+                      else self._guard_rule_count)
+            position = str(guards + 1)
             try:
                 # Below every ACCEPT guard (safe_ips, loopback, SSH) and above
                 # the NFQUEUE redirects.
-                self._run("iptables", "-I", self.CHAIN, position,
-                          "-s", ip, "-j", "DROP")
+                self._run(tool, "-I", self.CHAIN, position, "-s", ip, "-j", "DROP")
             except (subprocess.CalledProcessError, RuntimeError):
-                logger.warning("block_ip(%s) failed — iptables rejected the rule", ip)
+                logger.warning("block_ip(%s) failed — %s rejected the rule", ip, tool)
                 return False
             self._blocked.add(ip)
         logger.info("blocked IP: %s (chain position %s)", ip, position)
@@ -261,8 +332,9 @@ class IptablesManager:
         with self._lock:
             if ip not in self._blocked:
                 return False
-            rc = self._rc("iptables", "-D", self.CHAIN, "-s", ip, "-j", "DROP")
-            if rc != 0 and self._rule_exists(self.CHAIN, "-s", ip, "-j", "DROP"):
+            tool = self._tool_for(ip)
+            rc = self._rc(tool, "-D", self.CHAIN, "-s", ip, "-j", "DROP")
+            if rc != 0 and self._rule_exists(self.CHAIN, "-s", ip, "-j", "DROP", tool=tool):
                 logger.warning(
                     "unblock_ip(%s) failed — DROP rule still installed", ip,
                 )
@@ -273,6 +345,11 @@ class IptablesManager:
 
     def blocked_ips(self) -> list[str]:
         return sorted(self._blocked)
+
+    @property
+    def ipv6_ready(self) -> bool:
+        """False when IPv6 is neither inspected nor blocked on this host."""
+        return self._ipv6_ready
 
     # --- full cleanup ------------------------------------------------------
 
@@ -301,7 +378,7 @@ class IptablesManager:
             return 127
 
     @staticmethod
-    def _chain_exists(chain: str) -> bool:
+    def _chain_exists(chain: str, tool: str = "iptables") -> bool:
         """Return True if the iptables chain exists.
 
         ``iptables -L <chain>`` succeeds (rc 0) exactly when the chain is
@@ -311,7 +388,7 @@ class IptablesManager:
         """
         try:
             result = subprocess.run(
-                ["iptables", "-L", chain],
+                [tool, "-L", chain],
                 capture_output=True,
                 text=True,
             )
@@ -320,7 +397,7 @@ class IptablesManager:
             return False
 
     @staticmethod
-    def _rule_exists(*args) -> bool:
+    def _rule_exists(*args, tool: str = "iptables") -> bool:
         """Return True if an iptables rule matching ``args`` already exists.
 
         ``iptables -C`` exits 0 when the rule is present and non-zero
@@ -328,7 +405,7 @@ class IptablesManager:
         """
         try:
             result = subprocess.run(
-                ["iptables", "-C", *args],
+                [tool, "-C", *args],
                 capture_output=True,
                 text=True,
             )
