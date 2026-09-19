@@ -72,9 +72,26 @@ def main() -> int:
               f"-A {chain} -p tcp -j NFQUEUE --queue-num 7 --queue-bypass" in rules,
               "module xt_NFQUEUE missing" if "NFQUEUE" not in rules else "")
         check("UDP redirected to NFQUEUE 7", "-p udp -j NFQUEUE --queue-num 7" in rules)
-        check("only TCP and UDP reach the pipeline (ICMP is not intercepted)",
-              "-p icmp" not in rules,
-              "documented behaviour of setup_nfqueue")
+        check("ICMP is not intercepted by default", "-p icmp" not in rules,
+              "setup_nfqueue redirects TCP/UDP only unless intercept_icmp is set")
+
+        # -- opt-in ICMP redirect -------------------------------------------
+        ipt.setup_nfqueue(queue_num=7, intercept_icmp=True)
+        rules_icmp = sh("iptables", "-S", chain)
+        check("intercept_icmp installs the ICMP redirect",
+              "-p icmp -j NFQUEUE --queue-num 7" in rules_icmp,
+              rules_icmp.replace("\n", " | ")[:120])
+        check("ICMP redirect does not disturb the guards",
+              f"-A {chain} -i lo -j ACCEPT" in rules_icmp
+              and f"-A {chain} -p tcp -m tcp --dport 22 -j ACCEPT" in rules_icmp)
+        ipt.setup_nfqueue(queue_num=7, intercept_icmp=True)
+        check("ICMP redirect is not duplicated on re-setup",
+              sh("iptables", "-S", chain).count("-p icmp -j NFQUEUE") == 1,
+              str(sh("iptables", "-S", chain).count("-p icmp -j NFQUEUE")))
+        # Back to the default shape so the block/unblock phase starts from the
+        # production rule set.
+        ipt.cleanup_nfqueue()
+        ipt.setup_nfqueue(queue_num=7)
 
         # -- blocking --------------------------------------------------------
         check("block_ip(203.0.113.7) reported success", ipt.block_ip("203.0.113.7"))

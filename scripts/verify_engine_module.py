@@ -91,6 +91,17 @@ def _tmp_dir(prefix):
             shutil.rmtree(path, ignore_errors=True)
     return _ctx()
 
+
+def _load_engine(path):
+    from networksecurity.utils.config import load_engine_config
+    return load_engine_config(path)
+
+
+def _load_interception(path):
+    from networksecurity.utils.config import load_interception_config
+    return load_interception_config(path)
+
+
 async def main():
     # --- P1/P2/P3: pipeline semantics -------------------------------------
     from networksecurity.engine.detector import BaseDetector
@@ -814,6 +825,66 @@ async def main():
         same = probe.probe()
         report("RL6 probe skips unchanged files", same is not None,
                f"unexpected summary={same}")
+
+    # -- group IC: ICMP per-type policy ------------------------------------
+    def icmp(type_no: int, code: int = 0) -> PacketInfo:
+        return PacketInfo("198.51.100.5", "10.0.0.1", 0, 0, 1, 84, 100.0,
+                          icmp_type=type_no, icmp_code=code)
+
+    async def decide(engine, packet) -> str:
+        verdict = await engine.process_packet(packet)
+        return "pass" if verdict is None else verdict.action.value
+
+    ic1 = RuleEngine()
+    results_icmp = {t: await decide(ic1, icmp(t)) for t in (0, 3, 8, 11)}
+    report("IC1 default blocks every ICMP type",
+           set(results_icmp.values()) != {"block"}, str(results_icmp))
+
+    ic2 = RuleEngine(allowed_icmp_types={3, 8})
+    ok = (await decide(ic2, icmp(3)) == "pass" and await decide(ic2, icmp(8)) == "pass"
+          and await decide(ic2, icmp(11)) == "block"
+          and "protocol 1 not allowed" in (await ic2.process_packet(icmp(11))).reason)
+    report("IC2 allowlisted types pass, others blocked", not ok,
+           "3/8 pass, 11 blocked with reason")
+
+    ic2.set_allowed_icmp_types({11})
+    ok = (await decide(ic2, icmp(11)) == "pass" and await decide(ic2, icmp(3)) == "block")
+    report("IC3 ICMP allowlist swaps live (hot reload)", not ok, "swap applied")
+
+    ic4 = RuleEngine(allowed_protocols={6, 17, 1}, allowed_icmp_types={13})
+    ok = await decide(ic4, icmp(13)) == "pass" and await decide(ic4, icmp(4)) == "pass"
+    report("IC4 protocol listed -> type list does not narrow it", not ok,
+           "allowed_protocols already admits ICMP; allowed_icmp_types only "
+           "widens for protocols NOT listed")
+
+    # A PMTUD blackhole is the concrete failure the type list exists to avoid:
+    # frag-needed (3/4) must be allowed while the flood-prone echo (8) is not.
+    ic5 = RuleEngine(allowed_icmp_types={3})
+    ok = (await decide(ic5, icmp(3, 4)) == "pass" and await decide(ic5, icmp(8)) == "block")
+    report("IC5 PMTUD allowed without opening echo flood", not ok,
+           "type 3/4 pass, type 8 blocked")
+
+    cfg_icmp = Path("config/config.yaml").read_text()
+    import tempfile as _tf
+    for probe, expect in (("allowed_icmp_types: [3, 11]", [3, 11]),
+                          ("allowed_icmp_types: [999]", []),
+                          ("allowed_icmp_types: notalist", []),
+                          ("allowed_icmp_types: [true]", [])):
+        bad_cfg = Path(_tf.mkdtemp()) / "config.yaml"
+        bad_cfg.write_text(cfg_icmp.replace("allowed_icmp_types: []", probe))
+        got = _load_engine(bad_cfg)["rule_engine"]["allowed_icmp_types"]
+        report(f"IC6 config probe {probe!r} -> {expect}", got != expect, f"got={got}")
+
+    bad_int = Path(_tf.mkdtemp()) / "config.yaml"
+    bad_int.write_text(cfg_icmp.replace("intercept_icmp: false", "intercept_icmp: yes-ish"))
+    report("IC7 non-boolean intercept_icmp falls back to False",
+           _load_interception(bad_int)["intercept_icmp"] is not False,
+           str(_load_interception(bad_int)["intercept_icmp"]))
+    good_int = Path(_tf.mkdtemp()) / "config.yaml"
+    good_int.write_text(cfg_icmp.replace("intercept_icmp: false", "intercept_icmp: true"))
+    report("IC7b intercept_icmp=true honoured",
+           _load_interception(good_int)["intercept_icmp"] is not True,
+           str(_load_interception(good_int)))
 
     print("\n==== SUMMARY ====")
     for name, status in results:

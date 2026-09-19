@@ -162,14 +162,16 @@ report("I11b ihl=60 > len(data) rejected", p is not None,
        f"protocol-1 packet with payload_size clamped to 0")
 p = PacketParser.from_raw(build_tcp_packet(version_ihl=0x42), timestamp=1.0)
 report("I11c ihl=8 on TCP rejected", p is not None, f"returns {p}")
-# Deliberate contract: a *well-formed* IPv4 packet whose protocol we do not
-# dissect is still returned with ports at 0, so the rule engine's
+# Deliberate contract: a *well-formed* IPv4 packet whose protocol carries no
+# ports is still returned with ports at 0, so the rule engine's
 # allowed_protocols filter blocks it — an auditable outcome rather than a
 # silent parse failure that would be indistinguishable from a malformed frame.
+# ICMP is dissected for type/code, so its 4-byte header counts as transport
+# overhead: 45 - 20 (IP) - 4 (ICMP) = 21 bytes of payload.
 p = PacketParser.from_raw(with_proto(build_tcp_packet(), 1), timestamp=1.0)
 report("I11d well-formed ICMP still parsed (ports 0)",
        not (p is not None and p.protocol == 1 and p.src_port == 0
-            and p.dst_port == 0 and p.payload_size == 25),
+            and p.dst_port == 0 and p.payload_size == 21),
        f"{p}")
 
 # --- I12: fragments -------------------------------------------------------------
@@ -326,7 +328,7 @@ class ExplodingIptables:
     def __init__(self):
         self.cleaned = False
 
-    def setup_nfqueue(self, queue_num: int = 0) -> None:
+    def setup_nfqueue(self, queue_num: int = 0, intercept_icmp: bool = False) -> None:
         raise RuntimeError("iptables rejected the redirect")
 
     def cleanup_all(self) -> None:
@@ -354,6 +356,71 @@ report("I24 setup() failure rolls the half-initialised interceptor back",
        f"running={it24.running} cleanup_all={stub24.cleaned} — without the "
        f"rollback a live kernel redirect can be left with no listener "
        f"draining the queue, stalling every matched packet")
+
+# --- I8b: ICMP type/code parsing --------------------------------------------
+def build_icmp(itype: int, icode: int, ip_total: int = 28) -> bytes:
+    ip = bytearray(20)
+    ip[0] = 0x45
+    ip[2] = (ip_total >> 8) & 0xFF
+    ip[3] = ip_total & 0xFF
+    ip[8] = 64
+    ip[9] = 1                      # protocol ICMP
+    ip[12:16] = bytes([192, 0, 2, 1])
+    ip[16:20] = bytes([198, 51, 100, 1])
+    icmp = bytes([itype, icode, 0, 0, 0, 1, 0, 1])
+    return bytes(ip) + icmp
+
+
+pkt_icmp = PacketParser.from_raw(build_icmp(3, 4), timestamp=1.0)
+report("I8b ICMP type/code parsed",
+       pkt_icmp is None or pkt_icmp.icmp_type != 3 or pkt_icmp.icmp_code != 4,
+       f"{pkt_icmp}")
+pkt_frag_needed = PacketParser.from_raw(build_icmp(3, 4, ip_total=28), timestamp=1.0)
+report("I8b ICMP ports stay 0 (no UDP port misread)",
+       pkt_frag_needed is None or (pkt_frag_needed.src_port, pkt_frag_needed.dst_port) != (0, 0),
+       str(pkt_frag_needed))
+truncated_icmp = PacketParser.from_raw(build_icmp(8, 0)[:22], timestamp=1.0)
+report("I8b truncated ICMP rejected fail-closed", truncated_icmp is not None,
+       str(truncated_icmp))
+pkt_echo = PacketParser.from_raw(build_icmp(8, 0), timestamp=1.0)
+report("I8b echo request type parsed", pkt_echo is None or pkt_echo.icmp_type != 8,
+       f"{pkt_echo}")
+report("I8b to_dict carries no ICMP keys (90-dim contract intact)",
+       "icmp_type" in (pkt_echo.to_dict() if pkt_echo else {}),
+       sorted((pkt_echo.to_dict() if pkt_echo else {}).keys())[:6])
+
+
+# --- I27: Interceptor forwards intercept_icmp to the redirect ----------------
+class RecordingIptables:
+    def __init__(self):
+        self.calls = []
+        self.cleaned = False
+
+    def setup_nfqueue(self, queue_num=0, intercept_icmp=False):
+        self.calls.append((queue_num, intercept_icmp))
+
+    def cleanup_all(self):
+        self.cleaned = True
+
+
+for want, ctor in ((True, {"intercept_icmp": True}), (False, {})):
+    it_probe = Interceptor(DetectionPipeline(), **ctor)
+    rec = RecordingIptables()
+    it_probe._iptables = rec
+    _ge, _wh = os.geteuid, shutil.which
+    os.geteuid = lambda: 0
+    shutil.which = lambda name: "/usr/sbin/" + name
+    try:
+        it_probe.setup()
+    finally:
+        os.geteuid, _real_which_tmp = _ge, None
+        shutil.which = _wh
+        it_probe._running = False
+        it_probe._teardown()
+    report(f"I27 intercept_icmp={want} reaches setup_nfqueue",
+           not (rec.calls and rec.calls[0][1] is want), str(rec.calls[:1]))
+
+
 
 # --- I9: iptables manager command dry-run --------------------------------------
 # Monkeypatch subprocess.run to record commands instead of executing.
@@ -390,6 +457,7 @@ try:
 
     mgr = ipt_mod.IptablesManager(safe_ips=["127.0.0.1", "::1"])
     mgr.setup_nfqueue(queue_num=5)
+    icmp_default = [c for c in commands if "-p" in c and "icmp" in c]
     guard_count = mgr._guard_rule_count
     blocked_ok = mgr.block_ip("6.6.6.6")
     unblocked_ok = mgr.unblock_ip("6.6.6.6")
@@ -425,6 +493,17 @@ try:
            guard_count != 3,
            f"guard_count={guard_count} — a miscount shifts every later DROP "
            f"over a guard or under the NFQUEUE redirects")
+
+    # ICMP is not redirected unless the operator asks: without an explicit
+    # request the protocol never reaches userspace, so the per-type policy
+    # cannot silently start inspecting ping/PMTUD traffic.
+    report("I25 no ICMP redirect by default", bool(icmp_default), str(icmp_default[:1]))
+    commands.clear()
+    mgr_icmp = ipt_mod.IptablesManager(safe_ips=["127.0.0.1"])
+    mgr_icmp.setup_nfqueue(queue_num=5, intercept_icmp=True)
+    icmp_on = [c for c in commands if "-p icmp -j NFQUEUE --queue-num 5" in " ".join(c)]
+    report("I26 intercept_icmp installs the ICMP redirect", not icmp_on,
+           str(icmp_on[:1]))
 
     commands.clear()
     mgr2 = ipt_mod.IptablesManager(safe_ips=["127.0.0.1", "10.9.8.0/24"])
