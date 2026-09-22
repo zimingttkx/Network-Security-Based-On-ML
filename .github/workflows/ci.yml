@@ -364,6 +364,48 @@ jobs:
         if: always()
         run: sudo ip netns del nips-verify || true
 
+  # ── 实时拦截闭环（Linux, netns + NFQUEUE）───────────────────────────
+  # kernel-rules 止步于“规则进了内核”，这一 job 验证下一段：包真的被交到
+  # 用户态、跑完检测链、判决真的被内核执行，以及 stop() 之后主机恢复可达。
+  # 客户端命名空间通过 veth 发真流量，所以连接能通就等于队列被消费了。
+  live-nfqueue:
+    name: Live NFQUEUE e2e (Linux, netns)
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install capture dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential python3-dev libnetfilter-queue-dev iputils-ping
+          pip install numpy pyyaml
+          pip install --no-build-isolation setuptools wheel cython NetfilterQueue
+
+      - name: Confirm the binding imports
+        run: >
+          python -c "import netfilterqueue as n;
+          print('netfilterqueue', n.VERSION, [m for m in ('NetfilterQueue','Packet')
+          if hasattr(n, m)])"
+
+      - name: Build namespace pair
+        run: sudo bash scripts/live_nfqueue_topology.sh up
+
+      - name: Run live checks
+        run: |
+          sudo ip netns exec nips-srv python scripts/verify_live_nfqueue.py | tee live.log
+          grep -q "LIVE NFQUEUE E2E: PASS" live.log
+
+      - name: Remove namespace pair
+        if: always()
+        run: sudo bash scripts/live_nfqueue_topology.sh down
+
   # ── LUCID 训练与加载（TensorFlow）────────────────────────────────────
   # TF 不在默认依赖里，所以这条链路在其余 job 中永远走不到：训练脚本能否
   # 产出权重、app 能否加载并按形状校验、加载失败时是否真的不注册检测器。
