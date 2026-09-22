@@ -248,31 +248,31 @@ jobs:
         run: |
           python scripts/verify_fpr_regression.py
 
-      - name: Unit test — engine module (93 checks)
+      - name: Unit test — engine module (rules, pipeline, detectors, hot reload)
         run: |
           python scripts/verify_engine_module.py
 
-      - name: Unit test — interception module (66 checks)
+      - name: Unit test — interception module (parser, iptables, lifecycle)
         run: |
           python scripts/verify_interception_module.py
 
-      - name: Unit test — block lifecycle (6 bugs verified)
+      - name: Unit test — block lifecycle (D1-G regressions)
         run: |
           python scripts/verify_block_lifecycle.py
 
-      - name: Unit test — live exposed bugs (C/G groups)
+      - name: Unit test — live exposed bugs (A/B/C/H regressions)
         run: |
           python scripts/verify_live_exposed_bugs.py
 
-      - name: Unit test — features module (bounded memory)
+      - name: Unit test — features module (flows, registry)
         run: |
           python scripts/verify_features_module.py
 
-      - name: Unit test — data module (one-hot alignment)
+      - name: Unit test — data module (loaders, labels, split alignment)
         run: |
           python scripts/verify_data_module.py
 
-      - name: Unit test — management plane (app.py + cli.py, 59 checks)
+      - name: Unit test — management plane (app.py + cli.py)
         run: |
           python scripts/verify_management_plane.py
 
