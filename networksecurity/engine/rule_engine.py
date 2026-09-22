@@ -208,7 +208,9 @@ class RuleEngine(BaseDetector):
             matched = self._signatures.evaluate(packet, now=packet.timestamp or 0.0)
             if matched is not None:
                 with self._lock:
-                    self._signature_hits[matched.id] =                         self._signature_hits.get(matched.id, 0) + 1
+                    self._signature_hits[matched.id] = (
+                        self._signature_hits.get(matched.id, 0) + 1
+                    )
                 if matched.action == "block":
                     with self._lock:
                         self._blocked_count += 1
