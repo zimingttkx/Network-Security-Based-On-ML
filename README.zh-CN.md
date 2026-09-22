@@ -381,7 +381,9 @@ python scripts/train_lucid.py --pcap capture.pcap \
   python cli.py test --pcap cap.pcap
   ```
   这样能暴露**真实**的误报率（例如合法 ICMP 被协议过滤拦截——离线路径中 ICMP 确实会进入引擎，而实时链路在 `intercept_icmp: false` 下不会）。注意 Kitsune 大约需要 55k 个正常包才会离开训练模式，所以短抓包主要测的是规则引擎。
-- **合成攻击模拟：** `scripts/attack_simulation.py` 生成带标签的流量并按攻击类别报告检出率。它的 ICMP/SSH 结果反映的是硬性协议规则和可分离的生成器分布，不是生产环境的准确率——快速模式下整体约 20% 的攻击检出率应视为下限，而非准确率声明。
+- **合成攻击模拟：** `scripts/attack_simulation.py` 生成带标签的流量并按攻击类别报告检出率。它的 ICMP/SSH 结果反映的是硬性协议规则和可分离的生成器分布，不是生产环境的准确率——快速模式下约 20% 的攻击检出率是那个生成器的性质，不是真实流量的下限。
+- **真实抓包，CI 里实测：** `scripts/verify_real_capture_quality.py` 会重建仓库自带的 UNSW-NB15 还原抓包（82,523 个包）并跑完整条流水线，把误报率作为门禁。最近几次运行：检出率 **0.0–0.5%**、误报率 **1.8–3.7%**——Kitsune 的投影未固定随机种子，所以两个数字每次都会浮动，而且这份抓包是按流记录还原的、宽限期也缩短过。请把它当标定值而不是准确率：在这份抓包上 ML 阶段几乎分不开攻击与正常流量，真正管用的检出来自你自己写的规则。
+- **拿这个误报率去校准 `blocking:`。** strike 是按 BLOCK 判决计数的，也就是**按包计**。在 3% 的包级误报率下，一个合法源只要在 `strikes_window` 内发几百个包，就会撞上出厂的 `strikes_threshold: 5`，拿到内核级临时封禁（10 分钟），反复几轮还会把永久封禁写进 `rules.json`。先在你自己流量上量一遍（`cli.py test --pcap`，并对照真实流量规模看 `nips_alert_events_written_total`），再把 `strikes_threshold` 设成你流量产出的若干倍。
 
 #### Fail-closed 行为
 

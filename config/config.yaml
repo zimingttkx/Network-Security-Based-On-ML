@@ -53,7 +53,11 @@ interception:
 # engine blacklist with a TTL, auto-lifted); repeated ban/recur cycles
 # escalate to permanent (persisted blacklist).
 blocking:
-  strikes_threshold: 5          # BLOCKs inside strikes_window before a temp ban
+  strikes_threshold: 5          # BLOCKs inside strikes_window before a temp ban.
+                                # Counted per packet, and ML detectors flag a few
+                                # percent of real traffic — measure your own rate on
+                                # your own capture before trusting this default
+                                # (see "Detection quality" in the README).
   strikes_window: 300.0         # seconds; rolling window, old strikes fall off
   temp_ban_seconds: 600.0       # temp-ban TTL
   temp_ban_count_to_perm: 3     # completed temp bans before permanent escalation
