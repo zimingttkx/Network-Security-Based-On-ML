@@ -386,7 +386,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential python3-dev libnetfilter-queue-dev iputils-ping
           pip install numpy pyyaml
-          pip install --no-build-isolation setuptools wheel cython NetfilterQueue
+          # NetfilterQueue ships only an sdist.  --no-build-isolation lets
+          # setup.py see the Cython installed on the line above, so the .pyx is
+          # regenerated instead of compiling the .c that shipped in the tarball.
+          pip install setuptools wheel cython
+          pip install --no-build-isolation NetfilterQueue
 
       - name: Confirm the binding imports
         run: >
