@@ -201,31 +201,39 @@ class EventStore:
                 if audit:
                     cur.executemany(_AUDIT_SQL,
                                     [[r["ts"]] + [r[k] for k in _AUDIT_KEYS] for r in audit])
-                self.written += len(batch)
-                self._prune(cur)
+                purged = self._prune(cur)
                 self._conn.commit()
+                # Counters move only once the commit has landed.  Incremented
+                # before it, a batch that fails (full disk, filesystem remounted
+                # read-only) reports rows as written that never reached the
+                # database — and this counter is exactly what an operator
+                # reconciles a lost-events incident against.
+                self.written += len(batch)
+                self.purged += purged
         except sqlite3.Error as exc:
             self.write_errors += 1
             logger.error("event store batch failed (%s); %d events lost", exc, len(batch))
 
-    def _prune(self, cur: sqlite3.Cursor) -> None:
-        """Bound by age and by size.
+    def _prune(self, cur: sqlite3.Cursor) -> int:
+        """Bound by age and by size; return how many rows were deleted.
 
         Age alone is not enough: a busy host writes millions of rows inside one
         retention window, and the file would grow without limit.
         """
         cutoff = time.time() - self.retention_days * 86400.0
+        purged = 0
         for table in ("alerts", "audit"):
             spec = self._SQL[table]
             cur.execute(spec["purge_age"], (cutoff,))
             if cur.rowcount > 0:
-                self.purged += cur.rowcount
+                purged += cur.rowcount
             cur.execute(spec["count_all"])
             total = cur.fetchone()[0]
             if total > self.max_rows:
                 cur.execute(spec["purge_size"], (total - self.max_rows,))
                 if cur.rowcount > 0:
-                    self.purged += cur.rowcount
+                    purged += cur.rowcount
+        return purged
 
     # -- readers -------------------------------------------------------------
 
