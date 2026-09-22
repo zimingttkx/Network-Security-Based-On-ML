@@ -23,6 +23,10 @@ injected or looped: a connection that completes while the NFQUEUE redirect is
 installed can only have completed because a userspace consumer drained the
 queue, and a redirect left behind by teardown shows up as that same connection
 failing.
+
+One piece is a fixture rather than the product: the ban ladder is driven by
+``EscalationTrigger``, a detector that blocks on a dedicated port.  See its
+docstring for why a rule-engine verdict cannot drive that path.
 """
 from __future__ import annotations
 
@@ -41,6 +45,13 @@ from pathlib import Path
 # reset and sys.path[0] is scripts/ rather than the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from networksecurity.engine.detector import BaseDetector, PacketInfo  # noqa: E402
+from networksecurity.engine.verdict import (  # noqa: E402
+    Action,
+    ThreatLevel,
+    Verdict,
+)
+
 SERVER_V4 = os.environ.get("NIPS_LIVE_SERVER_V4", "10.77.0.1")
 CLIENT_V4 = os.environ.get("NIPS_LIVE_CLIENT_V4", "10.77.0.2")
 SERVER_V6 = os.environ.get("NIPS_LIVE_SERVER_V6", "fd00:77::1")
@@ -55,12 +66,18 @@ GUARDED_PORT = 22        # the ssh guard rule matches exactly this dport
 V6_PORT = 8100
 QUEUE_A = 41
 QUEUE_B = 42
+# Port the escalation trigger blocks on.  Dedicated so the ban ladder can be
+# driven without disturbing the probes that must keep reaching the listeners.
+ESCALATION_PORT = 8098
 
-# The rate limiter counts new connections only (TCP SYN, UDP datagrams), so
-# FLOOD is a number of connection attempts rather than of packets.
+# The rate limiter counts new connections only (TCP SYN, UDP datagrams), so a
+# flood is a number of connection attempts rather than of packets.
 RATE_MAX = 120
 RATE_WINDOW = 10.0
-FLOOD = 200
+# Deliberately below RATE_MAX: the flood has to reach the escalation trigger
+# rather than be short-circuited by the rule engine's rate limit, which is
+# enforced inline and never escalates.
+TRIGGER_FLOOD = 20
 TEMP_BAN_SECONDS = 4.0
 # The expiry sweeper runs on a fixed 30 s cycle and only *then* removes the
 # DROP, so a lifted ban cannot be observed before the next tick.
@@ -145,7 +162,7 @@ def tcp_probe(host: str, port: int, timeout: float = 5.0) -> tuple[bool, str]:
     return rc.returncode == 0, out.splitlines()[-1] if out else "no output"
 
 
-def flood(host: str, port: int, count: int = FLOOD) -> None:
+def flood(host: str, port: int, count: int) -> None:
     in_client(sys.executable, "-c", _FLOOD, host, str(port), str(count))
 
 
@@ -201,30 +218,60 @@ class Listeners:
 
 # --- interceptor under test --------------------------------------------------
 
+class EscalationTrigger(BaseDetector):
+    """A detector that blocks on demand, so the ban ladder can be driven.
+
+    The ladder (strike -> temp ban -> expiry -> perm ban) only ever runs for
+    verdicts from outside the rule engine: the interceptor refuses to escalate
+    a rule-engine BLOCK, because those are already enforced inline on every
+    packet and escalating them let a rate limit or an operator's own blacklist
+    entry turn into a permanent, persisted ban.  So to watch a real kernel DROP
+    appear and be lifted on a real host, something has to *decide* — this does,
+    on a dedicated port, and nothing else.
+
+    Everything downstream of the verdict is product code: the strike policy,
+    the iptables DROP, the blacklist mirror, rules.json and the expiry sweeper.
+    """
+
+    def __init__(self, port: int) -> None:
+        super().__init__(name="escalation-trigger")
+        self._port = port
+
+    async def process_packet(self, packet: PacketInfo) -> Verdict | None:
+        if packet.protocol == 17 and packet.dst_port == self._port:
+            return Verdict(action=Action.BLOCK, confidence=0.99,
+                           threat_level=ThreatLevel.HIGH,
+                           reason="escalation trigger", detector=self.name)
+        return None
+
+
 def build_interceptor(rules_file: Path, queue_num: int, intercept_icmp: bool,
                       verdicts: list[tuple[str, str, str]]):
     from networksecurity.engine import RuleEngine
     from networksecurity.engine.block_policy import BlockPolicy
     from networksecurity.engine.pipeline import DetectionPipeline
     from networksecurity.interception import Interceptor
-    import networksecurity.interception.interceptor as interceptor_mod
+    import networksecurity.interception.interceptor as mod
 
     # A permanent ban persists to this path; at its default the suite would
     # rewrite the developer's own rules.json the first time it escalates.
-    interceptor_mod.RULES_FILE = rules_file
+    mod.RULES_FILE = rules_file
 
     pipeline = DetectionPipeline()
-    # Rule engine only, on purpose: with no ML detector registered, undecided
-    # traffic falls through to ALLOW, so every drop measured below is a
-    # decision the rules actually made rather than a fail-closed accident.
+    # The rule engine is the only detector that decides on real traffic: the
+    # escalation trigger abstains on everything except its own port, so a probe
+    # that completes is one the rules let through rather than a fail-closed
+    # accident.
     pipeline.set_rule_engine(RuleEngine(
         window_seconds=RATE_WINDOW,
         max_connections=RATE_MAX,
         allowed_protocols={6, 17},
         allowed_icmp_types={8},
     ))
+    pipeline.add_detector(EscalationTrigger(ESCALATION_PORT))
     # One strike is enough to ban, and two completed bans make it permanent, so
-    # the temp-ban -> lift -> ban-again -> persist ladder needs two floods.
+    # the temp-ban -> lift -> ban-again -> persist ladder needs two floods and
+    # the blow that starts the third round.
     policy = BlockPolicy(strikes_threshold=1, strikes_window=600.0,
                          temp_ban_seconds=TEMP_BAN_SECONDS,
                          temp_ban_count_to_perm=2, table_max=100)
@@ -321,12 +368,12 @@ def phase_consumption(inter, chain: str, listeners: Listeners,
 
 def phase_enforcement(inter, verdicts: list, rules_file: Path) -> None:
     print("\n# the block ladder runs on the real kernel")
-    flood(SERVER_V4, TCP_PORT)
+    flood(SERVER_V4, ESCALATION_PORT, TRIGGER_FLOOD)
     took = wait_for(lambda: drop_present("iptables", CLIENT_V4), BAN_WAIT, 0.5)
-    check("the rate-limit verdict installed a kernel DROP", took >= 0,
+    check("a BLOCK verdict installed a kernel DROP", took >= 0,
           f"after {took:.1f}s")
-    check("the DROP is attributed to the rate limiter",
-          is_blocked(verdicts, CLIENT_V4, "rate limit"))
+    check("the DROP is attributed to the detector that blocked",
+          is_blocked(verdicts, CLIENT_V4, "escalation trigger"))
     check("blocked_ips reports the source",
           CLIENT_V4 in inter.status()["blocked_ips"],
           str(inter.status()["blocked_ips"]))
@@ -339,14 +386,14 @@ def phase_enforcement(inter, verdicts: list, rules_file: Path) -> None:
     ok, detail = tcp_probe(SERVER_V4, TCP_PORT)
     check("and the source can connect again", ok, detail)
 
-    # A repeat offender that comes back after its ban expired is escalated to
-    # permanent and written to the rules file.  Which of the two paths — the
-    # next strike after expiry, or a still-queued packet that lands during the
-    # ban — carries it over depends on queue depth, so keep driving it until
-    # the outcome the policy promises is what the kernel and the file show.
+    # A repeat offender is escalated to permanent and written to rules.json.
+    # Every ban cycle has to be re-earned: expiry clears the strikes but keeps
+    # the completed-ban counter, so this takes three rounds — the ban that
+    # opens the cycle, the one that spends the counter's last unit, and the
+    # strike after it expires that finds nothing left to rotate through.
     escalated = False
     for _ in range(3):
-        flood(SERVER_V4, TCP_PORT)
+        flood(SERVER_V4, ESCALATION_PORT, TRIGGER_FLOOD)
         if wait_for(lambda: drop_present("iptables", CLIENT_V4), BAN_WAIT, 0.5) < 0:
             break
         wait_for(lambda: CLIENT_V4 in persisted(rules_file)
@@ -376,7 +423,7 @@ def phase_ipv6(inter, chain: str, verdicts: list) -> None:
           any(src == CLIENT_V6 for src, _, _ in verdicts),
           str(sorted({s for s, _, _ in verdicts})))
 
-    flood(SERVER_V6, V6_PORT)
+    flood(SERVER_V6, ESCALATION_PORT, TRIGGER_FLOOD)
     took = wait_for(lambda: drop_present("ip6tables", CLIENT_V6), BAN_WAIT, 0.5)
     check("a v6 source can be blocked in the kernel", took >= 0, f"after {took:.1f}s")
     ok, detail = tcp_probe(SERVER_V6, V6_PORT, timeout=3.0)
@@ -384,9 +431,6 @@ def phase_ipv6(inter, chain: str, verdicts: list) -> None:
     check("operator unblock reports it undid something",
           inter.unblock_ip(CLIENT_V6) is True)
     check("the v6 DROP is gone", not drop_present("ip6tables", CLIENT_V6))
-    # The rate window has to slide before this source is ordinary traffic
-    # again; probing immediately would re-block it through no fault of unblock.
-    time.sleep(RATE_WINDOW + 2.0)
     ok, detail = tcp_probe(SERVER_V6, V6_PORT)
     check("and v6 flows again", ok, detail)
 
@@ -412,6 +456,15 @@ def phase_teardown(inter, chain: str, snap4: str, snap6: str) -> None:
     check("host v6 ruleset matches the pre-run snapshot", rules("ip6tables") == snap6)
 
 
+def nd_lladdr(peer: str, dev: str) -> str:
+    """The client's cached link-layer address for *peer*, or "" if unresolved."""
+    for line in in_client("ip", "-6", "neigh", "show", "dev", dev).stdout.splitlines():
+        parts = line.split()
+        if parts and parts[0] == peer and "lladdr" in parts:
+            return parts[parts.index("lladdr") + 1]
+    return ""
+
+
 def phase_icmp(inter, chain: str) -> None:
     print("\n# intercept_icmp: ICMP queued, and IPv6 has to survive it")
     before = inter.status()["nfqueue_packets"]
@@ -422,19 +475,30 @@ def phase_icmp(inter, chain: str) -> None:
     queued = inter.status()["nfqueue_packets"] - before
     check("and it really was inspected", queued > 0, f"{queued} packets queued")
 
-    # Neighbour discovery is IPv6's ARP: it arrives as ICMPv6 (protocol 58),
-    # and the NS that resolves our own address comes from the peer.  If the
-    # protocol gate has no allowance for it, the packets that establish IPv6
-    # connectivity are the ones being blocked — and escalated into a ban on
-    # the neighbour that asked.  Flush both caches so it has to happen again.
+    # Neighbour discovery is IPv6's ARP, and it arrives as ICMPv6 (protocol 58)
+    # from the peer: the solicitation that resolves *this* host's address is
+    # exactly the packet the protocol gate used to block, which took the host
+    # off the link the moment intercept_icmp was switched on.  Resolution is
+    # read off the neighbour table rather than from ping6's exit status —
+    # echo-request is a policy question this suite deliberately leaves blocked,
+    # and a ping that fails for that reason would hide whether ND worked.
     sh("ip", "-6", "neigh", "flush", "dev", SERVER_DEV)
     in_client("ip", "-6", "neigh", "flush", "dev", CLIENT_DEV)
-    rc = in_client("ping", "-6", "-c", "2", "-W", "2", SERVER_V6, timeout=25)
-    out = (rc.stdout or rc.stderr).strip().splitlines()
-    check("neighbour discovery survives intercept_icmp", rc.returncode == 0,
-          out[-1] if out else f"rc={rc.returncode}")
+    check("the peer's neighbour cache starts empty",
+          nd_lladdr(SERVER_V6, CLIENT_DEV) == "")
     ok, detail = tcp_probe(SERVER_V6, V6_PORT)
+    check("neighbour discovery survives intercept_icmp",
+          nd_lladdr(SERVER_V6, CLIENT_DEV) != "",
+          f"lladdr={nd_lladdr(SERVER_V6, CLIENT_DEV) or 'unresolved'}")
     check("IPv6 service stays reachable under intercept_icmp", ok, detail)
+
+    # The allowance covers link maintenance only.  Whether a stranger may ping
+    # the host is still the operator's call: this engine allows ICMPv4 echo
+    # (type 8) and nothing for ICMPv6, so a v6 echo has to keep failing — if it
+    # stops, the gate is letting the whole of protocol 58 through.
+    rc = in_client("ping", "-6", "-c", "1", "-W", "2", SERVER_V6, timeout=25)
+    check("an ICMPv6 echo is still decided by policy", rc.returncode != 0,
+          "ping6 unexpectedly succeeded")
     check("neighbour traffic triggered no IPv6 ban",
           not drop_present("ip6tables", CLIENT_V6), rules("ip6tables"))
 

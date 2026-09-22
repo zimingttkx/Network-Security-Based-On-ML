@@ -1106,16 +1106,27 @@ async def main():
     report("V6e signatures match IPv6 CIDRs",
            sv is None or sv.action != Action.BLOCK or nv is not None,
            f"{sv.action.value if sv else None} / {nv}")
+    # ICMPv6 splits in two: the types that maintain the link must pass whatever
+    # the operator configured (dropping them takes the host off the network),
+    # and everything else stays behind the protocol filter.
     v6p = await v6sig.process_packet(PacketInfo("2001:db8:ba0::9", "2001:db8:c0de::1", 51000,
                                                 22, 58, 60, 100.0, icmp_type=2))
-    report("V6f ICMPv6 (58) is blocked by the protocol filter by default",
-           v6p is None or v6p.action != Action.BLOCK, f"{v6p.reason if v6p else 'pass'}")
+    report("V6f ICMPv6 link maintenance passes the protocol filter (PMTUD)",
+           v6p is not None and v6p.action == Action.BLOCK, f"{v6p.reason if v6p else 'pass'}")
+    ns = await v6sig.process_packet(PacketInfo("2001:db8:ba0::9", "2001:db8:c0de::1", 51000,
+                                               22, 58, 60, 110.0, icmp_type=135))
+    na = await v6sig.process_packet(PacketInfo("2001:db8:ba0::9", "2001:db8:c0de::1", 51000,
+                                               22, 58, 60, 120.0, icmp_type=136))
+    report("V6g neighbour solicitation/advertisement pass too",
+           (ns is not None and ns.action == Action.BLOCK)
+           or (na is not None and na.action == Action.BLOCK),
+           f"ns={ns.reason if ns else 'pass'} na={na.reason if na else 'pass'}")
     v6sig.set_allowed_icmp_types({2})
-    v6p2 = await v6sig.process_packet(PacketInfo("2001:db8:ba0::9", "2001:db8:c0de::1", 51000,
-                                                 22, 58, 60, 110.0, icmp_type=2))
-    report("V6g ICMPv6 type allowlist applies (v6 PMTUD)",
-           v6p2 is None or v6p2.action != Action.BLOCK,
-           f"{v6p2.reason if v6p2 else 'pass'}")
+    echo6 = await v6sig.process_packet(PacketInfo("2001:db8:ba0::9", "2001:db8:c0de::1", 51000,
+                                                  22, 58, 60, 130.0, icmp_type=128))
+    report("V6h a v6 echo stays blocked — the v4 type list does not widen to v6",
+           echo6 is None or echo6.action != Action.BLOCK,
+           f"echo={echo6.reason if echo6 else 'pass'} (type 128 is not link maintenance)")
     with _tmp_dir("nips_v6_") as v6dir:
         v6file = v6dir / "rules.json"
         v6re.save_rules(v6file)
@@ -1123,10 +1134,10 @@ async def main():
         v6loaded.load_rules(v6file)
         ok = (v6loaded.get_blacklist() == v6re.get_blacklist()
               and v6loaded.get_whitelist() == v6re.get_whitelist())
-        report("V6h IPv6 entries survive save/load and enforce again", not ok,
+        report("V6i IPv6 entries survive save/load and enforce again", not ok,
                f"saved={v6re.get_blacklist()} loaded={v6loaded.get_blacklist()}")
         reloaded_v6 = await v6loaded.process_packet(v6_pkt)
-        report("V6i a reloaded IPv6 CIDR still blocks",
+        report("V6j a reloaded IPv6 CIDR still blocks",
                reloaded_v6 is None or reloaded_v6.action != Action.BLOCK, f"{reloaded_v6}")
 
     print("\n==== SUMMARY ====")
