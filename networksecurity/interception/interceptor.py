@@ -412,17 +412,34 @@ class Interceptor:
         errors.
         """
         self._running = False
-        if self._expiry_future is not None:
-            # concurrent.futures.Future.cancel() is thread-safe, unlike
-            # asyncio.Task.cancel() on a loop owned by another thread.
-            self._expiry_future.cancel()
-            self._expiry_future = None
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        loop = self._loop
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
         if self._loop_thread is not None:
             self._loop_thread.join(timeout=5.0)
+        if loop is not None and not loop.is_closed():
+            # Whatever the loop still had in flight has to be cancelled *after*
+            # its thread is joined: the thread-safe handle (Future.cancel) is a
+            # no-op on a coroutine that has already started, which the temp-ban
+            # sweeper always has — it parks in a 30s sleep.  Left pending, the
+            # task is destroyed with "Task was destroyed but it is pending!"
+            # and its unwinding never runs.  Touching the loop from here without
+            # a lock is safe precisely because nothing is running it any more.
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                try:
+                    loop.run_until_complete(asyncio.wait_for(
+                        asyncio.gather(*pending, return_exceptions=True), 5.0))
+                except (RuntimeError, TimeoutError):
+                    logger.warning(
+                        "detection loop still had %d task(s) after 5s — "
+                        "closing anyway", len(pending),
+                    )
         self._loop = None
         self._loop_thread = None
+        self._expiry_future = None
         self._iptables.cleanup_all()
 
     def unblock_ip(self, ip: str) -> bool:
