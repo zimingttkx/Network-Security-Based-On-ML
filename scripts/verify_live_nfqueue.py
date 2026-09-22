@@ -349,7 +349,9 @@ def phase_enforcement(inter, verdicts: list, rules_file: Path) -> None:
         flood(SERVER_V4, TCP_PORT)
         if wait_for(lambda: drop_present("iptables", CLIENT_V4), BAN_WAIT, 0.5) < 0:
             break
-        if wait_for(lambda: CLIENT_V4 in persisted(rules_file), LIFT_WAIT, 2.0) >= 0:
+        wait_for(lambda: CLIENT_V4 in persisted(rules_file)
+                 or not drop_present("iptables", CLIENT_V4), LIFT_WAIT, 2.0)
+        if CLIENT_V4 in persisted(rules_file):
             escalated = True
             break
     check("a repeat offender ends up permanently banned", escalated)
