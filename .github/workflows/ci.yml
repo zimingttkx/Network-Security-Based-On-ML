@@ -688,3 +688,30 @@ jobs:
               h.flush()
           PY
           echo "survived an unusable syslog target"
+
+      - name: A broken sink reports once, not once per record
+        run: |
+          tmpdir=$(mktemp -d)
+          errlog=$(mktemp)
+          touch "$tmpdir/not-a-socket"     # a file: connect() refuses it
+          UNDER_TEST="$tmpdir" python - 2>"$errlog" <<'PY'
+          import logging, os
+          from pathlib import Path
+          from networksecurity.observability import configure_logging
+          d = Path(os.environ["UNDER_TEST"])
+          configure_logging({"level": "INFO", "file": str(d / "app.log"),
+                             "syslog_address": str(d / "not-a-socket")})
+          log = logging.getLogger("networksecurity.ci")
+          for i in range(50):
+              log.info("record %d", i)
+          PY
+          reports=$(grep -c "is failing" "$errlog" || true)
+          kept=$(grep -c "record " "$tmpdir/app.log" || true)
+          echo "throttled reports=$reports  records in the file sink=$kept"
+          test "$reports" -ge 1 && test "$reports" -le 3
+          test "$kept" -eq 50
+          if grep -q Traceback "$errlog"; then
+            echo "a failing sink still printed a traceback"
+            exit 1
+          fi
+          echo "broken sink reported politely; the file sink lost nothing"

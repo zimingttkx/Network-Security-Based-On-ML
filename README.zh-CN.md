@@ -185,7 +185,7 @@ api:
 
 检测路径不会等待磁盘：`record_alert` 只投递到有界缓冲区，由后台线程批量落盘。缓冲区溢出或批次失败时，`nips_alert_events_dropped_total` / `nips_event_store_write_errors_total` 计数上升，`/api/v1/status` 的 `event_store` 字段也会报告——审计链不完整是可见的，不会静默。数据库不可用时，读取回退到内存中最近 500 条事件，同时 `event_store.degraded` 为 true。
 
-`logging.file` 增加轮转日志文件，`logging.syslog_address` 转发到 syslog（平台套接字，或 `host:port` UDP）；目标不可达时只告警并跳过，不阻塞启动。
+`logging.file` 增加轮转日志文件，`logging.syslog_address` 转发到 syslog（平台套接字，或 `host:port` UDP）；目标不可达时只告警并跳过，不阻塞启动；已经挂上的 sink 中途开始失败（守护进程重启、磁盘写满）时按 1/10/100/1000 条的节奏报一次，而不是每条日志刷一遍 traceback。
 
 ### 签名规则
 

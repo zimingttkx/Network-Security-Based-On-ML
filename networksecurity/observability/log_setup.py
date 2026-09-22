@@ -14,9 +14,32 @@ import logging
 import logging.handlers
 import os
 import socket
+import sys
 from pathlib import Path
 
 LOGGER_NAME = "networksecurity"
+
+
+def _report_failures_once(sink: str, handler: logging.Handler) -> None:
+    """Make a failing sink report itself once, not once per record.
+
+    logging's default ``handleError`` prints the whole traceback for every
+    record a handler cannot deliver — a syslog daemon that is down, or a log
+    file on a full disk, therefore floods the journal with the same stack while
+    burying the one thing an operator needs to see: that forwarding is broken.
+    Keep the exception's own text and drop the repetition.
+    """
+    state = {"lost": 0}
+
+    def _report(record: logging.LogRecord) -> None:
+        state["lost"] += 1
+        if state["lost"] in (1, 10, 100) or state["lost"] % 1000 == 0:
+            exc = sys.exc_info()[1]
+            sys.stderr.write(
+                f"{sink} is failing ({state['lost']} records lost so far): "
+                f"{type(exc).__name__ if exc else 'unknown error'}\n")
+
+    handler.handleError = _report
 
 
 def _parse_syslog_target(address: str):
@@ -84,6 +107,7 @@ def configure_logging(cfg: dict) -> logging.Logger:
                 file_target, maxBytes=int(cfg.get("max_bytes") or 10_485_760),
                 backupCount=int(cfg.get("backups") or 5), encoding="utf-8")
             file_handler.setFormatter(fmt)
+            _report_failures_once(f"logging.file={file_target!r}", file_handler)
             root.addHandler(file_handler)
         except (OSError, ValueError) as exc:
             logging.getLogger(__name__).error("logging.file=%r unusable (%s); "
@@ -103,6 +127,7 @@ def configure_logging(cfg: dict) -> logging.Logger:
             if not local_socket:
                 syslog_handler.ident = "nips"
             syslog_handler.setFormatter(logging.Formatter("%(name)s %(levelname)s: %(message)s"))
+            _report_failures_once(f"syslog={syslog_address!r}", syslog_handler)
             root.addHandler(syslog_handler)
         except OSError as exc:
             logging.getLogger(__name__).warning("syslog target %r unreachable (%s); "

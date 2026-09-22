@@ -188,7 +188,7 @@ Detection events and every management action are written to SQLite (WAL) at `sto
 
 The detection path never waits on the disk: `record_alert` only enqueues into a bounded buffer and a background thread writes in batches. If the buffer overflows or a batch fails, the counters in `nips_alert_events_dropped_total` / `nips_event_store_write_errors_total` rise and `/api/v1/status` reports them under `event_store` — an incomplete trail is visible, not silent. When the database is unusable, reads fall back to the most recent 500 in-memory events and `event_store.degraded` is true.
 
-`logging.file` adds a rotating log file and `logging.syslog_address` forwards to syslog (platform socket, or `host:port` over UDP); an unreachable target is reported and skipped rather than blocking startup.
+`logging.file` adds a rotating log file and `logging.syslog_address` forwards to syslog (platform socket, or `host:port` over UDP); an unreachable target is reported and skipped rather than blocking startup, and a sink that starts failing later (daemon restarted, disk full) reports once per 1/10/100/1000 lost records instead of printing a traceback per record.
 
 ### Signature rules
 
