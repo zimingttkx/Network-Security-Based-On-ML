@@ -203,9 +203,14 @@ class KitNET:
     def _build_feature_map(self, X: np.ndarray):
         """Build feature map via correlation clustering."""
         n_features = X.shape[1]
-        
-        # Compute feature correlation matrix.
-        corr_matrix = np.corrcoef(X.T)
+
+        # Compute feature correlation matrix.  A constant column has no
+        # correlation to report and makes numpy divide by a zero stddev; the
+        # nan it produces is deliberate input to the sanitising line below, so
+        # the divide warnings are suppressed here rather than left to print a
+        # scary traceback-shaped warning at every model build.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            corr_matrix = np.corrcoef(X.T)
         corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
         
         # Greedy clustering.
