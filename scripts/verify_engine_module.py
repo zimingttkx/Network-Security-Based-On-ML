@@ -1014,6 +1014,93 @@ async def main():
                not rejected or [x["id"] for x in sg10.signatures] != ["replaced"],
                str(sg10.signatures))
 
+    # -- group HP: the hot path while the rule file is being rewritten -------
+    # Hot reload has to be invisible to traffic: the new rule set is parsed
+    # before anything is swapped and the swap is one reference assignment, so
+    # no packet may match a half-applied set and none may stall behind the
+    # rewrite.  Measured under churn rather than argued from the code.
+    import threading
+
+    with _tmp_dir("nips_hot_") as hdir:
+        hfile = hdir / "rules.json"
+        hp = RuleEngine(max_connections=10**9)
+        hp.add_signature({"id": "hp-a", "src": "198.51.100.0/24", "protocol": "tcp",
+                          "dport": 22})
+        stopped = threading.Event()
+        faults: list[str] = []
+        churn = {"ok": 0, "rejected": 0}
+
+        def _write(signatures: list[dict]) -> None:
+            hfile.write_text(_json.dumps({"blacklist": [], "whitelist": [],
+                                          "signatures": signatures}))
+
+        def _churn() -> None:
+            flip = False
+            while not stopped.is_set():
+                flip = not flip
+                _write([{"id": "hp-b" if flip else "hp-a", "src": "198.51.100.0/24",
+                         "protocol": "tcp", "dport": 443 if flip else 22}])
+                try:
+                    hp.reload_rules(hfile)
+                    churn["ok"] += 1
+                except Exception as exc:
+                    faults.append(f"a valid reload raised {exc!r}")
+                # A half-parsed set must never be applied — checked while
+                # traffic is running, not on a quiet engine.
+                _write([{"id": "no-matcher"}])           # no matchers: invalid
+                try:
+                    hp.reload_rules(hfile)
+                    faults.append("a malformed reload was accepted")
+                except Exception:
+                    churn["rejected"] += 1
+
+        worker = threading.Thread(target=_churn, daemon=True)
+        worker.start()
+        seen: set[str] = set()
+        worst = 0.0
+        reload_target = 50
+        # Drive traffic until the reloader has actually swapped the set that
+        # many times: a fixed packet count finishes before the other thread
+        # gets a slice on a fast machine, which would turn this into a
+        # benchmark of an idle engine.  The yield per packet is what lets the
+        # rewrite in, and the loop keeps going until it has.
+        deadline = time.perf_counter() + 30.0
+        sent = 0
+        total = 0.0
+        while churn["ok"] < reload_target and time.perf_counter() < deadline:
+            # dport 22 is matched only while hp-a is live, and the ACK keeps
+            # the rate limiter out of the verdict.
+            packet = pkt(src_ip="198.51.100.7", dst_port=22, tcp_flags=0x18,
+                         timestamp=1000.0 + sent * 0.001)
+            t0 = time.perf_counter()
+            verdict = await hp.process_packet(packet)
+            delta = time.perf_counter() - t0
+            total += delta
+            worst = max(worst, delta)
+            seen.add("pass" if verdict is None else verdict.action.value)
+            sent += 1
+            if sent % 250 == 0:
+                live = [s["id"] for s in hp.signatures]
+                if live not in (["hp-a"], ["hp-b"]):
+                    faults.append(f"torn signature set {live}")
+            await asyncio.sleep(0)
+        per_packet = total / max(1, sent) * 1e6
+        stopped.set()
+        worker.join(5.0)
+
+        report("HP1 a reload storm corrupts nothing and rejects nothing valid",
+               bool(faults) or churn["ok"] < reload_target,
+               f"reloads={churn['ok']} rejected={churn['rejected']} "
+               f"faults={faults[:3]}")
+        report("HP2 every packet matches one of the two rule sets (both seen)",
+               not ({"block"} <= seen and len(seen) >= 2
+                    and seen <= {"block", "pass", "allow"}),
+               f"verdicts={sorted(seen)}")
+        report("HP3 no packet stalls behind the rewrite",
+               worst > 0.25,
+               f"worst={worst * 1e3:.2f}ms mean={per_packet:.1f}us/packet "
+               f"over {sent} packets")
+
     # -- group LT: LUCID training data path (no TensorFlow needed) ----------
     from networksecurity.engine.lucid.dataset_parser import LucidDatasetParser
 
