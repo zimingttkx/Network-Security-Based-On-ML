@@ -276,6 +276,11 @@ jobs:
         run: |
           python scripts/verify_management_plane.py
 
+      - name: Detection quality on a real capture (rebuilds the pcap)
+        run: |
+          pip install scapy
+          python scripts/verify_real_capture_quality.py
+
   # ── 攻击仿真冒烟测试 ─────────────────────────────────────────────────
   smoke-attack:
     runs-on: ubuntu-latest
