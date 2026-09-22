@@ -453,8 +453,18 @@ def preflight() -> str | None:
         return "the netfilterqueue binding is not installed"
     if CLIENT_NS not in sh("ip", "netns", "list"):
         return f"client namespace {CLIENT_NS} does not exist"
-    if SERVER_V4 not in sh("ip", "-4", "-addr", "show", "dev", SERVER_DEV):
-        return f"{SERVER_V4} is not on {SERVER_DEV} here — run inside {SERVER_NS}"
+    # Binding is the check that cannot lie: it only succeeds when this
+    # address really belongs to *this* namespace, which is the same thing the
+    # suite is about to assume.  Parsing `ip addr` output would have depended
+    # on the exact flags, and a wrong flag reads as an empty string — i.e. as
+    # "wrong namespace" — and the suite would skip itself.
+    probe = socket.socket(socket.AF_INET)
+    try:
+        probe.bind((SERVER_V4, 0))
+    except OSError as exc:
+        return f"{SERVER_V4} is not a local address here — run inside {SERVER_NS}: {exc}"
+    finally:
+        probe.close()
     return None
 
 
