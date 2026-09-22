@@ -13,8 +13,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -32,6 +34,14 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 def _http_error(code: int) -> urllib.error.HTTPError:
     return urllib.error.HTTPError("http://127.0.0.1:8000", code, "err", {}, None)
+
+
+def _metric_value(text: str, name: str) -> float:
+    """Read one exposition line; -1.0 when it is absent."""
+    for line in text.splitlines():
+        if line.startswith(name + " "):
+            return float(line.split()[-1])
+    return -1.0
 
 
 def _reason(value: str) -> str:
@@ -153,6 +163,28 @@ def main() -> int:
         jsonl = c.get("/api/v1/audit?limit=5&format=jsonl")
         check("audit JSONL export", jsonl.status_code == 200
               and all(line.startswith("{") for line in jsonl.text.strip().splitlines()))
+
+        # -- the export, the row count and the write counter reconcile --------
+        # The counter is what an operator reconciles a "we lost the database"
+        # incident against, so it has to mean "rows actually committed": a
+        # delta of writes has to equal a delta of rows the API reports for the
+        # same events, and the CSV export has to emit exactly those rows.
+        written_before = store.stats()["written"]
+        total_before = c.get("/api/v1/alerts?limit=1").json()["total"]
+        for i in range(5):
+            store.record_alert(f"10.77.9.{i}", "reconcile", "block", "ReconcileProbe")
+        flushed = store.flush(3.0)
+        written_delta = store.stats()["written"] - written_before
+        total_delta = c.get("/api/v1/alerts?limit=1").json()["total"] - total_before
+        check("a flushed batch is one write delta and one row delta",
+              flushed and written_delta == 5 and total_delta == 5,
+              f"flushed={flushed} written+{written_delta} rows+{total_delta}")
+
+        csv_rows = len(c.get("/api/v1/alerts?limit=5&format=csv").text.strip().splitlines()) - 1
+        counter = _metric_value(c.get("/metrics").text, "nips_alert_events_written_total")
+        check("CSV export, row count and write counter agree",
+              csv_rows == 5 and counter == store.stats()["written"],
+              f"csv={csv_rows} counter={counter} written={store.stats()['written']}")
 
         metrics = c.get("/metrics")
         check("/metrics exposition renders",
@@ -276,6 +308,55 @@ def main() -> int:
     check("degradation is reported, not silent",
           broken.stats()["open_failed"] is True, str(broken.stats()))
     broken.close()
+
+    # -- storage that starts failing while the store is live -----------------
+    # A full disk and a remounted filesystem reach the writer the same way the
+    # cap below does: the flush of an open file descriptor fails at the OS
+    # level, after the database was opened and is perfectly readable.  What
+    # matters is that the packet path never sees it, that the loss is counted
+    # rather than logged once and forgotten, and that reads keep answering from
+    # what was already committed.  RLIMIT_FSIZE is what makes the failure real
+    # here — chmod on a live store does nothing, because the fd is already open
+    # and keeps its write access; the limit bites at the write() syscall.
+    disk_dir = Path(tempfile.mkdtemp(prefix="nips_enospc_"))
+    probe = textwrap.dedent("""
+        import json, pathlib, resource, signal, sys
+        sys.path.insert(0, sys.argv[1])
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)   # EFBIG, not a kill
+        from networksecurity.observability import EventStore
+        d = pathlib.Path(sys.argv[2])
+        st = EventStore(d / "events.db")
+        st.record_alert("10.2.2.1", "before the cap", "block", "EnospcProbe")
+        st.flush(3.0)
+        size = sum(p.stat().st_size for p in d.glob("events.db*"))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (size + 4096, size + 4096))
+        # One row far bigger than the headroom the cap leaves: the write has to
+        # extend the file past the limit, and the OS refuses it.
+        st.record_alert("10.2.2.2", "after the cap " + "x" * 200_000, "block", "EnospcProbe")
+        st.flush(5.0)
+        page = st.query_alerts(limit=5)
+        stat = st.stats()
+        st.close()
+        print(json.dumps({"written": stat["written"], "write_errors": stat["write_errors"],
+                          "degraded": stat["degraded"], "total": page["total"],
+                          "reasons": [i["reason"][:14] for i in page["items"]]}))
+    """)
+    try:
+        child = subprocess.run([sys.executable, "-c", probe, str(Path(__file__).resolve().parent.parent),
+                                str(disk_dir)],
+                               capture_output=True, text=True, timeout=120)
+        out = json.loads(child.stdout.strip().splitlines()[-1]) if child.stdout.strip() else {}
+    except (subprocess.SubprocessError, ValueError) as exc:
+        child, out = None, {}
+        print(f"  (storage-failure probe failed to run: {exc})")
+    check("a failing disk is survived, counted, and does not raise",
+          child is not None and child.returncode == 0 and out.get("write_errors") == 1,
+          f"rc={child.returncode if child else 'n/a'} {out}")
+    check("the write counter does not claim rows that never landed",
+          out.get("written") == 1 and out.get("total") == 1
+          and out.get("reasons") == ["before the cap"]
+          and out.get("degraded") is False,
+          f"written={out.get('written')} total={out.get('total')} {out.get('reasons')}")
 
     # -- CLI-side guards (no server needed) ---------------------------------
     import cli

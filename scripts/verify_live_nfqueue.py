@@ -498,7 +498,7 @@ def phase_icmp(inter, chain: str) -> None:
     # stops, the gate is letting the whole of protocol 58 through.
     rc = in_client("ping", "-6", "-c", "1", "-W", "2", SERVER_V6, timeout=25)
     check("an ICMPv6 echo is still decided by policy", rc.returncode != 0,
-          "ping6 unexpectedly succeeded")
+          f"ping6 rc={rc.returncode}")
     check("neighbour traffic triggered no IPv6 ban",
           not drop_present("ip6tables", CLIENT_V6), rules("ip6tables"))
 
