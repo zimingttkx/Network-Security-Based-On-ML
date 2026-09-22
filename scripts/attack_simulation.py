@@ -18,13 +18,11 @@ import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Optional
 
 sys.path.insert(0, ".")
 
-from networksecurity.engine import DetectionPipeline, PacketInfo, Action, Verdict
+from networksecurity.engine import DetectionPipeline, PacketInfo, Action
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
-from networksecurity.engine.rule_engine import RuleEngine
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 流量生成器 — 真实多样的正常/攻击流量模式

@@ -14,14 +14,11 @@ import asyncio
 import random
 import sys
 import time
-from typing import Sequence
 
 sys.path.insert(0, ".")
 
-from networksecurity.engine import DetectionPipeline, PacketInfo, Action, Verdict
+from networksecurity.engine import DetectionPipeline, PacketInfo, Action
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
-from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
-from networksecurity.engine.rule_engine import RuleEngine
 
 # ---------------------------------------------------------------------------
 # Packet generators — these produce realistic-looking PacketInfo objects,

@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from networksecurity.data.pcap_loader import PcapLoader
-from networksecurity.engine import DetectionPipeline, PacketInfo
+from networksecurity.engine import DetectionPipeline
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
 from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
 from networksecurity.interception.packet_parser import PacketParser

@@ -70,8 +70,7 @@ def sweep_refused_entries(rule_engine, safe_ips: list[str] | None = None) -> lis
     Returns the list of removed IPs.
     """
     refused = []
-    refusal_reason = blacklist_refusal("", safe_ips)  # type: ignore
-    
+
     for ip in list(rule_engine.get_blacklist()):
         why = blacklist_refusal(ip, safe_ips)
         if why is not None:

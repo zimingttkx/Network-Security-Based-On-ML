@@ -46,9 +46,8 @@ class PcapLoader:
     async def load(self, path: str) -> AsyncIterator[dict | None]:
         """Yield packet dicts (or None for non-IPv4 frames) from a pcap file."""
         try:
-            from scapy.layers.inet import IP, TCP, UDP  # type: ignore
+            from scapy.layers.inet import TCP, UDP  # type: ignore
             from scapy.layers.l2 import Dot1Q, Ether  # type: ignore
-            from scapy.packet import Packet  # type: ignore
             from scapy.utils import rdpcap  # type: ignore
         except ImportError:
             raise ImportError(

@@ -14,7 +14,6 @@ from networksecurity.engine import Action, DetectionPipeline, PacketInfo
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
 from networksecurity.engine.pipeline import DetectionUnavailable
 from networksecurity.engine.rule_engine import RateLimiter, RuleEngine
-from networksecurity.engine.verdict import ThreatLevel
 
 results = []
 
@@ -902,7 +901,7 @@ async def main():
            str(_load_interception(good_int)))
 
     # -- group SG: declarative signature rules ------------------------------
-    from networksecurity.engine.signature_engine import Signature, SignatureError
+    from networksecurity.engine.signature_engine import SignatureError
 
     def sig_pkt(src="203.0.113.7", dp=22, proto=6, flags=0x02, ts=100.0):
         return PacketInfo(src, "10.0.0.1", 40000, dp, proto, 60, ts, tcp_flags=flags)

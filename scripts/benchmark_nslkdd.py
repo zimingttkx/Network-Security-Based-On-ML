@@ -22,7 +22,6 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 sys.path.insert(0, ".")
 

@@ -368,7 +368,6 @@ def main() -> int:
           not cli._refused_by_api(urllib.error.URLError("connection refused")))
 
     # CLI endpoint selection
-    import importlib
     default_base = cli._api_base()
     os.environ["NIPS_API_URL"] = "http://10.0.0.5:9000"
     env_base = cli._api_base()

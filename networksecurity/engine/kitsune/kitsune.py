@@ -9,7 +9,6 @@ and KitNET autoencoder ensemble for anomaly detection.
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 

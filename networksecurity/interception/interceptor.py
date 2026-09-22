@@ -16,7 +16,6 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import Future
 from pathlib import Path
 
 from networksecurity.engine.block_policy import BlockPolicy
@@ -100,7 +99,6 @@ class Interceptor:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._detect_timeout: float = 5.0
-        self._expiry_future: Future | None = None
         # Health telemetry: monotonic timestamp of the last completed
         # detection.  Stays None until the first packet is handled; the API
         # surfaces it as detection_loop_stale_seconds so a hung detection
@@ -178,12 +176,10 @@ class Interceptor:
             # (nobody left to trigger lazy cleanup), so run the sweeper on the
             # detection loop — the same thread that processes verdicts.  The
             # loop is already running on its own thread, so schedule through
-            # run_coroutine_threadsafe: touching an asyncio.Task from here
-            # would race the loop, and the returned Future is thread-safe to
-            # cancel during teardown.
-            self._expiry_future = asyncio.run_coroutine_threadsafe(
-                self._temp_ban_sweeper(), self._loop,
-            )
+            # run_coroutine_threadsafe rather than touching an asyncio.Task from
+            # here.  Teardown cancels the task once that thread is joined; see
+            # _teardown.
+            asyncio.run_coroutine_threadsafe(self._temp_ban_sweeper(), self._loop)
         except Exception:
             # A half-initialised interceptor is worse than none: the kernel
             # redirect may already be live with no listener draining the queue,
@@ -439,7 +435,6 @@ class Interceptor:
                     )
         self._loop = None
         self._loop_thread = None
-        self._expiry_future = None
         self._iptables.cleanup_all()
 
     def unblock_ip(self, ip: str) -> bool:

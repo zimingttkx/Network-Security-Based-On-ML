@@ -209,7 +209,6 @@ class LucidDetector:
         
         try:
             # Predict with shape validation
-            n_samples = sample.shape[0]
             expected_timesteps = self.cnn.params['time_steps']
             expected_features = self.cnn.params['n_features']
             

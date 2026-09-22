@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from networksecurity.engine.detector import PacketInfo
 from networksecurity.features.flow_extractor import FlowFeatures, FlowTracker
-from networksecurity.features.feature_registry import FEATURE_REGISTRY, get_feature_dim, list_features
+from networksecurity.features.feature_registry import get_feature_dim
 
 results = []
 

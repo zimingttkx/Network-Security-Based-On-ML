@@ -19,7 +19,7 @@ sys.path.insert(0, ".")
 sys.path.insert(0, "scripts")
 
 from benchmark import TrafficGenerator as TG
-from networksecurity.engine import DetectionPipeline, PacketInfo, Action
+from networksecurity.engine import DetectionPipeline, Action
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
 
 
