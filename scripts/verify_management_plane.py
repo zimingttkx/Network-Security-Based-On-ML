@@ -194,6 +194,25 @@ def main() -> int:
         check("event store reports healthy", store.stats()["degraded"] is False,
               str(store.stats()))
 
+        # A store that breaks *after* startup has to say so on the operator's
+        # two screens — the gauge an alarm watches and the status document a
+        # human reads.  A silent 0 there is exactly how a lost audit trail goes
+        # unnoticed, which is the failure this whole module is built against.
+        healthy_store = appmod.event_store
+        broken_store = EventStore(str(Path(tempfile.mkdtemp()) / "late\x00bad.db"))
+        appmod.event_store = broken_store
+        degraded_metrics = c.get("/metrics").text
+        degraded_status = c.get("/api/v1/status").json().get("event_store", {})
+        appmod.event_store = healthy_store
+        broken_store.close()
+        check("a store that breaks late shows up in /metrics and /status",
+              _metric_value(degraded_metrics, "nips_event_store_degraded") == 1
+              and degraded_status.get("degraded") is True,
+              f"gauge={_metric_value(degraded_metrics, 'nips_event_store_degraded')} "
+              f"status={degraded_status}")
+        check("the healthy store is back after the probe",
+              c.get("/metrics").text.count("nips_event_store_degraded 0") == 1)
+
         # -- the detection chain actually runs through the app's pipeline ---
         from networksecurity.engine import Action, PacketInfo
         appmod.pipeline.rule_engine.add_blacklist("203.0.113.200")
