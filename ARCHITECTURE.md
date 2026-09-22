@@ -74,7 +74,10 @@ NIC → iptables NFQUEUE target → nfqueue kernel queue
                  # 1 whitelist  2 protocol/ICMP-type  3 blacklist (persistent +
                  # ephemeral)  4 signatures  5 rate limit.  A signature BLOCK is
                  # enforced inline like any other rule-engine verdict and does
-                 # not feed BlockPolicy strikes.
+                 # not feed BlockPolicy strikes.  Stage 2 admits ICMPv4 types
+                 # from allowed_icmp_types and always admits the ICMPv6 types
+                 # that maintain the link (2/133/134/135/136) — blocking those
+                 # takes this host off the network rather than defending it.
              → KitsuneDetector.process_packet() # AfterImage → KitNET
              → LucidDetectorAdapter.process_packet()  # CNN flow detection
          → Verdict {action, confidence, reason}
