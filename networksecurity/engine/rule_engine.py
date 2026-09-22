@@ -24,6 +24,17 @@ logger = logging.getLogger(__name__)
 # A parsed CIDR rule (v4 or v6).
 _Net = ipaddress.IPv4Network | ipaddress.IPv6Network
 
+# ICMPv6 types that keep the link itself working: router solicitation and
+# advertisement (133/134), neighbour solicitation and advertisement (135/136),
+# and "packet too big" (2) — IPv6's Path MTU Discovery message.  They pass
+# unconditionally, because they are never a useful enforcement target: dropping
+# the solicitations that resolve the host's own address does not defend it, it
+# takes it off the network, and the neighbour on the other end is not an
+# attacker for having asked.  ICMP echo is deliberately *not* in this set —
+# unlike link maintenance, whether a stranger may ping the host is a policy
+# question the operator answers through allowed_icmp_types.
+_ICMPV6_LINK_TYPES = frozenset({2, 133, 134, 135, 136})
+
 
 class RateLimiter:
     """Sliding-window per-IP connection rate tracker.
@@ -183,9 +194,18 @@ class RuleEngine(BaseDetector):
         # 2. Protocol filter.  ICMP(1) is special-cased by type: blocking the
         # whole protocol also kills Path MTU Discovery (type 3 "frag needed"),
         # which blackholes large connections on paths that need it, so an
-        # operator can allow individual types instead of none of it.
+        # operator can allow individual types instead of none of it.  ICMPv6(58)
+        # also has to let the link-maintenance types through unconditionally:
+        # with interception.intercept_icmp on, an incoming neighbour
+        # solicitation is otherwise blocked here, the kernel never answers it,
+        # and the host becomes unreachable over IPv6 — the IPS taking itself
+        # off the link is not a policy any operator asked for.
         if packet.protocol not in self._protocol_allow:
-            if not (packet.protocol == 1 and packet.icmp_type in self._icmp_allow):
+            allowed_icmp4 = (packet.protocol == 1
+                             and packet.icmp_type in self._icmp_allow)
+            link_icmp6 = (packet.protocol == 58
+                          and packet.icmp_type in _ICMPV6_LINK_TYPES)
+            if not (allowed_icmp4 or link_icmp6):
                 with self._lock:
                     self._blocked_count += 1
                 return Verdict(action=Action.BLOCK, confidence=1.0,
