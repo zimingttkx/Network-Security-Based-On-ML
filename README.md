@@ -38,7 +38,7 @@ LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pip
 - **Kitsune (NDSS'18)** — AfterImage incremental statistics (90 features) + a KitNET autoencoder ensemble. Trains online, no labels needed. When link-layer headers are absent (live NFQUEUE), the MAC channel uses a `(protocol, ttl)` proxy key so it never collapses to zero variance. Grace periods (`fm_grace_period`, `ad_grace_period`) allow warmup before detection starts; during this time packets are logged but not blocked.
 - **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model and `engine.lucid.model_path` set in config. Produce the model with `scripts/train_lucid.py` (see "Training LUCID" below).
 
-> **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17); anything else it inspects is blocked, including **ICMP(1)**. In live interception, however, only TCP and UDP are redirected into NFQUEUE (`interception.intercept_icmp` is off by default) — so there ICMP is **not inspected and not blocked**: the host's own firewall decides. Turn `interception.intercept_icmp: true` on to bring ICMP into the pipeline, then allow individual types through `engine.rule_engine.allowed_icmp_types` — blocking the whole protocol also breaks Path MTU Discovery (type 3, "frag needed"), which blackholes large connections, so a type list is the useful setting rather than an all-or-nothing ban. Offline pcap runs (`cli.py test --pcap`) do exercise the protocol filter, since those packets reach the engine whatever their protocol.
+> **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17); anything else it inspects is blocked, including **ICMP(1)**. In live interception, however, only TCP and UDP are redirected into NFQUEUE (`interception.intercept_icmp` is off by default) — so there ICMP is **not inspected and not blocked**: the host's own firewall decides. Turn `interception.intercept_icmp: true` on to bring ICMP into the pipeline, then allow individual types through `engine.rule_engine.allowed_icmp_types` — blocking the whole protocol also breaks Path MTU Discovery (type 3, "frag needed"), which blackholes large connections, so a type list is the useful setting rather than an all-or-nothing ban. **ICMPv6(58)** has one exception to that list: the types that maintain the link itself — neighbour and router solicitation/advertisement (135/136/133/134) and "packet too big" (2) — always pass, because a host whose neighbour discovery is queued and dropped has not blocked an attacker, it has taken itself off the network. ICMPv6 echo is *not* in that set and stays behind the protocol filter (allow-by-type covers ICMPv4 above). Offline pcap runs (`cli.py test --pcap`) do exercise the protocol filter, since those packets reach the engine whatever their protocol.
 
 ---
 
@@ -131,7 +131,8 @@ engine:
   rule_engine:
     allowed_protocols: [6, 17]   # TCP, UDP; everything else blocked
     allowed_icmp_types: []       # ICMP types that pass despite protocol 1 not being listed,
-                                 # e.g. [0, 3, 4, 8, 11] to keep PMTUD and ping alive
+                                 # e.g. [0, 3, 4, 8, 11] to keep PMTUD and ping alive.
+                                 # ICMPv6 link maintenance always passes, whatever this says
     rate_limit:
       window_seconds: 1.0
       max_connections_per_window: 100
@@ -309,7 +310,7 @@ The interceptor:
 - Installs iptables rules to redirect traffic into NFQUEUE
 - Leaves loopback traffic untouched — everything arriving on `lo` is ACCEPTed before the NFQUEUE rules, and loopback sources (`127.0.0.0/8`, `::1`) are never eligible for a permanent block (host-local traffic cannot be an attacker; blocking the DNS stub `127.0.0.53` would silently break host DNS)
 - Leaves SSH (port 22) untouched
-- Redirects only TCP and UDP into NFQUEUE unless `interception.intercept_icmp` is on; with it on, `allowed_icmp_types` decides which ICMP types the engine then accepts
+- Redirects only TCP and UDP into NFQUEUE unless `interception.intercept_icmp` is on; with it on, `allowed_icmp_types` decides which ICMP types the engine then accepts (ICMPv6 link maintenance passes regardless)
 - Enforces BLOCK verdicts through an escalation policy (`blocking:` in `config.yaml`) that applies **only to ML-detector BLOCKs**. Rule-engine verdicts (blacklist hit, rate limit, protocol filter) are deterministic and already enforced inline on every packet, so they never count strikes and cannot escalate — this also guarantees an operator's blacklist entry can never be modified by the ban lifecycle. A single ML BLOCK only inline-drops that packet and counts a strike against the source. Crossing `strikes_threshold` inside the rolling window triggers a **temp ban** — kernel DROP plus a rule-engine blacklist *mirror* with a TTL, lifted automatically on expiry (only the mirror is removed; an operator's own entry is never touched). Repeated temp bans escalate to a **permanent ban**, which is mirrored into `rules.json`; on the next start it is loaded back into the rule engine and enforced per-packet in userspace — the kernel DROP itself is **not** reinstalled
 - Removes all of its iptables rules on shutdown
 

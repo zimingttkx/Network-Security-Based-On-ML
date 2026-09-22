@@ -32,6 +32,9 @@ engine:
     # reach the pipeline — see interception.intercept_icmp.
     # e.g. [0, 3, 4, 8, 11, 12] = echo reply, dest-unreach, source-quench,
     #                          echo, time-exceeded, parameter-problem
+    # ICMPv6 link maintenance (types 2, 133, 134, 135, 136) passes regardless:
+    # queuing neighbour discovery and then blocking it takes this host off the
+    # network instead of defending it.
     allowed_icmp_types: []
 
 interception:
