@@ -318,6 +318,29 @@ def load_api_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
     return {"auth_token": token, "cors_origins": cors, "host": host, "port": port}
 
 
+# ``engine.ml`` mirrors config/config.yaml: the learning detectors as a group.
+# Off by default — a deployment opts detection in, it is not sprung on it.
+_DEFAULT_ML = {"enabled": False}
+
+
+def load_ml_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
+    """Return the ``engine.ml`` block — whether learning detectors decide.
+
+    With ``enabled`` false the registered detectors are consulted on no packet:
+    the rule engine judges alone and traffic it does not decide is allowed.
+    That is a deliberate posture, not a broken detector, so it must not trigger
+    the fail-closed drop — which is what turning ML *on* opts into.
+    """
+    data = _load_mapping(path)
+    ml = _as_mapping(_as_mapping(data, "engine"), "ml")
+    enabled = ml.get("enabled", _DEFAULT_ML["enabled"])
+    if not isinstance(enabled, bool):
+        logger.warning("engine.ml.enabled=%r is not a bool; using %r",
+                       enabled, _DEFAULT_ML["enabled"])
+        enabled = _DEFAULT_ML["enabled"]
+    return {"enabled": enabled}
+
+
 # LUCID detector defaults mirror config/config.yaml's ``engine.lucid`` block.
 _DEFAULT_LUCID = {
     "time_window": 10.0,

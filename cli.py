@@ -69,8 +69,14 @@ def _build_pipeline() -> DetectionPipeline:
 
     # Engine tuning from config/config.yaml (engine block) — same contract as
     # app.py, so CLI live interception and the API behave identically.
-    from networksecurity.utils.config import load_engine_config
+    from networksecurity.utils.config import load_engine_config, load_ml_config
     _engine_cfg = load_engine_config()
+    _ml_cfg = load_ml_config()
+    pipeline.set_ml_enabled(_ml_cfg["enabled"])
+    if not _ml_cfg["enabled"]:
+        logger.info("engine.ml.enabled=false — the rule engine decides alone: the "
+                    "learning detectors below are registered but consulted on no "
+                    "packet, and undecided traffic is allowed")
     from networksecurity.engine import RuleEngine
     pipeline.set_rule_engine(RuleEngine(
         window_seconds=_engine_cfg["rule_engine"]["window_seconds"],
