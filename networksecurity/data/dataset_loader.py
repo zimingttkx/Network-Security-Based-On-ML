@@ -8,6 +8,7 @@ Supports common IDS dataset formats:
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 from pathlib import Path
 
@@ -15,6 +16,26 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def read_frame(path: str | Path) -> pd.DataFrame:
+    """Read a dataset file, Parquet or CSV.
+
+    Parquet is the distribution format of the bundled datasets but its engine
+    is a development dependency, so the runtime image does not carry one.  Say
+    so here rather than letting pandas raise from deep inside read_parquet.
+    """
+    path = Path(path)
+    if path.suffix.lower() != ".parquet":
+        return pd.read_csv(path)
+    if not any(importlib.util.find_spec(e) for e in ("pyarrow", "fastparquet")):
+        raise ImportError(
+            f"{path} is Parquet and no engine is installed.  Either "
+            "`pip install pyarrow` or convert it to CSV; the runtime image "
+            "ships neither engine, so CSV is the portable format."
+        )
+    return pd.read_parquet(path)
+
 
 # Column mappings for common datasets
 DATASET_CONFIGS: dict[str, dict] = {
@@ -103,12 +124,7 @@ class DatasetLoader:
     def load(self, path: str | Path) -> tuple[np.ndarray, np.ndarray]:
         """Load a dataset, returning (X, y)."""
         path = Path(path)
-        # Parquet is the distribution format of the bundled datasets
-        # (datasets/unsw-nb15/*.parquet); CSV is read by default otherwise.
-        if path.suffix.lower() == ".parquet":
-            df = pd.read_parquet(path)
-        else:
-            df = pd.read_csv(path)
+        df = read_frame(path)
         logger.info("Loaded %s: %d rows, %d columns", path, len(df), len(df.columns))
 
         # Drop metadata columns
@@ -207,10 +223,7 @@ class DatasetLoader:
         from sklearn.model_selection import train_test_split as tts
 
         path = Path(path)
-        if path.suffix.lower() == ".parquet":
-            df = pd.read_parquet(path)
-        else:
-            df = pd.read_csv(path)
+        df = read_frame(path)
         target = self._config.get("target_column", "label")
         if target not in df.columns:
             for candidate in ["label", "Label", "class", "Class", "attack", "Attack"]:

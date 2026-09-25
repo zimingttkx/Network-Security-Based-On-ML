@@ -64,12 +64,13 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
+# 开发 / CI：补上 pyarrow（自带数据集是 Parquet 格式）与 scapy（离线 pcap 测试）。
+# 运行时镜像两个都不装。
+pip install -r requirements-dev.txt
+
 # 可选：LUCID CNN 检测器需要 TensorFlow，默认安装不包含它
 #（未安装时 LUCID 适配器保持未激活状态）。
 pip install -e ".[lucid]"     # 或：pip install tensorflow
-
-# 可选：离线 pcap 测试（cli.py test --pcap）需要 scapy
-pip install scapy
 ```
 
 ### 3. 配置

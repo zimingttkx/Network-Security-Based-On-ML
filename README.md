@@ -64,12 +64,13 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
+# Development / CI — adds pyarrow (the bundled datasets are Parquet) and scapy
+# (offline pcap testing).  The runtime image installs neither.
+pip install -r requirements-dev.txt
+
 # Optional: the LUCID CNN detector needs TensorFlow, which is not part of the
 # default install (the adapter stays inactive without it).
 pip install -e ".[lucid]"     # or: pip install tensorflow
-
-# Optional: scapy is needed for offline pcap testing (cli.py test --pcap)
-pip install scapy
 ```
 
 ### 3. Configure

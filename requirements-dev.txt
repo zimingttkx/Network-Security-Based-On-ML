@@ -1,0 +1,14 @@
+# Development and CI dependencies.  The runtime install is requirements.txt
+# alone — that is all the Dockerfile and the systemd units pull in.
+#
+# pyarrow: the bundled datasets ship as Parquet (datasets/unsw-nb15/*.parquet)
+# and DatasetLoader reads it, but a runtime host that only serves the API and
+# the interceptor never loads a dataset.  Where no engine is installed,
+# networksecurity.data.dataset_loader.read_frame() says so instead of failing
+# inside pandas.
+#
+# scapy: offline pcap work — cli.py test --pcap, scripts/build_unsw_pcap.py,
+# and the capture-quality regression.
+-r requirements.txt
+pyarrow>=14.0.0
+scapy>=2.5.0
