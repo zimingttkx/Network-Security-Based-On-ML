@@ -423,7 +423,7 @@ python scripts/train_lucid.py --pcap capture.pcap \
 
 **启用**学习检测时，规则引擎未做判决的包必须被某个东西打分。如果所有"本来能打分"的挂载检测器都在抛异常、或已被熔断，流水线抛出 `DetectionUnavailable`，这个包被丢弃而不是放行：你花钱换来的检测器死掉时，静默断网比放过未知流量更安全。把 `engine.ml.enabled` 关掉是另一种情形——那是一个决策，所以未判决的流量照常放行，而且永远走不到这条路径。挂载了但缺模型的检测器（`ready: false`）按"未部署"处理：它既不判决，也不计入覆盖。
 
-状态 API 把 `detection_unavailable_drops`、`broken_detectors`、`ml_enabled`、`ml_consulted`、`ml_idle` 分开暴露，让运维能区分这三种状态，而不是靠一个布尔值猜。
+状态 API 把 `detection_unavailable_drops`、`broken_detectors`、`ml_enabled`、`ml_consulted`、`ml_idle`、`detector_status` 分开暴露，让运维能区分这些状态而不是靠一个布尔值猜——`detector_status["KitsuneDetector"]["trained"]` 才是"已挂载并计入覆盖"与"已经开始产出判决"的区别所在。
 
 ---
 

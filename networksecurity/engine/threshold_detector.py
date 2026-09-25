@@ -18,6 +18,7 @@ to decide, ``ready`` says whether this instance can score at all, and
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
 
 from networksecurity.engine.detector import BaseDetector, PacketInfo
@@ -45,8 +46,12 @@ class ThresholdDetector(BaseDetector):
         for key, (default, floor) in _PARAMS.items():
             if key in params:
                 value = float(params[key])
-                if value < floor:
-                    raise ValueError(f"{self.name}.{key}={value!r} is below {floor}")
+                # NaN compares False against every bound, so a finite check has
+                # to come first: an infinite window would silently disable the
+                # expiry below and keep a per-host history that never shrinks.
+                if not math.isfinite(value) or value < floor:
+                    raise ValueError(f"{self.name}.{key}={params[key]!r} is not a "
+                                     f"finite value at or above {floor}")
                 setattr(self, key, int(value) if default == int(default) else value)
 
     async def process_packet(self, packet: PacketInfo) -> Verdict | None:

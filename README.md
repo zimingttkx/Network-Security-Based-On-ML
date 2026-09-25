@@ -425,7 +425,7 @@ The detection pipeline can be exercised **without** root or iptables, which is t
 
 With learning detection **enabled**, a packet the rule engine does not decide must be scored by something. If every mounted detector that could score has raised or tripped its circuit breaker, the pipeline raises `DetectionUnavailable` and that packet is dropped rather than waved through: a silent outage is safer than allowing unknown traffic while the detector you paid for is dead. Turning `engine.ml.enabled` off is the opposite case — a decision, so undecided traffic is allowed, and it never triggers this path. A detector mounted without its model (`ready: false`) is treated as not deployed: it neither decides nor counts as coverage.
 
-The status API exposes `detection_unavailable_drops`, `broken_detectors`, `ml_enabled`, `ml_consulted` and `ml_idle` so an operator can tell these three states apart instead of guessing from one boolean.
+The status API exposes `detection_unavailable_drops`, `broken_detectors`, `ml_enabled`, `ml_consulted`, `ml_idle` and `detector_status` so an operator can tell these states apart instead of guessing from one boolean — `detector_status["KitsuneDetector"]["trained"]` is where "mounted and counting" differs from "producing verdicts yet".
 
 ---
 

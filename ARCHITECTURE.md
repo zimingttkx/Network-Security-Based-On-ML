@@ -226,8 +226,8 @@ A detector implements `BaseDetector` (`networksecurity/engine/detector.py`). Tha
 |---|---|
 | `async process_packet(packet: PacketInfo) -> Verdict \| None` | `None` abstains and hands the packet to the next detector. `BLOCK` ends the chain and the packet is dropped; any other explicit verdict is equally final — it ends the chain and is what gets enforced. |
 | `configure(params: dict) -> None` | Called with the entry's `params:` before the first packet. Reject keys you do not understand: a silently ignored option is indistinguishable from a configured detector. |
-| `ready -> bool` | `False` means "cannot score at all" (no model loaded, for example). Such a detector is consulted on no packet **and does not count as ML coverage** — see the table below. Warm-up is not `False`: a detector that is still training is covering traffic, and calling that an outage would drop every packet at startup. |
-| `status() -> dict` | Merged into `/api/v1/status`. Publish what an operator would need in order to notice you stopped working. |
+| `ready -> bool` | `False` means "cannot score at all" (no model loaded, for example). Such a detector is consulted on no packet **and does not count as ML coverage** — see the table below. Warm-up is not `False`: a detector that is still training is covering traffic, and calling that an outage would drop every packet at startup. Whether it is emitting verdicts *yet* belongs in `status()`. |
+| `status() -> dict` | Collected per detector into `detector_status` on `/api/v1/status`, and merged into the pipeline snapshot by name. Publish what an operator would need in order to notice you stopped working (Kitsune reports `trained`). Called outside the pipeline's status lock, and an exception inside it is contained to that detector's entry — a third-party `status()` must not be able to take the endpoint down. |
 
 Mount it from config:
 
@@ -249,10 +249,11 @@ engine:
 | state | a packet the rules did not decide |
 |---|---|
 | `engine.ml.enabled: false` | **ALLOW** — running without learning detection is a decision, not a failure |
-| ML on, a `ready` detector raised or tripped | **DROP** — an outage must not quietly become an open port |
+| ML on, and **no** `ready` detector could execute (all raised, or all tripped) | **DROP** — an outage must not quietly become an open port |
+| ML on, one detector dead but another ready one abstained | **ALLOW** — the surviving detector is the coverage; a partial outage is not a total one |
 | ML on, but only `ready: false` detectors were mounted | **ALLOW**, loudly: the startup log says no detector was mounted |
 
-The middle row is the one that used to be wrong. An adapter with no model answered `LOG` rather than abstaining, which both ended the chain and counted as coverage — so a live detector tripping behind it turned fail-closed off while the status page still listed three detectors. `ready` exists to keep "not deployed" and "could not run" from being the same sentence.
+Two of these rows used to be one, and wrong. An adapter with no model answered `LOG` rather than abstaining, which both ended the chain and counted as coverage — so a tripped live detector behind it switched fail-closed off silently while the status page still listed three detectors. `ready` exists to keep "not deployed", "could not run" and "running" from collapsing into the same sentence.
 
 ### Do NOT
 

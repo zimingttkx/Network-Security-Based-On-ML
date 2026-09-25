@@ -289,6 +289,37 @@ def main() -> int:
         check("status exposes reload counters",
               st["reload"]["reloads"] >= 2 and st["reload"]["failures"] >= 1,
               str(st["reload"])[:70])
+        # The endpoint forwards pipeline.status() rather than copying fields, so
+        # a field added to the snapshot cannot quietly fail to reach operators.
+        missing = sorted(set(appmod.pipeline.status()) - {"rule_engine"} - set(st))
+        check("every pipeline status field reaches the endpoint",
+              not missing, f"missing={missing}")
+        # The shipped config mounts no learning detector, so mount a probe onto
+        # the live pipeline and confirm its self-reported status arrives before
+        # tearing it back off.
+        from networksecurity.engine.detector import BaseDetector
+
+        class Probe(BaseDetector):
+            def __init__(self):
+                super().__init__(name="Probe")
+
+            async def process_packet(self, packet):
+                return None
+
+            def status(self):
+                return {"probing": True}
+
+        probe = Probe()
+        appmod.pipeline.add_detector(probe)
+        try:
+            probed = c.get("/api/v1/status").json()
+            arrived = probed["detector_status"].get("Probe") == {"probing": True}
+            evidence = str(probed["detector_status"])[:90]
+        finally:
+            appmod.pipeline._detectors.remove(probe)
+        check("detector status reaches the endpoint, per detector",
+              arrived and "Probe" not in c.get("/api/v1/status").json()["detector_status"],
+              evidence)
         au = {a["result"] for a in c.get("/api/v1/audit?limit=100").json()["items"]}
         check("reload attempts are audited (success and failure)",
               {"reload", "reload_failed"} <= au, str(sorted(au))[:80])

@@ -262,6 +262,49 @@ engine:
           and parsed["detectors"][1]["params"] == {},
           f"enabled={parsed['enabled']} entries={parsed['detectors']}")
 
+    # C16 — detector-owned status reaches the pipeline snapshot, and warm-up is
+    # visible there rather than being hidden by a bare "consulted" list.
+    from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
+
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    p.add_detector(KitsuneDetector())
+    s = p.status()
+    ks = s.get("detector_status", {}).get("KitsuneDetector", {})
+    check("C16 detector status reaches pipeline; warm-up reported, not hidden",
+          ks.get("trained") is False and s["ml_consulted"] == ["KitsuneDetector"],
+          f"detector_status={s.get('detector_status')} consulted={s['ml_consulted']}")
+
+    # C17 — a non-finite window would silently stop expiring history: NaN fails
+    # every bound comparison, so the finite check has to happen first.
+    refused_finite = []
+    for bad_value in (float("nan"), float("inf")):
+        try:
+            ThresholdDetector().configure({"window_seconds": bad_value})
+            refused_finite.append(False)
+        except ValueError:
+            refused_finite.append(True)
+    check("C17 non-finite params rejected before they can disable expiry",
+          refused_finite == [True, True], f"accepted={refused_finite}")
+
+    # C18 — third-party status() must not be able to take the snapshot down
+    class BrokenStatus(Abstainer):
+        def __init__(self):
+            super().__init__()
+            self.name = "BrokenStatus"
+
+        def status(self):
+            raise RuntimeError("boom")
+
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    p.add_detector(BrokenStatus())
+    p.add_detector(Abstainer())
+    s = p.status()
+    check("C18 a raising detector status is contained to its own entry",
+          s["detector_status"]["BrokenStatus"].get("status_error") is True
+          and "Abstainer" not in s["detector_status"]
+          and s["ml_consulted"] == ["BrokenStatus", "Abstainer"],
+          f"detector_status={s['detector_status']} consulted={s['ml_consulted']}")
+
     failed = [n for n, st in results if st == "CONFIRMED-BUG"]
     print("=" * 60)
     print(f"{len(results) - len(failed)}/{len(results)} PASS, "

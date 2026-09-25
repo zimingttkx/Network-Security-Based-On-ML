@@ -253,15 +253,30 @@ class DetectionPipeline:
         return self._total_blocked
 
     def status(self) -> dict:
+        # Detector-reported status is collected outside the status lock:
+        # status() is third-party code, and a detector that blocks or raises
+        # inside it must not be able to stall every other reader of this dict.
+        detector_status: dict[str, dict] = {}
+        for d in self._detectors:
+            try:
+                reported = d.status()
+            except Exception:
+                logger.exception("detector %r status() raised", d.name)
+                reported = {"status_error": True}
+            if reported:
+                detector_status[d.name] = reported
+
         with self._lock:
             broken = sorted(self._broken_detectors)
             ml = self._ml_detectors()
             down = [d.name for d in ml if d.name in self._broken_detectors]
-            # "consulted" is what an operator actually has: enabled, not
-            # tripped, and able to score.  A registered-but-inert adapter (no
-            # model loaded) or one still training is not coverage, and listing
-            # it beside the ones that are deciding traffic reads as a promise
-            # the process is not keeping.
+            # "consulted" = mounted, enabled, and able to score.  A detector
+            # registered without its model is not that, and listing it beside
+            # the ones deciding traffic reads as a promise the process is not
+            # keeping.  One that is still warming up *is* counted: excluding it
+            # would read as an outage and drop every packet during startup.
+            # Whether it is producing verdicts yet is a per-detector fact, so
+            # it lives in detector_status instead of narrowing this list.
             consulted = [d.name for d in ml
                          if self._ml_enabled and d.name not in down
                          and getattr(d, "ready", True)]
@@ -274,6 +289,7 @@ class DetectionPipeline:
                 "ml_enabled": self._ml_enabled,
                 "ml_consulted": consulted,
                 "ml_idle": idle,
+                "detector_status": detector_status,
                 "broken_detectors": broken,
                 # degraded: some ML coverage lost.  ml_unavailable: every
                 # registered ML detector is tripped, so any packet that the
