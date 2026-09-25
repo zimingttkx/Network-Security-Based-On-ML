@@ -98,6 +98,9 @@ def render_metrics(*, pipeline, store, interceptor, started_at: float) -> str:
             lines.append(_line(f"nips_{key}", len(value) if isinstance(value, list) else value))
 
     lines.append(_line("nips_alert_events_dropped_total", store_stats["dropped"]))
+    # Store-wide despite the name: `written` counts audit rows as well as alerts,
+    # so reconciling this against GET /api/v1/alerts needs written_alerts, not
+    # this series.  Renaming would break existing dashboards, so it stays.
     lines.append(_line("nips_alert_events_written_total", store_stats["written"]))
     lines.append(_line("nips_event_store_write_errors_total", store_stats["write_errors"]))
     lines.append(_line("nips_event_store_degraded", 1 if store_stats["degraded"] else 0))

@@ -85,13 +85,16 @@ class EventStore:
 
         self.dropped = 0                 # queue full: producer never blocked
         self.write_errors = 0            # batches that failed to land or read
-        self.written = 0
+        self.written = 0                 # store-wide: alerts + audit rows
+        self.written_alerts = 0
+        self.written_audit = 0
         self.purged = 0
 
         self._queue: deque[tuple[str, dict]] = deque()
         self._qmax = queue_size
         self._cond = threading.Condition()
         self._stop = threading.Event()
+        self._inflight = False           # a batch is popped but not yet committed
         self._lock = threading.Lock()    # serialises access to the connection
         self._recent_alerts: deque[dict] = deque(maxlen=500)
         self._recent_audit: deque[dict] = deque(maxlen=500)
@@ -170,7 +173,12 @@ class EventStore:
         while not self._stop.is_set():
             batch = self._drain_batch()
             if batch:
-                self._write(batch)
+                try:
+                    self._write(batch)
+                finally:
+                    with self._cond:
+                        self._inflight = False
+                        self._cond.notify_all()
         with self._cond:                 # final drain on close(): pop as we take
             batch = [self._queue.popleft() for _ in range(len(self._queue))]
         self._write(batch)
@@ -185,7 +193,9 @@ class EventStore:
                     return []
                 self._cond.wait(remaining)
             take = min(self.batch_size, len(self._queue))
-            return [self._queue.popleft() for _ in range(take)]
+            batch = [self._queue.popleft() for _ in range(take)]
+            self._inflight = bool(batch)
+            return batch
 
     def _write(self, batch: list[tuple[str, dict]]) -> None:
         if not batch or self._conn is None:
@@ -209,6 +219,8 @@ class EventStore:
                 # database — and this counter is exactly what an operator
                 # reconciles a lost-events incident against.
                 self.written += len(batch)
+                self.written_alerts += len(alerts)
+                self.written_audit += len(audit)
                 self.purged += purged
         except sqlite3.Error as exc:
             self.write_errors += 1
@@ -338,14 +350,20 @@ class EventStore:
             return 0
 
     def flush(self, timeout: float = 2.0) -> bool:
-        """Block until the queue has drained (used by tests and clean shutdown)."""
+        """Block until everything enqueued so far is committed, or timeout.
+
+        An empty queue is not the same as durable: a batch the writer has
+        already popped is still in flight, and a caller reading stats() at that
+        instant gets a total that has not caught up with what it enqueued.
+        """
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            with self._cond:
-                if not self._queue:
-                    return True
-            time.sleep(0.02)
-        return False
+        with self._cond:
+            while self._queue or self._inflight:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(remaining)
+            return True
 
     def stats(self) -> dict:
         return {
@@ -353,6 +371,8 @@ class EventStore:
             "degraded": self.degraded,
             "open_failed": self._open_failed,
             "written": self.written,
+            "written_alerts": self.written_alerts,
+            "written_audit": self.written_audit,
             "dropped": self.dropped,
             "write_errors": self.write_errors,
             "purged": self.purged,

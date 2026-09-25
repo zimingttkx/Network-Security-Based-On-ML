@@ -169,22 +169,38 @@ def main() -> int:
         # incident against, so it has to mean "rows actually committed": a
         # delta of writes has to equal a delta of rows the API reports for the
         # same events, and the CSV export has to emit exactly those rows.
-        written_before = store.stats()["written"]
+        # Both sides are scoped to the alert table: the store-wide total also
+        # counts audit rows, so one landing inside this window used to inflate
+        # the write delta by one and turn the check red at random.
+        stats0 = store.stats()
         total_before = c.get("/api/v1/alerts?limit=1").json()["total"]
         for i in range(5):
             store.record_alert(f"10.77.9.{i}", "reconcile", "block", "ReconcileProbe")
+        store.record_audit("ci", "GET", "/api/v1/alerts", "-", "ok")
         flushed = store.flush(3.0)
-        written_delta = store.stats()["written"] - written_before
+        stats1 = store.stats()
+        alerts_delta = stats1["written_alerts"] - stats0["written_alerts"]
+        audit_delta = stats1["written_audit"] - stats0["written_audit"]
         total_delta = c.get("/api/v1/alerts?limit=1").json()["total"] - total_before
         check("a flushed batch is one write delta and one row delta",
-              flushed and written_delta == 5 and total_delta == 5,
-              f"flushed={flushed} written+{written_delta} rows+{total_delta}")
+              flushed and alerts_delta == 5 and total_delta == 5,
+              f"flushed={flushed} alerts+{alerts_delta} rows+{total_delta}")
+        check("an audit row committed in the same window is counted apart",
+              stats1["written"] - stats0["written"] == 6 and audit_delta == 1,
+              f"store+{stats1['written'] - stats0['written']} audit+{audit_delta}")
 
-        csv_rows = len(c.get("/api/v1/alerts?limit=5&format=csv").text.strip().splitlines()) - 1
+        # The export request itself leaves an audit record behind, so the store
+        # has to settle before the counter is compared against anything: two
+        # reads of a total that a background writer is still moving will differ
+        # by one often enough to turn this red at random.
+        csv_r = c.get("/api/v1/alerts?limit=5&format=csv")
+        settled = store.flush(3.0)
+        csv_rows = len(csv_r.text.strip().splitlines()) - 1
+        written_now = store.stats()["written"]
         counter = _metric_value(c.get("/metrics").text, "nips_alert_events_written_total")
         check("CSV export, row count and write counter agree",
-              csv_rows == 5 and counter == store.stats()["written"],
-              f"csv={csv_rows} counter={counter} written={store.stats()['written']}")
+              settled and csv_rows == 5 and counter == written_now,
+              f"settled={settled} csv={csv_rows} counter={counter} written={written_now}")
 
         metrics = c.get("/metrics")
         check("/metrics exposition renders",
