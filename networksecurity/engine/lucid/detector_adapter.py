@@ -46,6 +46,18 @@ class LucidDetectorAdapter(BaseDetector):
         """Load a pre-trained Keras model from ``path``."""
         return await asyncio.to_thread(self._lucid.load_model, path)
 
+    @property
+    def ready(self) -> bool:
+        """False when no model was configured or none could be loaded.
+
+        Status counts this against coverage: an adapter that cannot score must
+        not be listed beside the detectors that are deciding traffic.
+        """
+        return bool(self._enabled and self._lucid.is_trained)
+
+    def status(self) -> dict:
+        return {"enabled": bool(self._enabled), "trained": bool(self._lucid.is_trained)}
+
     # -- BaseDetector interface ---------------------------------------------
 
     async def process_packet(self, packet: PacketInfo) -> Verdict | None:

@@ -52,10 +52,17 @@ class PacketInfo:
 
 
 class BaseDetector(ABC):
-    """Abstract base for all detection modules.
+    """Contract every detection module implements.
 
-    Each detector receives a packet and returns either a Verdict
-    or None (meaning "pass to next detector").
+    ``process_packet`` returns a Verdict, or ``None`` to abstain and let the
+    next detector decide.  Any non-BLOCK verdict ends the chain; BLOCK ends it
+    too unless the pipeline runs without short-circuiting.  A detector that is
+    not ``ready`` must abstain — returning a verdict while unready would make
+    the pipeline count it as having run, and that is what fail-closed decides
+    on.
+
+    Nothing may be opened, spawned or written at import time: construction and
+    ``configure`` only, side effects start at the first packet.
     """
 
     def __init__(self, name: str = ""):
@@ -66,8 +73,26 @@ class BaseDetector(ABC):
     async def process_packet(self, packet: PacketInfo) -> Verdict | None:
         """Process a single packet.  Return a Verdict or None."""
 
+    def configure(self, params: dict) -> None:
+        """Apply tuning read from config.yaml, before the first packet.
+
+        Unknown keys are rejected rather than ignored: a silently dropped
+        option looks exactly like a detector that was configured.
+        """
+        if params:
+            raise ValueError(f"{self.name} accepts no detector params, got {sorted(params)}")
+
     async def process_batch(self, packets: list[PacketInfo]) -> list[Verdict | None]:
         return [await self.process_packet(p) for p in packets]
+
+    @property
+    def ready(self) -> bool:
+        """Whether this detector can actually score packets right now."""
+        return True
+
+    def status(self) -> dict:
+        """Detector-owned fields for /api/v1/status; empty by default."""
+        return {}
 
     @property
     def packet_count(self) -> int:
