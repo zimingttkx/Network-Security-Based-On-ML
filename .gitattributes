@@ -1,0 +1,6 @@
+# Files consumed by Linux tooling must not be checked out with CRLF: a
+# trailing \r turns `set -euo pipefail` into "pipefail: invalid option name"
+# and corrupts systemd unit values.
+*.sh text eol=lf
+*.service text eol=lf
+Dockerfile text eol=lf
