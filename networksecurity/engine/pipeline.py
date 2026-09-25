@@ -155,7 +155,13 @@ class DetectionPipeline:
         for detector in self._detectors:
             if detector.name in self._broken_detectors:
                 continue
-            if not self._ml_enabled and detector is not self._rule_engine:
+            if detector is not self._rule_engine and (
+                    not self._ml_enabled or not getattr(detector, "ready", True)):
+                # Turned off by config, or registered with nothing to score with
+                # (no model loaded).  Such a detector neither decides nor counts
+                # as coverage.  A tripped detector is the opposite case: it was
+                # supposed to cover this packet, so its absence still fails
+                # closed — handled by `expected` below.
                 continue
             try:
                 verdict = await detector.process_packet(packet)
@@ -199,7 +205,13 @@ class DetectionPipeline:
         if pending_block is not None:
             return pending_block
 
-        if self._ml_enabled and not ml_executed and self._ml_detectors():
+        # Fail-closed applies when something was supposed to look at this packet
+        # and could not: a detector that is able to score (ready) but raised, or
+        # tripped earlier.  A chain whose only ML members are switched off by
+        # configuration is not an outage — it is rules-only operation, which is
+        # a decision, and undecided traffic falls through to ALLOW.
+        expected = [d for d in self._ml_detectors() if getattr(d, "ready", True)]
+        if self._ml_enabled and expected and not ml_executed:
             raise DetectionUnavailable(
                 "no ML detector could run on this packet "
                 f"(broken: {sorted(self._broken_detectors) or 'all raised'})"

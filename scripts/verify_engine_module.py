@@ -444,7 +444,9 @@ async def main():
     
     la = LucidDetectorAdapter(enabled=False)
     v = await la.process_packet(pkt())
-    report("L1 untrained lucid returns LOG verdict", v is None or v.action != Action.LOG,
+    # 第 66 行的清单本来就写着 disabled/untrained -> always None；实现此前
+    # 返回 LOG，既终止了链又被算成运行过的 ML 检测器。现在两边一致了。
+    report("L1 untrained lucid abstains with None", v is not None,
            f"verdict={v}")
     
     d_tcp = LucidDetectorAdapter._to_lucid_dict(pkt(protocol=6))
