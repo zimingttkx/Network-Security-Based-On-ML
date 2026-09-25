@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       python: ${{ steps.filter.outputs.python }}
+      suites: ${{ steps.filter.outputs.suites }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,6 +63,19 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
+          # 单元矩阵从仓库里枚举，不手抄一遍脚本名：手抄的清单要么漏掉新加的
+          # 套件，要么像连字符那样抄错一个字符，然后整批 job 空转。
+          suites=$(for f in scripts/verify_*.py; do
+            s=$(basename "$f" .py); s=${s#verify_}
+            case "$s" in
+              # 这两个要 root + netns，各有专门 job；那个要重建 59MB 抓包，属 nightly。
+              live_nfqueue|kernel_rules|real_capture_quality) continue ;;
+            esac
+            printf '"%s",' "$s"
+          done | sed 's/,$//')
+          echo "suites=[$suites]" >> "$GITHUB_OUTPUT"
+          echo "单元矩阵套件：$(echo "$suites" | tr -d '"')" >> "$GITHUB_STEP_SUMMARY"
+
   # ── workflow 文件自身的语法与引用检查 ───────────────────────────────
   # 门禁流水线坏了 = 整个项目没有门禁，所以这一条必须独立且永远在跑。
   # 镜像按 digest 钉：这里挂的是"检查别人之前先检查自己"的位置。
@@ -69,12 +83,17 @@ jobs:
     name: actionlint
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    container:
-      image: rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9
     steps:
       - uses: actions/checkout@v4
+
+      # 不用 container job：那个镜像里的默认用户对 runner 挂在 /__w/_temp 的
+      # 工作目录没有写权限，actions/checkout 光保存 state 就 EACCES 了。
+      # 直接 docker run 只读挂载，同样能钉 digest。
       - name: Lint the workflows
-        run: actionlint -color -verbose .github/workflows/*.yml
+        run: |
+          docker run --rm -v "$PWD:/check:ro" -w /check \
+            rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 \
+            -color .github/workflows/*.yml
 
   # ── 快层：语法、禁词、以及"只按 requirements.txt 装能不能起来" ──────
   preflight:
@@ -188,15 +207,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite:
-          - engine-module
-          - interception-module
-          - block-lifecycle
-          - live-exposed-bugs
-          - features-module
-          - data-module
-          - management-plane
-          - fpr-regression
+        suite: ${{ fromJSON(needs.triage.outputs.suites) }}
     steps:
       - uses: actions/checkout@v4
 
