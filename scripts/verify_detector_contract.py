@@ -275,16 +275,22 @@ engine:
           f"detector_status={s.get('detector_status')} consulted={s['ml_consulted']}")
 
     # C17 — a non-finite window would silently stop expiring history: NaN fails
-    # every bound comparison, so the finite check has to happen first.
+    # every bound comparison, so the finite check has to happen first.  The
+    # refusal has to come from that check and leave the attribute alone:
+    # int(float("nan")) raises ValueError on its own, so accepting any ValueError
+    # would keep this green after the guard is deleted.
     refused_finite = []
     for bad_value in (float("nan"), float("inf")):
+        td = ThresholdDetector()
+        before = td.window_seconds
         try:
-            ThresholdDetector().configure({"window_seconds": bad_value})
+            td.configure({"window_seconds": bad_value})
             refused_finite.append(False)
-        except ValueError:
-            refused_finite.append(True)
-    check("C17 non-finite params rejected before they can disable expiry",
-          refused_finite == [True, True], f"accepted={refused_finite}")
+        except Exception as err:
+            refused_finite.append("finite" in str(err).lower()
+                                  and td.window_seconds == before)
+    check("C17 non-finite params rejected by the validator before they can disable expiry",
+          refused_finite == [True, True], f"refused={refused_finite}")
 
     # C18 — third-party status() must not be able to take the snapshot down
     class BrokenStatus(Abstainer):
