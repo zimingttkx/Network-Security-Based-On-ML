@@ -174,6 +174,94 @@ async def main():
           f"dropped={dropped} degraded={s['degraded']} "
           f"unavailable={s['ml_unavailable']}")
 
+    # C11 — ML off means nothing is mounted: a rules-only chain, not a chain of
+    # detectors that are present but skipped.  This is what lets the ML packages
+    # be deleted outright without breaking the deployment.
+    from networksecurity.engine.assembly import attach_detectors
+    from networksecurity.utils.config import load_engine_config
+
+    off_cfg = {"enabled": False, "detectors": [{"uses": "kitsune"}]}
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    mounted = attach_detectors(p, off_cfg, load_engine_config())
+    s = p.status()
+    check("C11 ml off mounts nothing — chain is the rule engine alone",
+          mounted == [] and s["detectors"] == ["RuleEngine"]
+          and s["ml_consulted"] == [] and s["ml_idle"] == [],
+          f"mounted={mounted} detectors={s['detectors']} idle={s['ml_idle']}")
+
+    # C12 — a third-party detector mounts from config and gets its params
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    mounted = attach_detectors(p, {"enabled": True, "detectors": [
+        {"uses": "networksecurity.engine.threshold_detector:ThresholdDetector",
+         "params": {"window_seconds": 2, "max_packets": 3}}]}, {})
+    det = p.detectors[-1]
+    v_allow, v_block = None, None
+    for _ in range(6):
+        r = await p.process_packet(pkt())
+        if r.action == Action.BLOCK:
+            v_block = r
+        else:
+            v_allow = r
+    check("C12 external detector mounts by import path and receives params",
+          mounted == ["ThresholdDetector"] and det.window_seconds == 2
+          and det.max_packets == 3 and v_block is not None
+          and v_block.reason is not None and v_allow is not None,
+          f"mounted={mounted} window={det.window_seconds} "
+          f"blocked_after={det.trips} trips")
+
+    # C13 — an unusable entry is reported and skipped, not fatal: the
+    # management plane must still come up when one detector is broken.
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    mounted = attach_detectors(p, {"enabled": True, "detectors": [
+        {"uses": "no.such.module:Nope"},
+        {"uses": "not-an-import-path"},
+        {"uses": "networksecurity.engine.threshold_detector:ThresholdDetector",
+         "enabled": False}]}, {})
+    check("C13 bad and disabled entries skipped, pipeline still builds",
+          mounted == [] and p.detectors[0].name == "RuleEngine",
+          f"mounted={mounted} chain={[d.name for d in p.detectors]}")
+
+    # C14 — the example detector's configure() rejects unknown and impossible
+    # params rather than ignoring them
+    from networksecurity.engine.threshold_detector import ThresholdDetector
+
+    refused = []
+    for bad in ({"colour": "red"}, {"max_packets": 0}):
+        try:
+            ThresholdDetector().configure(bad)
+            refused.append(False)
+        except ValueError:
+            refused.append(True)
+    check("C14 example detector refuses unknown and out-of-range params",
+          refused == [True, True], f"refused={refused}")
+
+    # C15 — config parsing degrades loudly rather than silently
+    import tempfile
+
+    from networksecurity.utils.config import load_ml_config as _lm
+
+    cfg = """
+engine:
+  ml:
+    enabled: maybe
+    detectors:
+      - uses: kitsune
+      - "just a string"
+      - params: {x: 1}
+      - uses: networksecurity.engine.threshold_detector:ThresholdDetector
+        params: "not a mapping"
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+        fh.write(cfg)
+        path = fh.name
+    parsed = _lm(path)
+    Path(path).unlink(missing_ok=True)
+    check("C15 malformed ml config falls back with each problem named",
+          parsed["enabled"] is False and len(parsed["detectors"]) == 2
+          and parsed["detectors"][0]["uses"] == "kitsune"
+          and parsed["detectors"][1]["params"] == {},
+          f"enabled={parsed['enabled']} entries={parsed['detectors']}")
+
     failed = [n for n, st in results if st == "CONFIRMED-BUG"]
     print("=" * 60)
     print(f"{len(results) - len(failed)}/{len(results)} PASS, "

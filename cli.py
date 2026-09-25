@@ -37,7 +37,6 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from networksecurity.engine import DetectionPipeline
-from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
 from networksecurity.utils.validation import validate_ip_or_cidr
 
 # --- Persistence paths ------------------------------------------------------
@@ -73,10 +72,6 @@ def _build_pipeline() -> DetectionPipeline:
     _engine_cfg = load_engine_config()
     _ml_cfg = load_ml_config()
     pipeline.set_ml_enabled(_ml_cfg["enabled"])
-    if not _ml_cfg["enabled"]:
-        logger.info("engine.ml.enabled=false — the rule engine decides alone: the "
-                    "learning detectors below are registered but consulted on no "
-                    "packet, and undecided traffic is allowed")
     from networksecurity.engine import RuleEngine
     pipeline.set_rule_engine(RuleEngine(
         window_seconds=_engine_cfg["rule_engine"]["window_seconds"],
@@ -84,47 +79,10 @@ def _build_pipeline() -> DetectionPipeline:
         allowed_protocols=set(_engine_cfg["rule_engine"]["allowed_protocols"]),
         allowed_icmp_types=set(_engine_cfg["rule_engine"]["allowed_icmp_types"]),
     ))
-    pipeline.add_detector(KitsuneDetector(
-        max_autoencoder_size=_engine_cfg["kitsune"]["max_autoencoder_size"],
-        threshold_percentile=_engine_cfg["kitsune"]["threshold_percentile"],
-        learning_rate=_engine_cfg["kitsune"]["learning_rate"],
-    ))
-    for d in pipeline.detectors:
-        if isinstance(d, KitsuneDetector):
-            d.set_grace_periods(
-                fm_grace_period=_engine_cfg["kitsune"]["fm_grace_period"],
-                ad_grace_period=_engine_cfg["kitsune"]["ad_grace_period"],
-            )
-
-    # Optional: LUCID detector (requires TensorFlow).  Added inactive until a
-    # trained model is provided, so it does not silently no-op as "active".
-    try:
-        from networksecurity.utils.config import load_lucid_config
-        from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
-        
-        _lucid_cfg = load_lucid_config()
-        _model_path = _lucid_cfg.get("model_path", "")
-        
-        if _model_path:
-            _lucid_adapter = LucidDetectorAdapter(
-                time_window=_lucid_cfg["time_window"],
-                packets_per_flow=_lucid_cfg["packets_per_flow"],
-                enabled=True,
-            )
-            
-            # Load the model before registering the detector: a detector that
-            # cannot load its weights must not join the pipeline at all.
-            if asyncio.run(_lucid_adapter.load_model(_model_path)):
-                pipeline.add_detector(_lucid_adapter)
-            else:
-                logger.warning("LUCID model at %r failed to load; detector not registered",
-                               _model_path)
-        else:
-            pipeline.add_detector(LucidDetectorAdapter(enabled=False))
-    except ImportError:
-        pass
-    except Exception:
-        logger.exception("failed to initialize LUCID detector")
+    # Learning detectors: same shared assembler as app.py, so the CLI's live
+    # chain and the API's are built from one definition.
+    from networksecurity.engine.assembly import attach_detectors
+    attach_detectors(pipeline, _ml_cfg, _engine_cfg)
 
     pipeline.rule_engine.load_rules(RULES_FILE)
     return pipeline

@@ -320,25 +320,60 @@ def load_api_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
 
 # ``engine.ml`` mirrors config/config.yaml: the learning detectors as a group.
 # Off by default — a deployment opts detection in, it is not sprung on it.
-_DEFAULT_ML = {"enabled": False}
+_DEFAULT_ML = {"enabled": False, "detectors": []}
 
 
 def load_ml_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
-    """Return the ``engine.ml`` block — whether learning detectors decide.
+    """Return the ``engine.ml`` block — whether learning detectors decide, and
+    which ones to mount.
 
-    With ``enabled`` false the registered detectors are consulted on no packet:
-    the rule engine judges alone and traffic it does not decide is allowed.
-    That is a deliberate posture, not a broken detector, so it must not trigger
-    the fail-closed drop — which is what turning ML *on* opts into.
+    With ``enabled`` false nothing ML-related is imported or constructed: the
+    rule engine judges alone and traffic it does not decide is allowed.  That is
+    a deliberate posture, not a broken detector, so it must not trigger the
+    fail-closed drop — which is what turning ML *on* opts into.
+
+    ``detectors`` entries are ``{uses: kitsune | lucid | package.mod:Class,
+    enabled: true, params: {}}``.  Built-ins read their own tuning from
+    ``engine.kitsune`` / ``engine.lucid``; ``params`` goes to a third-party
+    detector's ``configure()`` unchanged.
     """
     data = _load_mapping(path)
     ml = _as_mapping(_as_mapping(data, "engine"), "ml")
+
     enabled = ml.get("enabled", _DEFAULT_ML["enabled"])
     if not isinstance(enabled, bool):
         logger.warning("engine.ml.enabled=%r is not a bool; using %r",
                        enabled, _DEFAULT_ML["enabled"])
         enabled = _DEFAULT_ML["enabled"]
-    return {"enabled": enabled}
+
+    raw = ml.get("detectors", _DEFAULT_ML["detectors"])
+    if not isinstance(raw, list):
+        logger.warning("engine.ml.detectors=%r is not a list; using %r",
+                       raw, _DEFAULT_ML["detectors"])
+        raw = _DEFAULT_ML["detectors"]
+
+    detectors: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            logger.warning("skipping engine.ml.detectors entry %r: not a mapping", item)
+            continue
+        uses = item.get("uses")
+        if not isinstance(uses, str) or not uses:
+            logger.warning("skipping engine.ml.detectors entry %r: no 'uses'", item)
+            continue
+        params = item.get("params") or {}
+        if not isinstance(params, dict):
+            logger.warning("detector %r: params=%r is not a mapping; using {}",
+                           uses, params)
+            params = {}
+        flag = item.get("enabled", True)
+        if not isinstance(flag, bool):
+            logger.warning("detector %r: enabled=%r is not a bool; using true",
+                           uses, flag)
+            flag = True
+        detectors.append({"uses": uses, "params": params, "enabled": bool(flag)})
+
+    return {"enabled": enabled, "detectors": detectors}
 
 
 # LUCID detector defaults mirror config/config.yaml's ``engine.lucid`` block.

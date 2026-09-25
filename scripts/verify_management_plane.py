@@ -77,12 +77,33 @@ def main() -> int:
     appmod.event_store = EventStore(tmp_db, max_rows=5000, retention_days=7)
 
     # -- import-time integrity ---------------------------------------------
+    # The shipped config runs with engine.ml.enabled false.  The switch is only
+    # worth having if an ML-less chain is a working chain, so assert both sides
+    # instead of pinning one shape of the detector list.
     names = [type(d).__name__ for d in appmod.pipeline._detectors]
-    check("pipeline assembles kitsune + a lucid adapter",
-          "KitsuneDetector" in names and any("Lucid" in n for n in names), str(names))
     st = appmod.pipeline.status()
-    check("disabled LUCID does not arm fail-closed",
-          st["broken_detectors"] == [] and st["ml_unavailable"] is False, str(st))
+    check("default config runs on the rule engine alone",
+          names == ["RuleEngine"] and st["ml_enabled"] is False, str(names))
+    check("an ML-less chain does not arm fail-closed",
+          st["broken_detectors"] == [] and st["ml_unavailable"] is False
+          and st["ml_consulted"] == [],
+          f"broken={st['broken_detectors']} unavailable={st['ml_unavailable']} "
+          f"consulted={st['ml_consulted']}")
+
+    from networksecurity.engine.assembly import attach_detectors
+    from networksecurity.engine.pipeline import DetectionPipeline
+    from networksecurity.engine.rule_engine import RuleEngine
+    from networksecurity.utils.config import load_engine_config
+
+    on = DetectionPipeline(RuleEngine())
+    mounted = attach_detectors(on, {"enabled": True, "detectors": [
+        {"uses": "kitsune"}, {"uses": "lucid"}]}, load_engine_config())
+    # LUCID asks for a trained model; with model_path empty it is not mounted at
+    # all, which is what keeps the status page from advertising coverage there.
+    check("enabling ML mounts kitsune, and lucid only if its model loads",
+          mounted == ["KitsuneDetector"]
+          and on.status()["ml_consulted"] == ["KitsuneDetector"],
+          f"mounted={mounted} consulted={on.status()['ml_consulted']}")
 
     with TestClient(appmod.app) as c:
         check("/health open", c.get("/health").status_code == 200)

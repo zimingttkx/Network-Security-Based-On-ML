@@ -12,6 +12,19 @@ engine:
   ml:
     enabled: false
 
+    # What to mount when enabled.  `kitsune` and `lucid` are the built-ins and
+    # read their tuning from the blocks below; anything else is an import path
+    # written `package.module:ClassName`, so your own detector is addressed the
+    # same way a built-in is.  `params` is handed to that detector's
+    # configure() unchanged — see networksecurity/engine/threshold_detector.py
+    # for a complete worked example of the contract.
+    detectors:
+      - uses: kitsune
+      # - uses: lucid                       # needs engine.lucid.model_path set to
+      #                                     # a trained model, else not mounted
+      # - uses: mypackage.nips:EntropyDetector
+      #   params: {window_seconds: 30, max_hosts: 500}
+
   # Kitsune anomaly detector
   kitsune:
     max_autoencoder_size: 10
