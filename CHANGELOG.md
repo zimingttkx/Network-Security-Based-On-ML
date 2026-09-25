@@ -41,7 +41,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Data: PcapLoader IP-parsing scope fix (real pcaps no longer parse every IP to None); pcap loader rewritten to mirror the live parser and support more link layers; scapy import deferred to call time; Infinity values no longer leak through Parquet datasets.
 - API/app: rule-entry IP/CIDR validation, atomic `rules.json` writes, absolute rules path, alerts list lock, engine config wired into the API/CLI start path, undefined `RULES_FILE_DEFAULT` reference.
 - Added missing `Verdict` import and suppressed bandit false positives in CI.
-- Configured style check to exit zero and ignore non-critical rules.
+- `scripts/attack_simulation.py`: the mixed-traffic phase kept its own tallies, so the summary table — and the headline false-positive rate — silently excluded all of its packets. On an interleaved run that dropped 60,000 verdicts including a measured ~100% false-positive rate on normal traffic, which the report then printed as a fraction of a percent. Phase 3 now feeds the same counters as every other phase, and the report prints a reconciliation warning whenever the summary stops matching the pipeline's own block count.
+- Style and security findings that cannot fail the build are now reported as such instead of running behind an `--exit-zero` that made them look like passing gates.
 
 ### Performance
 

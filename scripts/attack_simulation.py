@@ -349,10 +349,14 @@ class SimulationRunner:
         print("Phase 3: 混合流量 (正常 60% + 攻击 40%)")
         print("─" * 60)
 
-        mixed_normal = 0
-        mixed_attack = 0
-        mixed_detected = 0
-        mixed_fp = 0
+        # 这一阶段走和其它阶段同一套记账。它以前只把数字印在阶段行里，
+        # 汇总表既没算它的攻击检出也没算它的误报 —— 于是流水线自己记的
+        # total_blocked 会比表格汇总正好多出这一阶段的包数，把混合流量下
+        # 实测到的大面积误报印成了千分之几。
+        mixed = AttackResult(name="Mixed 60/40")
+        self.attack_results[mixed.name] = mixed
+        normal_before = self.normal_count
+        fp_before = self.fp_count
         mixed_total = attack_scale * 3
         mixed_start_ts = attack_ts + 10.0
 
@@ -364,9 +368,11 @@ class SimulationRunner:
                 # 正常流量
                 pkt = TrafficGenerator.normal_web(ts)
                 verdict = await self.pipeline.process_packet(pkt)
-                mixed_normal += 1
+                self.normal_count += 1
                 if verdict.action == Action.BLOCK:
-                    mixed_fp += 1
+                    self.fp_count += 1
+                else:
+                    self.tn_count += 1
             else:
                 # 随机攻击
                 attack_type = random.choice([
@@ -376,21 +382,21 @@ class SimulationRunner:
                 ])
                 pkt = attack_type(ts)
                 verdict = await self.pipeline.process_packet(pkt)
-                mixed_attack += 1
+                mixed.total += 1
                 if verdict.action == Action.BLOCK:
-                    mixed_detected += 1
+                    mixed.detected += 1
+                    mixed.detector_hits[verdict.detector] += 1
 
         t1 = time.monotonic()
-        mixed_rate = mixed_total / max(0.001, t1 - t0)
+        mixed_normal = self.normal_count - normal_before
+        mixed_fp = self.fp_count - fp_before
 
-        print(f"  ✓ 完成: {mixed_total} 包, {mixed_rate:.0f} pkt/s")
-        print(f"  正常包: {mixed_normal}, 攻击包: {mixed_attack}")
-        print(f"  攻击检出: {mixed_detected}/{mixed_attack} "
-              f"({mixed_detected/max(1,mixed_attack)*100:.1f}%)")
+        print(f"  ✓ 完成: {mixed_total} 包, {mixed_total / max(0.001, t1 - t0):.0f} pkt/s")
+        print(f"  正常包: {mixed_normal}, 攻击包: {mixed.total}")
+        print(f"  攻击检出: {mixed.detected}/{mixed.total} "
+              f"({mixed.detected/max(1,mixed.total)*100:.1f}%)")
         print(f"  误报: {mixed_fp}/{mixed_normal} "
               f"({mixed_fp/max(1,mixed_normal)*100:.2f}%)")
-
-        return mixed_detected, mixed_attack, mixed_fp, mixed_normal
 
     def print_report(self):
         """输出完整的仿真报告。"""
@@ -441,6 +447,15 @@ class SimulationRunner:
         print(f"║    流水线:   RuleEngine → Kitsune(AfterImage+KitNET)         ║")
 
         print("╚" + "═" * 63 + "╝")
+
+        # 汇总表必须和流水线自己的计数对得上。上一版就是靠这条不平的账被发现
+        # 的：某个阶段的判定只印在阶段行里，没进汇总。
+        accounted = total_detected + self.fp_count
+        blocked = self.pipeline.total_blocked
+        if accounted != blocked:
+            print(f"\n  !! 对账不平: 检出 {total_detected:,} + 误报 {self.fp_count:,} "
+                  f"= {accounted:,}，流水线记的却是 {blocked:,} "
+                  f"（差 {blocked - accounted:+,}）—— 有阶段的判定没进汇总")
 
         # 检测器贡献分析
         detector_totals: dict[str, int] = defaultdict(int)
