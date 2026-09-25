@@ -1,13 +1,15 @@
 name: CI
 
-# PR 是唯一的合并入口，main 上再跑一遍作为事后核对。
+# dev 是日常主干，main 只在发布时接收 dev→main 的 PR；两个分支都走 PR、都受
+# 同样的保护。dev 必须列在触发分支里：否则往 dev 合的 PR 会要求一个根本不会
+# 运行的 ci/required，分支直接被锁死。
 # 分支保护只需要钉 `ci/required` 一个检查名：增删 job、改 job 名都不用再动
 # 保护规则，也不会有"某个必需检查被改名后保护静默失效"这种事。
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:

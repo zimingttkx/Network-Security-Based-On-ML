@@ -49,10 +49,12 @@ refactor: extract verdict types to separate module
 
 ### What CI Runs
 
-`main` is protected by a single required status check — **`ci/required`**. It is
-an aggregator, so jobs can be added or renamed without touching branch
-protection, and a skipped job counts as green (a documentation-only PR is not
-expected to rebuild a Docker image).
+`dev` is the integration branch; `main` only receives a `dev` → `main` pull
+request at release time. Both are protected by the same single required status
+check — **`ci/required`**. It is an aggregator, so jobs can be added or renamed
+without touching branch protection, and a skipped job counts as green (a
+documentation-only PR is not expected to rebuild a Docker image). Neither branch
+accepts a direct push, so work starts on its own short-lived branch.
 
 | layer | jobs | blocks merge |
 |-------|------|--------------|
