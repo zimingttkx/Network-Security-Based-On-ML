@@ -112,13 +112,18 @@ jobs:
           python - <<'PY'
           import re, pathlib
           cfg = pathlib.Path("config/config.yaml")
-          cfg.write_text(re.sub(r'model_path: ""', 'model_path: "models/lucid_cnn.h5"',
-                                cfg.read_text()))
+          text = re.sub(r'model_path: ""', 'model_path: "models/lucid_cnn.h5"',
+                        cfg.read_text())
+          # LUCID is mounted by the ml assembler now, so the switch has to be on
+          # for this to be a test of anything.
+          text = re.sub(r'(?m)^(\s*)enabled: false$', r'\1enabled: true', text, count=1)
+          cfg.write_text(text)
           import app
           names = [type(d).__name__ for d in app.pipeline._detectors]
           assert "LucidDetectorAdapter" in names, names
           status = app.pipeline.status()
           assert status["broken_detectors"] == [], status
+          assert status["ml_consulted"], status
           lucid = next(d for d in app.pipeline._detectors
                        if type(d).__name__ == "LucidDetectorAdapter")
           assert lucid._enabled and lucid._lucid.is_trained, "model loaded but detector not trained"

@@ -37,6 +37,17 @@ class KitsuneDetector(BaseDetector):
         """Whether KitNET training has completed and detection is live."""
         return self._kitsune.is_ready
 
+    @property
+    def ready(self) -> bool:
+        """True while training too: warm-up is not the same as being unable to
+        score.  Excluding it would read as an outage and drop every packet
+        during startup; ``status()`` is where the training state shows."""
+        return True
+
+    def status(self) -> dict:
+        """`trained` is the honest "is it producing verdicts yet" flag."""
+        return {"trained": bool(self._kitsune.is_ready)}
+
     # -- BaseDetector interface ---------------------------------------------
 
     async def process_packet(self, packet: PacketInfo) -> Verdict | None:

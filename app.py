@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import csv
 import io
 import json
@@ -19,7 +18,6 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, field_validator
 
 from networksecurity.engine import DetectionPipeline, RuleEngine
-from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
 from networksecurity.observability import EventStore, configure_logging, render_metrics
 
 # --- Application -----------------------------------------------------------
@@ -88,58 +86,22 @@ pipeline: DetectionPipeline = DetectionPipeline()
 
 # Engine tuning comes from config/config.yaml (engine block) so operator
 # overrides actually apply — previously only the interception block was read.
-from networksecurity.utils.config import load_engine_config
+from networksecurity.utils.config import load_engine_config, load_ml_config
 
 _engine_cfg = load_engine_config()
+_ml_cfg = load_ml_config()
+pipeline.set_ml_enabled(_ml_cfg["enabled"])
 pipeline.set_rule_engine(RuleEngine(
     window_seconds=_engine_cfg["rule_engine"]["window_seconds"],
     max_connections=_engine_cfg["rule_engine"]["max_connections"],
     allowed_protocols=set(_engine_cfg["rule_engine"]["allowed_protocols"]),
     allowed_icmp_types=set(_engine_cfg["rule_engine"]["allowed_icmp_types"]),
 ))
-pipeline.add_detector(KitsuneDetector(
-    max_autoencoder_size=_engine_cfg["kitsune"]["max_autoencoder_size"],
-    threshold_percentile=_engine_cfg["kitsune"]["threshold_percentile"],
-    learning_rate=_engine_cfg["kitsune"]["learning_rate"],
-))
-# Kitsune grace periods must be set before the first packet is processed.
-for _d in pipeline.detectors:
-    if isinstance(_d, KitsuneDetector):
-        _d.set_grace_periods(
-            fm_grace_period=_engine_cfg["kitsune"]["fm_grace_period"],
-            ad_grace_period=_engine_cfg["kitsune"]["ad_grace_period"],
-        )
-
-# Optional: LUCID DDoS detector (requires TensorFlow).  It is added to the
-# pipeline but stays inactive until a trained model is provided, so it does
-# not silently no-op as an "active" detector.
-try:
-    from networksecurity.utils.config import load_lucid_config
-    from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
-    
-    _lucid_cfg = load_lucid_config()
-    _model_path = _lucid_cfg.get("model_path", "")
-    
-    if _model_path:
-        _lucid_adapter = LucidDetectorAdapter(
-            time_window=_lucid_cfg["time_window"],
-            packets_per_flow=_lucid_cfg["packets_per_flow"],
-            enabled=True,
-        )
-        
-        # Load the model before registering the detector: a detector that
-        # cannot load its weights must not join the pipeline at all.
-        if asyncio.run(_lucid_adapter.load_model(_model_path)):
-            pipeline.add_detector(_lucid_adapter)
-        else:
-            logger.warning("LUCID model at %r failed to load; detector not registered",
-                           _model_path)
-    else:
-        pipeline.add_detector(LucidDetectorAdapter(enabled=False))
-except ImportError:
-    pass
-except Exception:
-    logger.exception("failed to initialize LUCID detector")
+# Learning detectors come from engine.ml (switch + list) via the shared
+# assembler, so this path and cli.py's cannot drift into different chains.
+# With ML off, none of it is even imported.
+from networksecurity.engine.assembly import attach_detectors
+attach_detectors(pipeline, _ml_cfg, _engine_cfg)
 
 _interceptor: object | None = None  # Interceptor | None
 _interceptor_thread: threading.Thread | None = None
@@ -322,17 +284,15 @@ async def engine_status():
     detect_stale = inter_status.get("detection_loop_stale_seconds")
     pipe_status = pipeline.status()
     status = {
+        # Everything the pipeline reports reaches the operator; only the
+        # rule-engine internals stay out because /api/v1/stats/overview already
+        # serves them.  These fields used to be copied one by one, which meant a
+        # new pipeline.status() key silently never showed up here — the coverage
+        # split (ml_enabled / ml_consulted / ml_idle) was exactly such a loser.
+        **{k: v for k, v in pipe_status.items() if k != "rule_engine"},
         "running": interceptor_running or pipeline.running,
         "interception_active": interceptor_running,
         "uptime_seconds": (datetime.now(tz=timezone.utc) - start_time).total_seconds(),
-        "detectors": pipe_status["detectors"],
-        "broken_detectors": pipe_status["broken_detectors"],
-        # degraded: some ML detectors are out.  ml_unavailable: all of them
-        # are, so every packet the rule engine does not decide raises
-        # DetectionUnavailable and is dropped — detection_unavailable_drops
-        # counts those drops.
-        "degraded": pipe_status["degraded"],
-        "ml_unavailable": pipe_status["ml_unavailable"],
         "detection_unavailable_drops": inter_status.get(
             "detection_unavailable_drops"),
         # Packets the parser could not read completely and consistently, and

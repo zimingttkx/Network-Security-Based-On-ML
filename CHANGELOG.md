@@ -11,6 +11,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `GET /api/v1/blocks` endpoint exposing the live escalation state, plus `kernel_blocked_ips` and `detection_loop_stale_seconds` fields on `/api/v1/status`.
 - `broken_detectors` (circuit-breaker state) exposed on `/api/v1/status`, as documented in SECURITY.md.
 - Parquet support in `DatasetLoader`: `.parquet` files are read as Parquet; CSV remains the default.
+- Detector contract: `BaseDetector` gains `configure()`, `ready` and `status()`, and mounting is driven by config (`engine.ml.enabled`, `engine.ml.detectors`) instead of hardcoded wiring in the entrypoints. `networksecurity/engine/threshold_detector.py` is a complete worked example; with the switch off, no ML module is imported at all, so deleting `engine/kitsune/` and `engine/lucid/` yields a supported rules-only deployment.
+- `scripts/verify_detector_contract.py`: contract, switch, external mount, skipped-on-failure, and config-degradation checks.
 - Per-kind event-store write counters (`written_alerts` / `written_audit`) in `stats()`; the store-wide `written` total keeps its meaning, so `nips_alert_events_written_total` is unchanged.
 - `requirements-dev.txt` separating development/CI dependencies (Parquet engine, scapy) from the runtime install.
 - `preflight` gate that imports every production module in an environment built from `requirements.txt` alone — the class of gap where a dependency exists only in the CI install list.
@@ -20,6 +22,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- Learning detection is off by default (`engine.ml.enabled: false`). The distinction is now explicit: switching it off is a decision, so packets the rule engine does not decide are allowed; having it on and unable to run is an outage, so those packets are dropped as before.
+- A detector mounted without its model (`ready: false`) is no longer registered and no longer counts as ML coverage. It used to answer `LOG`, which both ended the chain and made the pipeline believe detection had run — enough for a tripped live detector behind it to disable fail-closed silently.
+- `/api/v1/status` passes `pipeline.status()` through instead of copying fields one by one, and splits detector state into `ml_enabled` / `ml_consulted` / `ml_idle` plus a per-detector `detector_status` (a detector's own `status()` output, contained if it raises), so "not deployed", "could not run", "warming up" and "running" are no longer the same sentence.
+- README's `## Benchmarks` became `## Measured results and limits`: every number now carries the command that reproduces it, and the bundled "real capture" detection rate is marked void because `build_unsw_pcap.py` assigns source addresses from the label that `evaluate_pcap.py` then reads back as ground truth.
 - CI restructured into three blocking layers (static / unit / system) behind one aggregate `ci/required` check, so branch protection pins a single name and skipped jobs no longer block documentation-only PRs; the eight module suites moved from serial steps in one job to a parallel matrix. Slow calibration-only checks (real-capture detection quality, LUCID training, attack simulation), the Python 3.13 sweep and the full static reports moved to `.github/workflows/nightly.yml`.
 - `EventStore.flush()` waits for the in-flight batch to commit, not just for the queue to drain, so `stats()` read straight after a flush cannot report a total that has not caught up.
 - `DatasetLoader` reports a missing Parquet engine as an actionable `ImportError` instead of surfacing pandas' internal one.

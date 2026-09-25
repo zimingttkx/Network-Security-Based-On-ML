@@ -20,18 +20,32 @@
 流入流量
       |
       v
-[规则引擎 Rule Engine] ------> 阻断（黑名单、限速、协议过滤）
-      | 通过
+[规则引擎 Rule Engine] ------> 判决：黑名单、白名单、协议过滤、限速、签名
+      | 弃权                （始终在场）
       v
-[Kitsune] ----------> 阻断（AfterImage + KitNET 异常检测）
-      | 通过
+[挂载的学习检测器] ----------> 异常则阻断
+      |
       v
 [放行 ALLOW]
 ```
 
-规则引擎确定性地处理已知恶意流量（黑名单、白名单、限速、协议白名单）。通过的数据包交给 Kitsune——一个无监督的包级异常检测器，先在正常流量上训练，再用重建误差（RMSE）偏离程度来标记异常。
+规则引擎是链路上永久的部分：确定性，也是默认配置下唯一在跑的环节。它不判决的流量，落到你挂载了什么检测器上。
 
-LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流水线，需要 TensorFlow（`pip install -e ".[lucid]"` 或 `pip install tensorflow`）和训练好的模型，并显式启用。见 `networksecurity/engine/lucid/`。
+学习检测器是一个**可插拔组件**，而且**默认关闭**：
+
+```yaml
+engine:
+  ml:
+    enabled: false        # 置 true 才对下面列出的检测器开启学习检测
+    detectors:
+      - uses: kitsune     # 也可以是 lucid，或 my_package.module:MyDetector
+```
+
+`enabled: false` 时，ML 相关模块**既不导入也不构造**：把 `networksecurity/engine/kitsune/` 和 `networksecurity/engine/lucid/` 两个目录整个删掉，剩下的是一套能正常工作的、只依赖规则的部署。打开之后，某个检测器建不起来只会被记录并跳过，不会让进程起不来。第三方检测器要实现什么接口（`process_packet` / `configure` / `ready` / `status`），以及这个开关如何决定 fail-closed 的边界，见 [ARCHITECTURE.md 的检测器契约一节](ARCHITECTURE.md)；`networksecurity/engine/threshold_detector.py` 是一份可以直接抄的完整示例。
+
+这里检测能力的边界是量出来的，不是说出来的：见[实测结果与边界](#实测结果与边界)。
+
+LUCID（基于 CNN 的 DDoS 检测器）另外还有它自己的可选条件：需要 TensorFlow（`pip install -e ".[lucid]"` 或 `pip install tensorflow`）**并且**在 `engine.lucid.model_path` 给出一个训练好的模型。模型加载不出来就完全不挂载——它不再以"未启用的检测器"身份留在链路里、却被状态页列为在跑。
 
 ### 算法
 
@@ -77,6 +91,7 @@ pip install -e ".[lucid]"     # 或：pip install tensorflow
 
 `config/config.yaml` 同时驱动引擎和实时拦截：
 
+- `engine.ml.enabled` / `engine.ml.detectors`：是否启用学习检测，以及挂载哪些检测器（内建短名，或 `包.模块:类名` 加一个 `params:` 块）。默认关闭。
 - `engine.kitsune.*`：宽限期、阈值百分位、learning_rate（传给 AfterImage）
 - `engine.lucid.model_path`：设置路径即启用 LUCID；空字符串表示禁用
 - `api.auth_token`：设置后启用认证；空字符串表示关闭认证（仅开发环境）
@@ -240,6 +255,8 @@ config/
 networksecurity/
   engine/                      # 检测引擎
     detector.py                # BaseDetector 接口 + PacketInfo
+    assembly.py                # 按 config 的 engine.ml 挂载检测器
+    threshold_detector.py      # 契约的完整示例实现
     verdict.py                 # Verdict、Action、ThreatLevel 类型
     pipeline.py                # DetectionPipeline（多阶段链）
     rule_engine.py             # IP 黑名单/白名单、限速
@@ -359,9 +376,27 @@ python scripts/train_lucid.py --pcap capture.pcap \
 
 ---
 
-## 基准测试
+## 实测结果与边界
 
-两个脚本用于在你自己的机器上跑出数据——下面的数字未在各环境验证，实际结果会有差异：
+下面都是本仓库真能跑出来的数字，每条都附了复现命令。它们不稳定——Kitsune 的投影没有固定随机种子——所以请按区间看待。
+
+| 场景 | 结果 | 复现命令 |
+|---|---|---|
+| 规则引擎 vs 单源 SYN flood | **100%** 检出（小地址池按 1000 pkt/s 打，超过每源限速），普通流量误报 **2.4%** | `python scripts/verify_fpr_regression.py` |
+| 同一种 flood 摊到 2000 个伪造源 | **0.1%** —— 每源速率始终碰不到限速，而按主机建模看不见它 | `python scripts/attack_simulation.py --full` |
+| 合成流量里的大流量攻击（UDP、ICMP） | 100%（ICMP 由协议规则，UDP 由异常检测阶段） | 同上 |
+| 整轮合成仿真，把所有阶段都计入 | 攻击包检出 64.7%，普通包被拦 **26.75%** | 同上 |
+| 真实 UNSW-NB15 还原抓包 | 误报率 **1.8–3.7%** | `python scripts/evaluate_pcap.py` |
+| 同一份抓包的检出率 | ~~0.0–0.7%~~ —— **不能作为准确率主张**，见下 | 同上 |
+| 离线流水线吞吐 | 约 660–870 pkt/s，单进程 | 上面任一 |
+
+**自带的"真实抓包"基准会泄漏自己的标签。** `scripts/build_unsw_pcap.py` 是按标签来分配源地址的（攻击流用 `ATTACK_NET`、正常流用 `NORMAL_NET`，因为 UNSW-NB15 不提供逐行 IP），而 `scripts/evaluate_pcap.py` 又把这些地址读回来当真值。于是任何按源地址写的规则都能白拿 100% 检出，那个检出率数字测的是还原脚本而不是检测器。误报率仍然有效——泄漏的标签不会让正常包变成误报。把这个洞补上（地址分配与标签无关，然后重测两个数字）是待办工作；在那之前这一行是方法学说明，不是结果。
+
+**两行"检出率"为什么差三个数量级**：它们是同名但不同的攻击。集中式洪水会撞上限速；分布式洪水按构造就绕开了它，而 Kitsune 按主机打分，每个伪造源看起来都像一个守规矩的客户端。这是方法的边界，不是调参没调好。
+
+**先校准 `blocking:`，再相信上面任何数字。** strike 按 BLOCK 判决计数，也就是**按包计**。在 2–3% 的包级误报率下，一个合法源只要在 `strikes_window` 内发出几百个包，就会达到出厂的 `strikes_threshold: 5`，吃到 10 分钟内核封禁；反复几轮还会持久化成永久封禁。先在你自己的流量上量一遍（`cli.py test --pcap`，并对照真实流量规模看 `nips_alert_events_written_total`），再把阈值设成你流量产出的若干倍。
+
+### 在你自己的机器上复现
 
 - `scripts/benchmark.py` — 用合成的普通流量训练 Kitsune，再报告规则引擎准确率、训练/检测吞吐量和攻击检出率。
 - `scripts/benchmark_nslkdd.py` — 下载 NSL-KDD，把流记录映射成合成数据包，用普通流训练 Kitsune，报告精确率/召回率/误报率。
@@ -370,11 +405,11 @@ python scripts/train_lucid.py --pcap capture.pcap \
 
 规则引擎本身是精确的：黑名单/白名单、协议过滤、限速都是确定性的，且始终在 ML 阶段之前执行。限速只统计 TCP SYN（ACK 未置位）和 UDP 数据报；已建立的 TCP 会话（ACK/数据/FIN）不消耗限速额度。
 
-### 用真实流量做离线测试
+### 用自己的流量做离线测试
 
-有两条路径可以在**不需要** root 和 iptables 的情况下验证检测流水线的行为——适合在真实抓包上确认效果：
+检测流水线可以在**不需要** root 和 iptables 的情况下跑，这也是量出"它在我真实承载的流量上会做什么"最实用的办法：
 
-- **真实 pcap（验证真实性能的首选）：** 抓包后离线跑过流水线。
+- **真实 pcap（唯一能说明问题的路径）：** 抓包后离线跑过流水线。
   ```bash
   # 抓取 30 秒实时流量（抓包本身需要 root）
   sudo python -c "from scapy.all import sniff, wrpcap; wrpcap('cap.pcap', sniff(iface='en0', timeout=30))"
@@ -382,13 +417,13 @@ python scripts/train_lucid.py --pcap capture.pcap \
   python cli.py test --pcap cap.pcap
   ```
   这样能暴露**真实**的误报率（例如合法 ICMP 被协议过滤拦截——离线路径中 ICMP 确实会进入引擎，而实时链路在 `intercept_icmp: false` 下不会）。注意 Kitsune 大约需要 55k 个正常包才会离开训练模式，所以短抓包主要测的是规则引擎。
-- **合成攻击模拟：** `scripts/attack_simulation.py` 生成带标签的流量并按攻击类别报告检出率。它的 ICMP/SSH 结果反映的是硬性协议规则和可分离的生成器分布，不是生产环境的准确率——快速模式下约 20% 的攻击检出率是那个生成器的性质，不是真实流量的下限。
-- **真实抓包，CI 里实测：** `scripts/verify_real_capture_quality.py` 会重建仓库自带的 UNSW-NB15 还原抓包（82,523 个包）并跑完整条流水线，把误报率作为门禁。两个平台上五次运行的结果：检出率 **0.0–0.7%**、误报率 **1.8–3.7%**——Kitsune 的投影未固定随机种子，所以两个数字每次都会浮动，而且这份抓包是按流记录还原的、宽限期也缩短过。请把它当标定值而不是准确率：在这份抓包上 ML 阶段几乎分不开攻击与正常流量，真正管用的检出来自你自己写的规则。
-- **拿这个误报率去校准 `blocking:`。** strike 是按 BLOCK 判决计数的，也就是**按包计**。在 3% 的包级误报率下，一个合法源只要在 `strikes_window` 内发几百个包，就会撞上出厂的 `strikes_threshold: 5`，拿到内核级临时封禁（10 分钟），反复几轮还会把永久封禁写进 `rules.json`。先在你自己流量上量一遍（`cli.py test --pcap`，并对照真实流量规模看 `nips_alert_events_written_total`），再把 `strikes_threshold` 设成你流量产出的若干倍。
+- 合成仿真和仓库自带的还原抓包都在上面的表格里，它们的局限在那里一次说清，此处不再重复。
 
 #### Fail-closed 行为
 
-当所有 ML 检测器都损坏或未训练时，流水线会抛出 `DetectionUnavailable` 并丢弃所有规则引擎未做决定的数据包。这是有意为之：在异常检测器不可用时，静默的网络中断比放行未知流量更安全。状态 API 暴露了 `detection_unavailable_drops` 和 `broken_detectors`，运维人员可以据此发现该状态。
+**启用**学习检测时，规则引擎未做判决的包必须被某个东西打分。如果所有"本来能打分"的挂载检测器都在抛异常、或已被熔断，流水线抛出 `DetectionUnavailable`，这个包被丢弃而不是放行：你花钱换来的检测器死掉时，静默断网比放过未知流量更安全。把 `engine.ml.enabled` 关掉是另一种情形——那是一个决策，所以未判决的流量照常放行，而且永远走不到这条路径。挂载了但缺模型的检测器（`ready: false`）按"未部署"处理：它既不判决，也不计入覆盖。
+
+状态 API 把 `detection_unavailable_drops`、`broken_detectors`、`ml_enabled`、`ml_consulted`、`ml_idle`、`detector_status` 分开暴露，让运维能区分这些状态而不是靠一个布尔值猜——`detector_status["KitsuneDetector"]["trained"]` 才是"已挂载并计入覆盖"与"已经开始产出判决"的区别所在。
 
 ---
 

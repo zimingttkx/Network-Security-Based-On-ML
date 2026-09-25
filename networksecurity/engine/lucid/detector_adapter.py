@@ -46,21 +46,28 @@ class LucidDetectorAdapter(BaseDetector):
         """Load a pre-trained Keras model from ``path``."""
         return await asyncio.to_thread(self._lucid.load_model, path)
 
+    @property
+    def ready(self) -> bool:
+        """False when no model was configured or none could be loaded.
+
+        Status counts this against coverage: an adapter that cannot score must
+        not be listed beside the detectors that are deciding traffic.
+        """
+        return bool(self._enabled and self._lucid.is_trained)
+
+    def status(self) -> dict:
+        return {"enabled": bool(self._enabled), "trained": bool(self._lucid.is_trained)}
+
     # -- BaseDetector interface ---------------------------------------------
 
     async def process_packet(self, packet: PacketInfo) -> Verdict | None:
-        if not self._enabled or not self._lucid.is_trained:
-            # Return LOG verdict (not None) so the pipeline counts this detector
-            # as having run and doesn't raise DetectionUnavailable when all ML
-            # detectors are untrained/disabled.
-            return Verdict(
-                action=Action.LOG,
-                confidence=0.0,
-                threat_level=ThreatLevel.LOW,
-                reason="LUCID not trained",
-                detector=self.name,
-            )
-        
+        if not self.ready:
+            # Abstain.  The pipeline skips detectors that cannot score, so this
+            # is a backstop for direct callers.  It used to return a LOG verdict,
+            # which ended the chain *and* made an inert adapter count as coverage
+            # — enough to mask a real outage behind a disabled detector.
+            return None
+
         self._packet_count += 1
         
         try:

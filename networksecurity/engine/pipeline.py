@@ -70,10 +70,16 @@ class DetectionPipeline:
         self,
         rule_engine: RuleEngine | None = None,
         short_circuit_on_block: bool = True,
+        ml_enabled: bool = True,
     ) -> None:
         self._rule_engine = rule_engine or RuleEngine()
         self._detectors: list[BaseDetector] = [self._rule_engine]
         self._short_circuit_on_block = short_circuit_on_block
+        # Runs the rule engine alone when False.  Distinct from "ML is broken":
+        # switching detection off is a decision, so undecided traffic is allowed;
+        # having it registered and unavailable is an outage, so undecided traffic
+        # is dropped.
+        self._ml_enabled = ml_enabled
         self._running: bool = False
         self._lock = threading.Lock()
         self._total_processed: int = 0
@@ -108,6 +114,18 @@ class DetectionPipeline:
     def detectors(self) -> list[BaseDetector]:
         return self._detectors
 
+    @property
+    def ml_enabled(self) -> bool:
+        return self._ml_enabled
+
+    def set_ml_enabled(self, enabled: bool) -> None:
+        """Run the rule engine alone, or bring the learning detectors back.
+
+        Applies to the next packet — nothing is buffered, so this is a decision
+        about future traffic rather than a revision of the past.
+        """
+        self._ml_enabled = bool(enabled)
+
     def _ml_detectors(self) -> list[BaseDetector]:
         """Registered detectors other than the rule engine.
 
@@ -136,6 +154,14 @@ class DetectionPipeline:
 
         for detector in self._detectors:
             if detector.name in self._broken_detectors:
+                continue
+            if detector is not self._rule_engine and (
+                    not self._ml_enabled or not getattr(detector, "ready", True)):
+                # Turned off by config, or registered with nothing to score with
+                # (no model loaded).  Such a detector neither decides nor counts
+                # as coverage.  A tripped detector is the opposite case: it was
+                # supposed to cover this packet, so its absence still fails
+                # closed — handled by `expected` below.
                 continue
             try:
                 verdict = await detector.process_packet(packet)
@@ -179,7 +205,13 @@ class DetectionPipeline:
         if pending_block is not None:
             return pending_block
 
-        if not ml_executed and self._ml_detectors():
+        # Fail-closed applies when something was supposed to look at this packet
+        # and could not: a detector that is able to score (ready) but raised, or
+        # tripped earlier.  A chain whose only ML members are switched off by
+        # configuration is not an outage — it is rules-only operation, which is
+        # a decision, and undecided traffic falls through to ALLOW.
+        expected = [d for d in self._ml_detectors() if getattr(d, "ready", True)]
+        if self._ml_enabled and expected and not ml_executed:
             raise DetectionUnavailable(
                 "no ML detector could run on this packet "
                 f"(broken: {sorted(self._broken_detectors) or 'all raised'})"
@@ -221,22 +253,53 @@ class DetectionPipeline:
         return self._total_blocked
 
     def status(self) -> dict:
+        # Detector-reported status is collected outside the status lock:
+        # status() is third-party code, and a detector that blocks or raises
+        # inside it must not be able to stall every other reader of this dict.
+        detector_status: dict[str, dict] = {}
+        for d in self._detectors:
+            try:
+                reported = d.status()
+            except Exception:
+                logger.exception("detector %r status() raised", d.name)
+                reported = {"status_error": True}
+            if reported:
+                detector_status[d.name] = reported
+
         with self._lock:
             broken = sorted(self._broken_detectors)
             ml = self._ml_detectors()
             down = [d.name for d in ml if d.name in self._broken_detectors]
+            # "consulted" = mounted, enabled, and able to score.  A detector
+            # registered without its model is not that, and listing it beside
+            # the ones deciding traffic reads as a promise the process is not
+            # keeping.  One that is still warming up *is* counted: excluding it
+            # would read as an outage and drop every packet during startup.
+            # Whether it is producing verdicts yet is a per-detector fact, so
+            # it lives in detector_status instead of narrowing this list.
+            consulted = [d.name for d in ml
+                         if self._ml_enabled and d.name not in down
+                         and getattr(d, "ready", True)]
+            idle = [d.name for d in ml if d.name not in consulted]
             return {
                 "running": self._running,
                 "total_processed": self._total_processed,
                 "total_blocked": self._total_blocked,
                 "detectors": [d.name for d in self._detectors],
+                "ml_enabled": self._ml_enabled,
+                "ml_consulted": consulted,
+                "ml_idle": idle,
+                "detector_status": detector_status,
                 "broken_detectors": broken,
                 # degraded: some ML coverage lost.  ml_unavailable: every
                 # registered ML detector is tripped, so any packet that the
                 # rule engine does not decide raises DetectionUnavailable and
-                # is dropped — a full outage, not a partial one.
-                "degraded": bool(down),
-                "ml_unavailable": bool(ml) and len(down) == len(ml),
+                # is dropped — a full outage, not a partial one.  Both describe
+                # unplanned loss, so neither fires while ML is switched off:
+                # that is a decision, and the status says so with ml_enabled.
+                "degraded": self._ml_enabled and bool(down),
+                "ml_unavailable": bool(self._ml_enabled and ml
+                                       and len(down) == len(ml)),
                 "rule_engine": self._rule_engine.stats(),
             }
 

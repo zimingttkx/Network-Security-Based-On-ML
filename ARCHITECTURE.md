@@ -7,6 +7,8 @@ NIPS is a **server-side Network Intrusion Prevention System** for Linux.
 - **Inbound only**: intercepts incoming traffic to the host. Does not inspect outbound traffic.
 - **Kernel-level enforcement**: blocking happens via nfqueue inline drop and iptables DROP rules. No memory-flag-only "blocking".
 - **Real traffic only**: every packet processed by the pipeline originates from the kernel netfilter subsystem via NFQUEUE. No synthetic traffic generation exists in the production code path.
+- **Detection is a plug-in**: the rule engine is the permanent part of the chain; learning detectors are mounted from `config/config.yaml` and **none is mounted by default** (`engine.ml.enabled: false`). A deployment with `networksecurity/engine/kitsune/` and `networksecurity/engine/lucid/` deleted outright is a supported configuration, not a broken one — see "The Detector Contract".
+- **Every claim has a check**: behaviours the docs assert are backed by runnable checks (`scripts/verify_*.py`, wired into CI), including the negative ones — what detection does *not* achieve is in README's "Measured results and limits" rather than hidden.
 
 ---
 
@@ -216,14 +218,46 @@ LUCID requires **offline supervised training** on labeled DDoS datasets:
 
 ---
 
-## Adding a New Detector
+## The Detector Contract
 
-1. Create a new module in `networksecurity/engine/<name>/`
-2. Implement `async def process_packet(self, packet: PacketInfo) -> Verdict | None`
-3. Wire it into `DetectionPipeline` via `pipeline.add_detector()`
-4. Add an adapter if the underlying algorithm has a different interface (see `detector_adapter.py` in kitsune/lucid)
+A detector implements `BaseDetector` (`networksecurity/engine/detector.py`). That is the entire surface a third-party module has to satisfy — nothing in `app.py` or `cli.py` changes to add one.
 
-Do NOT:
-- Add a separate "test mode" path in the detector that returns fake results
-- Generate synthetic packets inside the detector
-- Call iptables or OS commands from inside the detector (that belongs in interception/)
+| member | contract |
+|---|---|
+| `async process_packet(packet: PacketInfo) -> Verdict \| None` | `None` abstains and hands the packet to the next detector. `BLOCK` ends the chain and the packet is dropped; any other explicit verdict is equally final — it ends the chain and is what gets enforced. |
+| `configure(params: dict) -> None` | Called with the entry's `params:` before the first packet. Reject keys you do not understand: a silently ignored option is indistinguishable from a configured detector. |
+| `ready -> bool` | `False` means "cannot score at all" (no model loaded, for example). Such a detector is consulted on no packet **and does not count as ML coverage** — see the table below. Warm-up is not `False`: a detector that is still training is covering traffic, and calling that an outage would drop every packet at startup. Whether it is emitting verdicts *yet* belongs in `status()`. |
+| `status() -> dict` | Collected per detector into `detector_status` on `/api/v1/status`, and merged into the pipeline snapshot by name. Publish what an operator would need in order to notice you stopped working (Kitsune reports `trained`). Called outside the pipeline's status lock, and an exception inside it is contained to that detector's entry — a third-party `status()` must not be able to take the endpoint down. |
+
+Mount it from config:
+
+```yaml
+engine:
+  ml:
+    enabled: true
+    detectors:
+      - uses: networksecurity.engine.threshold_detector:ThresholdDetector
+        params: {window_seconds: 5, max_packets: 1000}
+```
+
+`uses` is a built-in short name (`kitsune`, `lucid` — those read their tuning from the `engine.kitsune` / `engine.lucid` blocks) or a `package.module:ClassName` path. A detector that cannot be constructed or configured is logged and skipped: one bad entry must not stop the management plane from starting.
+
+`networksecurity/engine/threshold_detector.py` is the worked example — small, deterministic, and complete enough to copy.
+
+### Fail-closed follows the switch, not luck
+
+| state | a packet the rules did not decide |
+|---|---|
+| `engine.ml.enabled: false` | **ALLOW** — running without learning detection is a decision, not a failure |
+| ML on, and **no** `ready` detector could execute (all raised, or all tripped) | **DROP** — an outage must not quietly become an open port |
+| ML on, one detector dead but another ready one abstained | **ALLOW** — the surviving detector is the coverage; a partial outage is not a total one |
+| ML on, but only `ready: false` detectors were mounted | **ALLOW**, loudly: the startup log says no detector was mounted |
+
+Two of these rows used to be one, and wrong. An adapter with no model answered `LOG` rather than abstaining, which both ended the chain and counted as coverage — so a tripped live detector behind it switched fail-closed off silently while the status page still listed three detectors. `ready` exists to keep "not deployed", "could not run" and "running" from collapsing into the same sentence.
+
+### Do NOT
+
+- Add a "test mode" branch inside a detector that returns invented results
+- Generate packets inside a detector — offline traffic belongs in `scripts/`
+- Call iptables or OS commands from a detector; that is `interception/`'s job
+- Read `config.yaml` from inside a detector; tuning arrives through `configure()`

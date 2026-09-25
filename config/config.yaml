@@ -1,6 +1,30 @@
 # NIPS — Network Intrusion Prevention System Configuration
 
 engine:
+  # The learning detectors as one group (Kitsune, LUCID, anything registered).
+  # false — the rule engine decides alone. The detectors stay registered but are
+  #         consulted on no packet, and traffic the rules do not decide is
+  #         allowed. Off by default: anomaly detection on a host that drops its
+  #         own traffic should be a choice you made, not a default you hit.
+  # true  — they score, and this opts into fail-closed: if a detector that
+  #         should be covering a packet cannot run, undecided packets are
+  #         dropped rather than waved through.
+  ml:
+    enabled: false
+
+    # What to mount when enabled.  `kitsune` and `lucid` are the built-ins and
+    # read their tuning from the blocks below; anything else is an import path
+    # written `package.module:ClassName`, so your own detector is addressed the
+    # same way a built-in is.  `params` is handed to that detector's
+    # configure() unchanged — see networksecurity/engine/threshold_detector.py
+    # for a complete worked example of the contract.
+    detectors:
+      - uses: kitsune
+      # - uses: lucid                       # needs engine.lucid.model_path set to
+      #                                     # a trained model, else not mounted
+      # - uses: mypackage.nips:EntropyDetector
+      #   params: {window_seconds: 30, max_hosts: 500}
+
   # Kitsune anomaly detector
   kitsune:
     max_autoencoder_size: 10
