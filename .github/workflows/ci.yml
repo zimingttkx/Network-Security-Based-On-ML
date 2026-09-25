@@ -1,142 +1,270 @@
 name: CI
 
+# PR 是唯一的合并入口，main 上再跑一遍作为事后核对。
+# 分支保护只需要钉 `ci/required` 一个检查名：增删 job、改 job 名都不用再动
+# 保护规则，也不会有"某个必需检查被改名后保护静默失效"这种事。
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.12"
+  RUFF_VERSION: "0.16.9"
+  BANDIT_VERSION: "1.9.4"
+
 jobs:
-  # ── 静态分析 & 代码规范 ─────────────────────────────────────────────
-  lint:
+  # ── 改动范围：只有真能碰到代码的变更才拉起下游 ──────────────────────
+  # 自己用 git diff 判，不引第三方 paths-filter——为一行判断引入一个外部 ref
+  # 不划算。改 CI 自身算"能碰到代码"，所以 workflow 文件的变化一律全跑。
+  triage:
+    name: Classify changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide what has to run
+        id: filter
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          CODE_RE='^(networksecurity/|scripts/|config/|deploy/|app\.py$|cli\.py$|setup\.py$|requirements[^/]*\.txt$|Dockerfile$|docker-compose\.yml$|[^/]+\.sh$)'
+
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "python=true" >> "$GITHUB_OUTPUT"
+            echo "非 PR 触发，全部 job 照跑" >> "$GITHUB_STEP_SUMMARY"
+          elif git diff --name-only "$BASE" "$HEAD" | grep -qE '\.github/workflows/(ci|nightly)\.yml$'; then
+            echo "python=true" >> "$GITHUB_OUTPUT"
+            echo "改动包含 workflow 自身，全部 job 照跑" >> "$GITHUB_STEP_SUMMARY"
+          elif git diff --name-only "$BASE" "$HEAD" | grep -qE "$CODE_RE"; then
+            echo "python=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "python=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "文档/注释类改动，重 job 跳过："
+              git diff --name-only "$BASE" "$HEAD" | sed 's/^/- `/'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ── workflow 文件自身的语法与引用检查 ───────────────────────────────
+  # 门禁流水线坏了 = 整个项目没有门禁，所以这一条必须独立且永远在跑。
+  # 镜像按 digest 钉：这里挂的是"检查别人之前先检查自己"的位置。
+  workflow-lint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    container:
+      image: rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint the workflows
+        run: actionlint -color -verbose .github/workflows/*.yml
+
+  # ── 快层：语法、禁词、以及"只按 requirements.txt 装能不能起来" ──────
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
 
       - name: Install tools
-        run: pip install ruff
+        run: pip install "ruff==$RUFF_VERSION"
 
-      - name: Ruff — syntax & basic errors
+      - name: Ruff — syntax & undefined names
         run: |
           ruff check networksecurity/ app.py cli.py scripts/ \
             --select=E9,F63,F7,F82 \
             --output-format=full
-          echo "Syntax/error check passed"
 
-      - name: Ruff — code style
+      # 这条以前是 --exit-zero，也就是永远不会红。要恢复阻塞就得先把
+      # 现存违规清零 —— 见 CONTRIBUTING.md 的「What CI Runs」。
+      - name: Ruff — strict subset report
+        continue-on-error: true
         run: |
+          mkdir -p reports
           ruff check networksecurity/ app.py cli.py \
             --select=F,E,W,I,N,UP,B,SIM,PL,RET,PERF \
             --ignore=E501,S101,S311,S104,DTZ005,BLE001,RUF012,RUF013,EXE001,F841,W293,W291,PLR2004,N803,PLC0415,E741,N806,B904,PLR0913,PLR0917,PLW0603,RET504,PERF203,PERF401,SIM105 \
-            --exit-zero \
-            --statistics
-          echo "Style check passed (warnings only, non-blocking)"
+            --output-format=concise | tee reports/ruff-style.txt || true
+          echo "现存风格违规 $(wc -l < reports/ruff-style.txt) 条（尚不阻塞）" \
+            >> "$GITHUB_STEP_SUMMARY"
 
-  # ── 安全扫描 ─────────────────────────────────────────────────────────
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - name: Bandit — report at every severity
+        continue-on-error: true
+        run: |
+          pip install "bandit==$BANDIT_VERSION"
+          mkdir -p reports
+          # 以前只报 -ll（MEDIUM+），而本项目的命中全在 LOW，于是那条门禁
+          # 永远不可能红。这里先出全级别报告，收口口径留到后续 PR。
+          bandit -r networksecurity/ app.py cli.py scripts/ \
+            --skip B101,B303,B311,B104,B310 -f txt -o reports/bandit.txt || true
+          tail -25 reports/bandit.txt >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install bandit
-        run: pip install bandit
-
-      - name: Bandit — security scan
+      - name: Bandit — MEDIUM and above blocks
         run: |
           bandit -r networksecurity/ app.py cli.py \
-            --skip B101,B303,B311,B104,B310 \
-            -f screen \
-            -ll
-          echo "Security scan completed"
+            --skip B101,B303,B311,B104,B310 -f screen -ll
 
-  # ── 关键字扫描 ───────────────────────────────────────────────────────
-  keyword-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Detect simulation code in production modules
+      - name: No simulation code in production modules
         run: |
-          echo "Scanning networksecurity/ for forbidden keywords..."
-          
-          # Check directory exists
-          if [ ! -d "networksecurity" ]; then
-            echo "::error::networksecurity/ directory not found"
+          [ -d networksecurity ] || { echo "::error::networksecurity/ missing"; exit 1; }
+          files=$(find networksecurity/ -name '*.py' -type f | wc -l)
+          [ "$files" -gt 0 ] || { echo "::error::no Python files under networksecurity/"; exit 1; }
+          echo "扫描 $files 个文件"
+          # -w 是词边界：以前 "fake" 这种子串会连注释和 docstring 一起误报。
+          if hits=$(grep -rnwE 'mock|simulate|fake|demo_data|generate_packet|test_traffic' \
+                       networksecurity/ --include='*.py'); then
+            echo "::error::仿真代码出现在生产模块里"
+            echo "$hits"
             exit 1
           fi
-          
-          # Count Python files to ensure we're scanning something
-          FILE_COUNT=$(find networksecurity/ -name "*.py" -type f 2>/dev/null | wc -l)
-          if [ "$FILE_COUNT" -lt 1 ]; then
-            echo "::error::No Python files found in networksecurity/"
-            exit 1
-          fi
-          echo "Found $FILE_COUNT Python files to scan"
-          
-          FORBIDDEN="mock simulate fake demo_data generate_packet test_traffic"
-          VIOLATIONS=0
-          for kw in $FORBIDDEN; do
-            HITS=$(grep -rn "$kw" networksecurity/ --include="*.py" 2>/dev/null | grep -v __pycache__ || true)
-            if [ -n "$HITS" ]; then
-              echo "::error::Forbidden keyword '$kw' found in production code:"
-              echo "$HITS"
-              VIOLATIONS=$((VIOLATIONS + 1))
-            fi
-          done
-          if [ $VIOLATIONS -gt 0 ]; then
-            echo "::error::$VIOLATIONS simulation keywords found. Remove before merging."
-            exit 1
-          fi
-          echo "No forbidden keywords found."
 
-  # ── 模块导入 & 基本功能测试 ──────────────────────────────────────────
-  test:
+      # 只装 requirements.txt 的那个环境，才是交付物真正运行的环境。
+      # 以前 CI 手写依赖清单，于是"某个 import 只在 CI 里满足"这种事
+      # 一路绿灯到过镜像里（parquet 引擎就是这个缺口暴露出来的）。
+      - name: Runtime-only environment imports everything
+        run: |
+          python -m venv .venv-runtime
+          .venv-runtime/bin/pip install -q --upgrade pip
+          .venv-runtime/bin/pip install -q -r requirements.txt
+          .venv-runtime/bin/python - <<'PY'
+          import importlib.util
+          import importlib, pkgutil, sys
+          import networksecurity
+
+          failed = []
+          for mod in pkgutil.walk_packages(networksecurity.__path__, "networksecurity."):
+              if "lucid.cnn" in mod.name and importlib.util.find_spec("tensorflow") is None:
+                  continue          # 可选重型依赖，缺省时按设计不注册
+              try:
+                  importlib.import_module(mod.name)
+              except Exception as exc:
+                  failed.append(f"{mod.name}: {type(exc).__name__}: {exc}")
+          if failed:
+              print("\n".join(f"::error::{f}" for f in failed))
+              sys.exit(1)
+          print("requirements.txt 单独装出来的环境可导入全部生产模块")
+          PY
+
+      - name: Packaging must not fail silently
+        run: |
+          # 旧写法是 pip install -e . --no-deps 2>/dev/null || true ——
+          # setup.py 写坏了也照样绿。
+          pip install -e . --no-deps
+          python -c "import importlib.metadata as m; print('nips', m.version('nips'))"
+
+  # ── 模块回归：一个脚本一个 job ─────────────────────────────────────
+  # 以前 8 个脚本在同一个 job 里串行，一个失败后面全看不到；拆开之后
+  # 一次 PR 就能拿到全部脚本的独立结论。
+  unit:
+    name: unit / ${{ matrix.suite }}
+    needs: [triage, preflight]
+    if: needs.triage.outputs.python == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.12"]
+        suite:
+          - engine-module
+          - interception-module
+          - block-lifecycle
+          - live-exposed-bugs
+          - features-module
+          - data-module
+          - management-plane
+          - fpr-regression
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
 
       - name: Install dependencies
         run: |
-          pip install numpy fastapi uvicorn httpx scikit-learn pandas pyyaml pyarrow
-          pip install -e . --no-deps 2>/dev/null || true
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
 
-      - name: Import check — all modules
+      - name: Run ${{ matrix.suite }}
+        # 非 root 是前提之一：verify_management_plane 断言"engine/start 必须
+        # 拒绝非 root"，以 root 跑会翻出一次假红。GitHub 的 runner 本来就是
+        # 普通用户，这里把它写成显式检查，免得以后换 runner 时静默失真。
         run: |
-          python -c "
-          import networksecurity
-          import networksecurity.engine
-          import networksecurity.engine.detector
-          import networksecurity.engine.verdict
-          import networksecurity.engine.rule_engine
-          import networksecurity.engine.pipeline
-          import networksecurity.engine.kitsune
-          import networksecurity.engine.lucid
-          import networksecurity.features
-          import networksecurity.interception
-          import networksecurity.data
-          import networksecurity.observability
-          print('All modules import OK')
-          "
+          set -o pipefail
+          if [ "$(id -u)" -eq 0 ]; then
+            echo "::error::这一层必须以非 root 运行，见 verify_management_plane 的 engine/start 断言"
+            exit 1
+          fi
+          mkdir -p .ci-logs
+          python scripts/verify_${{ matrix.suite }}.py 2>&1 | tee ".ci-logs/${{ matrix.suite }}.log"
 
-      - name: Unit test — pipeline lifecycle
+      - name: Show skipped assertions
+        if: always()
+        run: |
+          log=.ci-logs/${{ matrix.suite }}.log
+          [ -f "$log" ] || exit 0
+          if grep -q '\[SKIP\]\|^SKIP' "$log"; then
+            {
+              echo "### ${{ matrix.suite }} 跳过项"
+              grep '\[SKIP\]\|^SKIP' "$log" | sed 's/^/`/'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-${{ matrix.suite }}
+          path: .ci-logs/
+          retention-days: 14
+
+  # ── 引擎内联单测 ───────────────────────────────────────────────────
+  # 这三段历史更早、直接写在 workflow 里，搬成 scripts/ 下的文件属于另一件事。
+  units-inline:
+    name: Unit tests (inline)
+    needs: [triage, preflight]
+    if: needs.triage.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Pipeline lifecycle
         run: |
           python -c "
           import asyncio
@@ -180,7 +308,7 @@ jobs:
           asyncio.run(test())
           "
 
-      - name: Unit test — packet parser (TTL + TCP options)
+      - name: Packet parser (TTL + TCP options)
         run: |
           python -c "
           import struct, socket
@@ -220,7 +348,7 @@ jobs:
           print('Inconsistent total_len rejected OK')
           "
 
-      - name: Unit test — RuleEngine persistence
+      - name: RuleEngine persistence
         run: |
           python -c "
           import tempfile, os, json
@@ -244,162 +372,77 @@ jobs:
           print('Persistence test OK')
           "
 
-      - name: Regression — post-training FPR guard (wall-clock incident)
-        run: |
-          python scripts/verify_fpr_regression.py
-
-      - name: Unit test — engine module (rules, pipeline, detectors, hot reload)
-        run: |
-          python scripts/verify_engine_module.py
-
-      - name: Unit test — interception module (parser, iptables, lifecycle)
-        run: |
-          python scripts/verify_interception_module.py
-
-      - name: Unit test — block lifecycle (D1-G regressions)
-        run: |
-          python scripts/verify_block_lifecycle.py
-
-      - name: Unit test — live exposed bugs (A/B/C/H regressions)
-        run: |
-          python scripts/verify_live_exposed_bugs.py
-
-      - name: Unit test — features module (flows, registry)
-        run: |
-          python scripts/verify_features_module.py
-
-      - name: Unit test — data module (loaders, labels, split alignment)
-        run: |
-          python scripts/verify_data_module.py
-
-      - name: Unit test — management plane (app.py + cli.py)
-        run: |
-          python scripts/verify_management_plane.py
-
-      - name: Detection quality on a real capture (rebuilds the pcap)
-        run: |
-          pip install scapy
-          python scripts/verify_real_capture_quality.py
-
-  # ── 攻击仿真冒烟测试 ─────────────────────────────────────────────────
-  smoke-attack:
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install numpy scikit-learn pandas
-
-      - name: Attack simulation — quick smoke
-        run: |
-          python -c "
-          import asyncio, sys
-          sys.path.insert(0, '.')
-          from networksecurity.engine import DetectionPipeline, PacketInfo, Action
-          from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
-          import random
-
-          NORMAL_IPS = [f'192.168.{i}.{j}' for i in range(1,5) for j in range(1,20)]
-          ATTACK_IPS = [f'45.33.{i}.{j}' for i in range(32,36) for j in range(1,50)]
-
-          async def quick_test():
-              p = DetectionPipeline()
-              k = KitsuneDetector()
-              k.set_grace_periods(fm_grace_period=500, ad_grace_period=1000)
-              p.add_detector(k)
-
-              # feed normal traffic
-              for i in range(2000):
-                  src = random.choice(NORMAL_IPS)
-                  pkt = PacketInfo(src, '10.0.0.1',
-                      random.randint(32768,65535), random.choice([80,443,22]),
-                      6, random.randint(40,1500), i*0.001,
-                      tcp_flags=random.choice([0x02,0x10,0x18]))
-                  await p.process_packet(pkt)
-
-              # feed attack traffic
-              detected = 0
-              for i in range(500):
-                  src = random.choice(ATTACK_IPS)
-                  pkt = PacketInfo(src, '10.0.0.1',
-                      random.randint(1,65535), 80, 6, 40, 2000.0 + i*0.0001,
-                      tcp_flags=0x02)
-                  v = await p.process_packet(pkt)
-                  if v.action == Action.BLOCK:
-                      detected += 1
-
-              dr = detected / 500 * 100
-              print(f'Attack smoke test: {detected}/500 detected ({dr:.0f}%)')
-              assert dr >= 50, f'Detection rate too low: {dr:.0f}%'
-              print('Smoke test passed')
-
-          asyncio.run(quick_test())
-          "
-
-  # ── 内核规则实测（Linux）─────────────────────────────────────────────
-  # 其余测试验证的是我们自己的记账；这一 job 验证真正决定丢包的
-  # 东西——内核里的规则集。用独立 netns 运行：netfilter 规则是
-  # 按 netns 隔离的，runner 自身的网络不受影响，也不会污染宿主。
+  # ── 内核规则实测（真 netfilter）───────────────────────────────────
+  # 其余测试验的是我们自己的记账；这一 job 验真正决定丢包的东西。
+  # 独立 netns：netfilter 规则按 netns 隔离，runner 自身网络不受影响。
   kernel-rules:
     name: Kernel rules (Linux, netns)
+    needs: [triage, preflight]
+    if: needs.triage.outputs.python == 'true'
     runs-on: ubuntu-latest
-    needs: test
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
 
       - name: Install dependencies
-        run: pip install numpy pyyaml
+        run: pip install -r requirements-dev.txt
 
       - name: Create isolated network namespace
         run: sudo ip netns add nips-verify
 
       - name: Verify real iptables behaviour
-        run: sudo ip netns exec nips-verify python scripts/verify_kernel_rules.py
+        run: |
+          set -o pipefail
+          sudo ip netns exec nips-verify python scripts/verify_kernel_rules.py \
+            2>&1 | tee kernel-rules.log
+
+      - name: Upload the log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-rules
+          path: kernel-rules.log
+          retention-days: 14
 
       - name: Remove namespace
         if: always()
         run: sudo ip netns del nips-verify || true
 
-  # ── 实时拦截闭环（Linux, netns + NFQUEUE）───────────────────────────
-  # kernel-rules 止步于“规则进了内核”，这一 job 验证下一段：包真的被交到
+  # ── 实时拦截闭环（netns + NFQUEUE + 真流量）───────────────────────
+  # kernel-rules 止步于"规则进了内核"，这一 job 验下一段：包真的被交到
   # 用户态、跑完检测链、判决真的被内核执行，以及 stop() 之后主机恢复可达。
-  # 客户端命名空间通过 veth 发真流量，所以连接能通就等于队列被消费了。
   live-nfqueue:
     name: Live NFQUEUE e2e (Linux, netns)
+    needs: [triage, preflight]
+    if: needs.triage.outputs.python == 'true'
     runs-on: ubuntu-latest
-    needs: test
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install capture dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential python3-dev libnetfilter-queue-dev iputils-ping
-          # A venv under /tmp rather than the job's own interpreter: the suite
-          # runs as root inside a namespace, and packages that landed in the
-          # runner user's home are invisible once HOME changes to /root.
+            build-essential python3-dev libnetfilter-queue-dev iputils-ping procps
+          # venv 放 /tmp 而不是复用 job 自带的解释器：套件在命名空间里以 root
+          # 跑，HOME 变成 /root 之后落在 runner 用户家目录的包就看不见了。
           python -m venv /tmp/nips-nf-venv
-          /tmp/nips-nf-venv/bin/pip install --quiet numpy pyyaml
-          # NetfilterQueue ships only an sdist.  --no-build-isolation lets
-          # setup.py see the Cython installed on the line above, so the .pyx is
-          # regenerated instead of compiling the .c that shipped in the tarball.
-          /tmp/nips-nf-venv/bin/pip install --quiet setuptools wheel cython
-          /tmp/nips-nf-venv/bin/pip install --quiet --no-build-isolation NetfilterQueue
+          /tmp/nips-nf-venv/bin/pip install -q numpy pyyaml
+          # NetfilterQueue 只有 sdist。--no-build-isolation 让它的 setup.py 看得
+          # 见上面装的 Cython，于是重新生成 .pyx 而不是编译 tarball 里那份旧 .c。
+          /tmp/nips-nf-venv/bin/pip install -q setuptools wheel cython
+          /tmp/nips-nf-venv/bin/pip install -q --no-build-isolation NetfilterQueue
 
       - name: Confirm the binding imports
         run: >
@@ -412,97 +455,32 @@ jobs:
 
       - name: Run live checks
         run: |
+          set -o pipefail
           sudo ip netns exec nips-srv /tmp/nips-nf-venv/bin/python \
-            scripts/verify_live_nfqueue.py | tee live.log
+            scripts/verify_live_nfqueue.py 2>&1 | tee live.log
           grep -q "LIVE NFQUEUE E2E: PASS" live.log
+
+      - name: Upload the log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-nfqueue
+          path: live.log
+          retention-days: 14
 
       - name: Remove namespace pair
         if: always()
-        run: sudo bash scripts/live_nfqueue_topology.sh down
+        run: sudo bash scripts/live_nfqueue_topology.sh down || true
 
-  # ── LUCID 训练与加载（TensorFlow）────────────────────────────────────
-  # TF 不在默认依赖里，所以这条链路在其余 job 中永远走不到：训练脚本能否
-  # 产出权重、app 能否加载并按形状校验、加载失败时是否真的不注册检测器。
-  lucid-train:
-    name: LUCID training (TensorFlow)
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install numpy pandas pyyaml scapy fastapi uvicorn httpx tensorflow-cpu
-
-      - name: Build a small labelled pcap
-        run: |
-          python - <<'PY'
-          from scapy.all import Ether, IP, TCP, wrpcap
-          packets = []
-          for flow in range(30):
-              attack = flow % 3 == 0
-              src = f"203.0.113.{flow % 7 + 1}" if attack else f"10.0.0.{flow % 5 + 10}"
-              for _ in range(12):
-                  packets.append(Ether() / IP(src=src, dst="10.0.0.1")
-                                 / TCP(sport=1024 + flow, dport=22, flags="S"))
-          wrpcap("lucid_train.pcap", packets)
-          print(f"wrote {len(packets)} packets")
-          PY
-
-      - name: Inspect labels before training
-        run: |
-          python scripts/train_lucid.py --pcap lucid_train.pcap \
-            --attackers 203.0.113.0/24 --inspect | tee inspect.log
-          grep -q "label set looks usable" inspect.log
-
-      - name: Train and save the model
-        run: |
-          TF_CPP_MIN_LOG_LEVEL=2 python scripts/train_lucid.py --pcap lucid_train.pcap \
-            --attackers 203.0.113.0/24 --out models/lucid_cnn.h5 --epochs 3 | tee train.log
-          test -s models/lucid_cnn.h5
-          grep -q "Saved models/lucid_cnn.h5" train.log
-
-      - name: App registers the detector from the saved model
-        run: |
-          python - <<'PY'
-          import re, pathlib
-          cfg = pathlib.Path("config/config.yaml")
-          cfg.write_text(re.sub(r'model_path: ""', 'model_path: "models/lucid_cnn.h5"',
-                                cfg.read_text()))
-          import app
-          names = [type(d).__name__ for d in app.pipeline._detectors]
-          assert "LucidDetectorAdapter" in names, names
-          status = app.pipeline.status()
-          assert status["broken_detectors"] == [], status
-          lucid = next(d for d in app.pipeline._detectors if type(d).__name__ == "LucidDetectorAdapter")
-          assert lucid._enabled and lucid._lucid.is_trained, "model loaded but detector not trained"
-          print("LUCID loaded from the trained model and registered")
-          PY
-
-      - name: Unloadable model leaves the detector out of the pipeline
-        run: |
-          python - <<'PY'
-          import re, pathlib
-          cfg = pathlib.Path("config/config.yaml")
-          cfg.write_text(re.sub(r'model_path: "models/lucid_cnn.h5"',
-                                'model_path: "models/missing.h5"', cfg.read_text()))
-          import app
-          names = [type(d).__name__ for d in app.pipeline._detectors]
-          assert "LucidDetectorAdapter" not in names, (
-              f"a model that failed to load must not be registered: {names}")
-          print("refused cleanly: no detector registered for an unreadable model")
-          PY
-
-  # ── 容器部署闭环 ─────────────────────────────────────────────────────
-  # deploy.sh 的 build/start/health/test 此前从未被任何地方执行过，所以
-  # "镜像能构建、容器能起来、容器内测试套件通过"这三件事全是纸面假设。
+  # ── 容器部署闭环 ───────────────────────────────────────────────────
+  # deploy.sh 的 build/start/health/test 必须在 CI 里真跑：镜像构建、容器起
+  # 服务、容器内测试套件，这三件事不验就只是纸面假设。
   docker:
     name: Docker deploy loop
+    needs: [triage, preflight]
+    if: needs.triage.outputs.python == 'true'
     runs-on: ubuntu-latest
-    needs: test
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -523,7 +501,19 @@ jobs:
         run: bash deploy.sh health
 
       - name: Verification suite inside the container
-        run: bash deploy.sh test
+        run: |
+          set -o pipefail
+          bash deploy.sh test 2>&1 | tee container-tests.log
+          # 命令本身不存在时同样会"全绿"（python3.13 那次就是这么骗过去的）。
+          grep -qi "command not found" container-tests.log && {
+            echo "::error::容器内有条测试命令根本没跑起来"; exit 1; }
+          if grep -q '\[SKIP\]' container-tests.log; then
+            {
+              echo "### 容器内跳过项"
+              grep '\[SKIP\]' container-tests.log | sed 's/^/`/'
+              echo "（Parquet 引擎是开发依赖，运行时镜像按设计不装）"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Missing rules.json is created, not an IsADirectoryError
         run: |
@@ -536,41 +526,45 @@ jobs:
 
       - name: Container is the management plane only
         run: |
-          # No NET_ADMIN: the API container must not be able to install kernel
-          # rules. If this ever succeeds, the README's claim is wrong.
+          # 容器没有 NET_ADMIN：它装不了内核规则。哪天真能装了，README 的说法
+          # 就是错的——所以这里失败要失败得响亮。
           if docker compose exec api iptables -S 2>/dev/null | grep -q '^-N NIPS'; then
-            echo "::error::the unprivileged API container could create a firewall chain"
+            echo "::error::无特权的 API 容器创建了防火墙链"
             exit 1
           fi
           echo "confirmed: container holds no netfilter privileges"
+
+      - name: Upload the container suite log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-suite
+          path: container-tests.log
+          retention-days: 14
 
       - name: Tear down
         if: always()
         run: bash deploy.sh stop || true
 
-  # ── systemd 单元 ─────────────────────────────────────────────────────
-  # 单元文件此前只做过 INI 解析，从未被 systemd 启动过。这里在真实 runner VM
-  # 上 verify + 起停两个单元。拦截器通过 NetworkNamespacePath drop-in 放进独立
-  # netns：它会往 INPUT 挂 NFQUEUE 重定向，跑在宿主机命名空间里可能把 runner
-  # 自己的网络掐断（检测不可用时按 fail-closed 丢包）。systemd 管理、起停、
-  # 撤规则这些被测行为不受影响。
+  # ── systemd 单元 ───────────────────────────────────────────────────
+  # 单元文件只做 INI 解析是不够的：它会被 systemd 真正启动，所以在这里
+  # verify + 起停。拦截器经 NetworkNamespacePath drop-in 放进独立 netns，
+  # 否则会往 runner 自己的 INPUT 上挂 NFQUEUE。
   systemd:
     name: systemd units (verify + API service)
+    needs: [triage, preflight]
+    if: needs.triage.outputs.python == 'true'
     runs-on: ubuntu-latest
-    needs: test
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
       - name: Install the package into /opt/nips
         run: |
           sudo mkdir -p /opt/nips
           sudo cp -a . /opt/nips/
           sudo python3 -m venv /opt/nips/venv
-          sudo /opt/nips/venv/bin/pip install -q numpy pandas pyyaml fastapi uvicorn httpx scikit-learn
+          sudo /opt/nips/venv/bin/pip install -q -r /opt/nips/requirements-dev.txt
           sudo useradd --create-home --shell /bin/bash nips
           sudo chown -R nips:nips /opt/nips
 
@@ -578,8 +572,7 @@ jobs:
         run: |
           sudo cp deploy/systemd/*.service /etc/systemd/system/
           sudo systemctl daemon-reload
-          # Fails on an unknown directive or a bad path, which is the whole
-          # point of shipping units: they otherwise rot silently.
+          # 未知指令、坏路径都会在这里失败——单元文件 otherwise 只会静默腐烂。
           sudo systemd-analyze verify nips-api.service nips-interceptor.service
 
       - name: API unit starts, serves and stops
@@ -596,122 +589,63 @@ jobs:
 
       - name: The API unit installs no firewall rules
         run: |
-          # Separation of privileges is the design claim: only the interceptor
-          # unit may touch netfilter, and the API runs without NET_ADMIN. If a
-          # NIPS chain shows up after running just the API unit, that split is
-          # not real.
+          # 权限分离是设计主张：只有拦截器单元可以碰 netfilter，API 单元不带
+          # NET_ADMIN。只跑 API 单元就冒出 NIPS 链，说明这个分离是假的。
           sleep 2
           if iptables -S 2>/dev/null | grep -q '^-N NIPS'; then
-            echo "::error::the unprivileged API unit created a firewall chain"
+            echo "::error::无特权的 API 单元创建了防火墙链"
             exit 1
           fi
           echo "confirmed: API unit alone installs no netfilter rules"
 
       # The interceptor unit is verified for syntax and hardening directives
-      # above; actually starting it needs the netfilterqueue Python binding,
-      # whose only distribution channel (the NetfilterQueue sdist) does not
-      # build against CPython 3.12 and which is not packaged on the runner.
-      # "systemctl start nips-interceptor installs the chain, and stopping it
-      # removes every trace" therefore still has to be checked on a real host:
-      # see the project's verification checklist.
+      # above.  Its old "we cannot start it here" excuse no longer holds — the
+      # live-nfqueue job in this very workflow builds the netfilterqueue binding
+      # on CPython 3.12 with cython + --no-build-isolation — so starting it,
+      # confirming it installs the chain, and confirming teardown leaves no
+      # trace is a follow-up PR, not a platform limitation.
 
-
-  # ── 日志落盘与 syslog 转发 ───────────────────────────────────────────
-  # configure_logging 消费 config 的 logging 块，此前只在"本地抓到一条 UDP 报文"
-  # 的层面验过。这里用 runner 真实在跑的 rsyslog（/dev/log）与真实文件，验三条：
-  # 消息确实落到两个 sink、级别确实过滤、目标不可用时只跳过不炸启动。
-  log-sinks:
-    name: Log sinks (file + syslog)
+  # ── 聚合：分支保护唯一需要钉的名字 ────────────────────────────────
+  # skipped 算通过（文档类 PR 的重 job 本就该被跳过），failure / cancelled /
+  # timed_out 算失败。没有自动重试：那只会把 flaky 变成假绿。
+  required:
+    name: ci/required
+    if: always()
+    needs:
+      - triage
+      - workflow-lint
+      - preflight
+      - unit
+      - units-inline
+      - kernel-rules
+      - live-nfqueue
+      - docker
+      - systemd
     runs-on: ubuntu-latest
-    needs: test
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install numpy pyyaml
-
-      - name: Ensure the system log daemon is up
+      - name: Verdict
+        env:
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          sudo systemctl is-active --quiet rsyslog || sudo systemctl restart rsyslog
-          test -e /dev/log
+          python3 - <<'PY'
+          import json, os, sys
 
-      - name: Records reach the file and the syslog daemon
-        run: |
-          marker="NIPS-SINK-$(date +%s)"
-          LOGGED="$marker" python - <<'PY'
-          import logging, os
-          from networksecurity.observability import configure_logging
-          configure_logging({"level": "INFO", "file": "logs/ci-sinks.log",
-                             "syslog_address": "/dev/log"})
-          logging.getLogger("networksecurity.ci").info(os.environ["LOGGED"])
-          for h in logging.getLogger("networksecurity").handlers:
-              h.flush()
+          needs = json.loads(os.environ["NEEDS"])
+          acceptable = {"success", "skipped"}
+          rows, bad = [], []
+          for job in sorted(needs):
+              result = needs[job]["result"]
+              rows.append(f"| `{job}` | {result} |")
+              if result not in acceptable:
+                  bad.append(f"{job}={result}")
+          summary = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write("### 门禁结论\n\n| job | result |\n|---|---|\n"
+                           + "\n".join(rows) + "\n")
+          if bad:
+              print(f"::error::门禁未通过: {', '.join(bad)}")
+              sys.exit(1)
+          print("所有 job 通过或被合法跳过")
           PY
-          sleep 1
-          grep -q "$marker" logs/ci-sinks.log || { echo "marker missing from the log file"; exit 1; }
-          sudo grep -q "$marker" /var/log/syslog || { echo "marker missing from /var/log/syslog"; exit 1; }
-          echo "both sinks received the record"
-
-      - name: Level filtering applies
-        run: |
-          marker="NIPS-LEVEL-$(date +%s)"
-          LOGGED="$marker" python - <<'PY'
-          import logging, os
-          from networksecurity.observability import configure_logging
-          configure_logging({"level": "WARNING", "file": "logs/ci-level.log",
-                             "syslog_address": "/dev/null"})
-          log = logging.getLogger("networksecurity.ci")
-          log.info(os.environ["LOGGED"] + " but at info level")
-          log.warning(os.environ["LOGGED"] + " but at warning level")
-          for h in logging.getLogger("networksecurity").handlers:
-              h.flush()
-          PY
-          grep -q "$marker but at warning level" logs/ci-level.log
-          if grep -q "$marker but at info level" logs/ci-level.log; then
-            echo "an INFO record was written under level WARNING"
-            exit 1
-          fi
-
-      - name: An unreachable syslog target must not break startup
-        run: |
-          python - <<'PY'
-          import logging
-          from networksecurity.observability import configure_logging
-          configure_logging({"level": "INFO", "file": "",
-                             "syslog_address": "127.0.0.1:1"})
-          logging.getLogger("networksecurity.ci").info("still running")
-          for h in logging.getLogger("networksecurity").handlers:
-              h.flush()
-          PY
-          echo "survived an unusable syslog target"
-
-      - name: A broken sink reports once, not once per record
-        run: |
-          tmpdir=$(mktemp -d)
-          errlog=$(mktemp)
-          touch "$tmpdir/not-a-socket"     # a file: connect() refuses it
-          UNDER_TEST="$tmpdir" python - 2>"$errlog" <<'PY'
-          import logging, os
-          from pathlib import Path
-          from networksecurity.observability import configure_logging
-          d = Path(os.environ["UNDER_TEST"])
-          configure_logging({"level": "INFO", "file": str(d / "app.log"),
-                             "syslog_address": str(d / "not-a-socket")})
-          log = logging.getLogger("networksecurity.ci")
-          for i in range(50):
-              log.info("record %d", i)
-          PY
-          reports=$(grep -c "is failing" "$errlog" || true)
-          kept=$(grep -c "record " "$tmpdir/app.log" || true)
-          echo "throttled reports=$reports  records in the file sink=$kept"
-          test "$reports" -ge 1 && test "$reports" -le 3
-          test "$kept" -eq 50
-          if grep -q Traceback "$errlog"; then
-            echo "a failing sink still printed a traceback"
-            exit 1
-          fi
-          echo "broken sink reported politely; the file sink lost nothing"

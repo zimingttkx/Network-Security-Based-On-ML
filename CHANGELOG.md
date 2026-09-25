@@ -11,12 +11,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `GET /api/v1/blocks` endpoint exposing the live escalation state, plus `kernel_blocked_ips` and `detection_loop_stale_seconds` fields on `/api/v1/status`.
 - `broken_detectors` (circuit-breaker state) exposed on `/api/v1/status`, as documented in SECURITY.md.
 - Parquet support in `DatasetLoader`: `.parquet` files are read as Parquet; CSV remains the default.
+- Per-kind event-store write counters (`written_alerts` / `written_audit`) in `stats()`; the store-wide `written` total keeps its meaning, so `nips_alert_events_written_total` is unchanged.
+- `requirements-dev.txt` separating development/CI dependencies (Parquet engine, scapy) from the runtime install.
+- `preflight` gate that imports every production module in an environment built from `requirements.txt` alone — the class of gap where a dependency exists only in the CI install list.
 - Real-data evaluation scripts: UNSW-NB15 pcap reconstruction (`scripts/build_unsw_pcap.py`) and end-to-end per-category evaluation (`scripts/evaluate_pcap.py`); cross-module regression scripts (`scripts/verify_*.py`) including a post-training FPR regression assertion in CI (`scripts/verify_fpr_regression.py`).
 - Large-scale attack simulation script (`scripts/attack_simulation.py`) for benchmarking detection efficacy across attack categories.
-- Comprehensive CI pipeline: lint, security scan, unit tests, attack smoke test, FPR regression guard, PR title lint, and branch name checks.
+- Comprehensive CI pipeline: lint, security scan, unit tests, FPR regression guard, PR title lint, and branch name checks.
 
 ### Changed
 
+- CI restructured into three blocking layers (static / unit / system) behind one aggregate `ci/required` check, so branch protection pins a single name and skipped jobs no longer block documentation-only PRs; the eight module suites moved from serial steps in one job to a parallel matrix. Slow calibration-only checks (real-capture detection quality, LUCID training, attack simulation), the Python 3.13 sweep and the full static reports moved to `.github/workflows/nightly.yml`.
+- `EventStore.flush()` waits for the in-flight batch to commit, not just for the queue to drain, so `stats()` read straight after a flush cannot report a total that has not caught up.
+- `DatasetLoader` reports a missing Parquet engine as an actionable `ImportError` instead of surfacing pandas' internal one.
 - TensorFlow moved to the `nips[lucid]` extra: default installs no longer pull in 500 MB+ of dependencies; the LUCID adapter stays inactive without it (lazy import).
 - Config loading reworked: `config.yaml` now drives the `api` block (host/port, auth token, CORS), the `engine` block, and the `blocking` (escalation) policy; paths are package-root anchored so the CWD no longer matters, and fallback defaults include `::1` in `safe_ips`.
 - Detection enforcement is fail-closed: detection errors and timeouts drop only the in-flight packet and never commit a permanent block.

@@ -23,11 +23,18 @@ Thank you for your interest in contributing. This document defines the rules and
 ### Branch Naming
 
 ```
-feature/<description>   # New capability
-fix/<description>       # Bug fix
-docs/<description>      # Documentation only
-refactor/<description>  # Code restructuring, no behavior change
+feat/<description>        # New capability
+fix/<description>         # Bug fix
+docs/<description>        # Documentation only
+refactor/<description>    # Code restructuring, no behavior change
+test/<description>        # Tests or verification suites
+chore/<description>       # Dependencies, tooling, packaging
+perf/<description>        # Performance work
+ci/<description>          # .github/ and pipeline changes
 ```
+
+Enforced by `.github/workflows/branch-name-check.yml`; `main`, `release/*` and
+`dependabot/*` are exempt.
 
 ### Commit Messages
 
@@ -40,11 +47,45 @@ docs: update ARCHITECTURE.md with Lucid data flow
 refactor: extract verdict types to separate module
 ```
 
+### What CI Runs
+
+`main` is protected by a single required status check — **`ci/required`**. It is
+an aggregator, so jobs can be added or renamed without touching branch
+protection, and a skipped job counts as green (a documentation-only PR is not
+expected to rebuild a Docker image).
+
+| layer | jobs | blocks merge |
+|-------|------|--------------|
+| static | `workflow-lint` (actionlint), `preflight` (fatal ruff subset, forbidden-keyword scan, bandit at MEDIUM+, packaging install, import sweep) | yes |
+| unit | `unit` (one job per `scripts/verify_*.py`), `units-inline` | yes |
+| system | `kernel-rules`, `live-nfqueue`, `docker`, `systemd` | yes |
+| quality | nightly: real-capture detection quality, LUCID training, attack simulation, Python 3.13 sweep, full static reports | no |
+
+The quality layer moved to `nightly.yml` on purpose: those three checks are slow,
+and the detection rate they report is a calibration value, not a production
+accuracy claim (see README). Gating merges on a synthetic percentage only pushes
+people to tune the threshold.
+
+Two rules follow from this layout:
+
+- **Do not add retries.** A job that flakes is a bug in the job; auto-retrying
+  converts it into a false green.
+- **A check that cannot fail should not pretend to gate.** Steps that only
+  report are marked `continue-on-error` and say so in the step name.
+
+To install everything CI uses locally, run `pip install -r requirements-dev.txt`
+(the runtime install is `requirements.txt` alone) and then any
+`python scripts/verify_*.py`.
+
 ---
 
 ## Code Style
 
-All code must pass our [Ruff](https://docs.astral.sh/ruff/) configuration. CI enforces this on every PR.
+All code must pass our [Ruff](https://docs.astral.sh/ruff/) configuration. CI
+blocks on the fatal subset today; the wider style rules are reported in
+`preflight` and in the nightly full report, because the tree still carries open
+violations. Clearing them is a PR of its own, after which the report becomes a
+gate.
 
 ### Quick Setup
 
@@ -68,17 +109,17 @@ ruff check networksecurity/ app.py cli.py scripts/ \
 ruff check networksecurity/ app.py cli.py --fix
 ```
 
-### Style Rules (in effect via CI)
+### Style Rules
 
-| Rule | Description |
-|------|-------------|
-| `E9` / `F63` / `F7` / `F82` | Syntax errors, undefined names (blocking) |
-| `F` / `E` / `W` | Pyflakes / pycodestyle / warnings |
-| `I` | `isort` import ordering |
-| `N` | PEP 8 naming conventions |
-| `UP` | Modern Python syntax (`Optional[X]` → `X \| None`) |
-| `B` | Bug-prone patterns |
-| `SIM` / `PL` / `RET` / `PERF` | Simplifications / pylint / return / performance |
+| Rule | Description | Enforced |
+|------|-------------|----------|
+| `E9` / `F63` / `F7` / `F82` | Syntax errors, undefined names | **blocks merge** |
+| `F` / `E` / `W` | Pyflakes / pycodestyle / warnings | reported |
+| `I` | `isort` import ordering | reported |
+| `N` | PEP 8 naming conventions | reported |
+| `UP` | Modern Python syntax (`Optional[X]` → `X \| None`) | reported |
+| `B` | Bug-prone patterns | reported |
+| `SIM` / `PL` / `RET` / `PERF` | Simplifications / pylint / return / performance | reported |
 
 ### Import Sorting
 

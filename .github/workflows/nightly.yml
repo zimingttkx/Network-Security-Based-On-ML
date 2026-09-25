@@ -1,0 +1,299 @@
+name: Nightly quality
+
+# 慢、重、或者只出标定值而不该挡 PR 的检查挪到这里。
+# 判断依据：这三项对拦截器的实际杀伤力低于 PR 层那批，而真实抓包那项给出的
+# 检出率本来就是标定值而不是准确率（README 里写明了），拿它挡合并只会逼人
+# 去调阈值。代价是回归发现延迟到第二天。
+on:
+  schedule:
+    - cron: '40 17 * * *'      # 17:40 UTC，避开北美工作时段与整点拥堵
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUFF_VERSION: "0.16.9"
+  BANDIT_VERSION: "1.9.4"
+
+jobs:
+  # ── 真实抓包上的检出质量 ───────────────────────────────────────────
+  # 重建仓库自带的 UNSW-NB15 还原抓包（8 万多个包）跑完整条流水线，误报率
+  # 是硬门禁；检出率只出数字，因为这份抓包按流记录还原，ML 阶段本来就分不开。
+  capture-quality:
+    name: Detection quality on a real capture
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Evaluate
+        run: |
+          set -o pipefail
+          python scripts/verify_real_capture_quality.py 2>&1 | tee capture-quality.log
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capture-quality
+          path: capture-quality.log
+          retention-days: 30
+
+  # ── LUCID 训练与加载（TensorFlow）──────────────────────────────────
+  # TF 不在默认依赖里，所以 PR 层永远走不到这条链路：训练脚本能否产出权重、
+  # app 能否加载并按形状校验、加载失败时是否真的不注册检测器。
+  lucid-train:
+    name: LUCID training (TensorFlow)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install tensorflow-cpu
+
+      - name: Build a small labelled pcap
+        run: |
+          python - <<'PY'
+          from scapy.all import Ether, IP, TCP, wrpcap
+          packets = []
+          for flow in range(30):
+              attack = flow % 3 == 0
+              src = f"203.0.113.{flow % 7 + 1}" if attack else f"10.0.0.{flow % 5 + 10}"
+              for _ in range(12):
+                  packets.append(Ether() / IP(src=src, dst="10.0.0.1")
+                                 / TCP(sport=1024 + flow, dport=22, flags="S"))
+          wrpcap("lucid_train.pcap", packets)
+          print(f"wrote {len(packets)} packets")
+          PY
+
+      - name: Inspect labels before training
+        run: |
+          set -o pipefail
+          python scripts/train_lucid.py --pcap lucid_train.pcap \
+            --attackers 203.0.113.0/24 --inspect | tee inspect.log
+          grep -q "label set looks usable" inspect.log
+
+      - name: Train and save the model
+        run: |
+          set -o pipefail
+          TF_CPP_MIN_LOG_LEVEL=2 python scripts/train_lucid.py --pcap lucid_train.pcap \
+            --attackers 203.0.113.0/24 --out models/lucid_cnn.h5 --epochs 3 | tee train.log
+          test -s models/lucid_cnn.h5
+          grep -q "Saved models/lucid_cnn.h5" train.log
+
+      - name: App registers the detector from the saved model
+        run: |
+          python - <<'PY'
+          import re, pathlib
+          cfg = pathlib.Path("config/config.yaml")
+          cfg.write_text(re.sub(r'model_path: ""', 'model_path: "models/lucid_cnn.h5"',
+                                cfg.read_text()))
+          import app
+          names = [type(d).__name__ for d in app.pipeline._detectors]
+          assert "LucidDetectorAdapter" in names, names
+          status = app.pipeline.status()
+          assert status["broken_detectors"] == [], status
+          lucid = next(d for d in app.pipeline._detectors
+                       if type(d).__name__ == "LucidDetectorAdapter")
+          assert lucid._enabled and lucid._lucid.is_trained, "model loaded but detector not trained"
+          print("LUCID loaded from the trained model and registered")
+          PY
+
+      - name: Unloadable model leaves the detector out of the pipeline
+        run: |
+          python - <<'PY'
+          import re, pathlib
+          cfg = pathlib.Path("config/config.yaml")
+          cfg.write_text(re.sub(r'model_path: "models/lucid_cnn.h5"',
+                                'model_path: "models/missing.h5"', cfg.read_text()))
+          import app
+          names = [type(d).__name__ for d in app.pipeline._detectors]
+          assert "LucidDetectorAdapter" not in names, (
+              f"a model that failed to load must not be registered: {names}")
+          print("refused cleanly: no detector registered for an unreadable model")
+          PY
+
+  # ── 合成攻击仿真冒烟 ───────────────────────────────────────────────
+  # 检出的百分比是那个生成器的性质，不是生产准确率（README 已写明），所以它
+  # 的值在于"检测链还通不通"，不该拿一个合成阈值去挡真改动。
+  attack-sim:
+    name: Attack simulation smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Quick smoke
+        run: |
+          python - <<'PY'
+          import asyncio, random
+          from networksecurity.engine import DetectionPipeline, PacketInfo, Action
+          from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
+
+          NORMAL_IPS = [f'192.168.{i}.{j}' for i in range(1, 5) for j in range(1, 20)]
+          ATTACK_IPS = [f'45.33.{i}.{j}' for i in range(32, 36) for j in range(1, 50)]
+
+          async def quick_test():
+              p = DetectionPipeline()
+              k = KitsuneDetector()
+              k.set_grace_periods(fm_grace_period=500, ad_grace_period=1000)
+              p.add_detector(k)
+
+              for i in range(2000):
+                  pkt = PacketInfo(random.choice(NORMAL_IPS), '10.0.0.1',
+                      random.randint(32768, 65535), random.choice([80, 443, 22]),
+                      6, random.randint(40, 1500), i * 0.001,
+                      tcp_flags=random.choice([0x02, 0x10, 0x18]))
+                  await p.process_packet(pkt)
+
+              detected = 0
+              for i in range(500):
+                  pkt = PacketInfo(random.choice(ATTACK_IPS), '10.0.0.1',
+                      random.randint(1, 65535), 80, 6, 40, 2000.0 + i * 0.0001,
+                      tcp_flags=0x02)
+                  v = await p.process_packet(pkt)
+                  if v.action == Action.BLOCK:
+                      detected += 1
+
+              dr = detected / 500 * 100
+              print(f'Attack smoke test: {detected}/500 detected ({dr:.0f}%)')
+              assert dr >= 50, f'Detection rate too low: {dr:.0f}%'
+              print('Smoke test passed')
+
+          asyncio.run(quick_test())
+          PY
+
+  # ── python_requires 声明的另一个版本 ───────────────────────────────
+  # setup.py 写的是 >=3.12，而 PR 层只测 3.12，所以 3.13 一直是没验过的承诺。
+  # 需要 root + netns 的两个 job 不在这个矩阵里（它们各归 PR 层的专门 job）。
+  py313-sweep:
+    name: Full suite on Python 3.13
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run every module suite
+        run: |
+          set +e
+          mkdir -p .nightly-logs
+          failed=()
+          for script in scripts/verify_*.py; do
+            case "$script" in
+              *verify_live_nfqueue.py|*verify_kernel_rules.py) continue ;;
+            esac
+            name=$(basename "$script" .py)
+            if python "$script" > ".nightly-logs/$name.log" 2>&1; then
+              echo "PASS  $name"
+            else
+              echo "FAIL  $name"
+              tail -20 ".nightly-logs/$name.log"
+              failed+=("$name")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::Python 3.13 下失败: ${failed[*]}"
+            exit 1
+          fi
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: py313-sweep
+          path: .nightly-logs/
+          retention-days: 14
+
+  # ── 静态分析的完整报告 ─────────────────────────────────────────────
+  # PR 层只卡"不可能不修"的那几个规则，这里出全量清单，方便一次攒够就收口
+  # 成阻塞门禁（尤其 bandit 的 LOW 命中——那四条 subprocess 就在拼 iptables
+  # 命令行，是本项目最该被盯的地方）。
+  static-report:
+    name: Static analysis (full)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: pip install "ruff==$RUFF_VERSION" "bandit==$BANDIT_VERSION"
+
+      - name: Ruff — every rule the PR layer ignores
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          ruff check networksecurity/ app.py cli.py scripts/ \
+            --select=F,E,W,I,N,UP,B,SIM,PL,RET,PERF \
+            --ignore=E501,S101,S311,S104,DTZ005,BLE001,RUF012,RUF013,EXE001,F841,W293,W291,PLR2004,N803,PLC0415,E741,N806,B904,PLR0913,PLR0917,PLW0603,RET504,PERF203,PERF401,SIM105 \
+            --statistics | tee reports/ruff-full.txt
+          ruff check networksecurity/ app.py cli.py scripts/ \
+            --select=F,E,W,I,N,UP,B,SIM,PL,RET,PERF --fix-dry-run \
+            --diff > reports/ruff-fixable.diff || true
+
+      - name: Bandit — every severity, including scripts/
+        continue-on-error: true
+        run: |
+          bandit -r networksecurity/ app.py cli.py scripts/ \
+            --skip B101,B303,B311,B104,B310 \
+            -f json -o reports/bandit-full.json
+          bandit -r networksecurity/ app.py cli.py scripts/ \
+            --skip B101,B303,B311,B104,B310 \
+            -f screen | tail -60 | tee reports/bandit-summary.txt
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-report
+          path: reports/
+          retention-days: 30
