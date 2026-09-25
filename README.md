@@ -20,18 +20,32 @@ A server-side IPS that intercepts traffic on Linux, scores each packet through a
 Incoming Traffic
       |
       v
-[Rule Engine] ------> BLOCK  (blacklist, rate limit, protocol filter)
-      | pass
+[Rule Engine] ------> decides: blacklist, whitelist, protocol filter,
+      | abstain       rate limit, signatures   (always present)
       v
-[Kitsune] ----------> BLOCK  (AfterImage + KitNET anomaly detection)
-      | pass
+[Mounted learning detectors] ------> BLOCK on anomaly
+      |
       v
 [ALLOW]
 ```
 
-The rule engine handles known-bad traffic deterministically (blacklist, whitelist, rate limit, protocol allowlist). Anything that passes is scored by Kitsune, an unsupervised packet-level anomaly detector that trains on normal traffic and flags deviations by reconstruction error (RMSE).
+The rule engine is the permanent part of the chain: deterministic, and the only stage that runs on a default configuration. Traffic it does not decide falls through to whatever detectors you mount.
 
-LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pipeline by default — it requires TensorFlow (`pip install -e ".[lucid]"` or `pip install tensorflow`) and a trained model, and must be explicitly enabled. See `networksecurity/engine/lucid/`.
+The learning detectors are a **plug-in**, and they are **off by default**:
+
+```yaml
+engine:
+  ml:
+    enabled: false        # true turns detection on for whatever is listed below
+    detectors:
+      - uses: kitsune     # or `lucid`, or `my_package.module:MyDetector`
+```
+
+With `enabled: false`, no ML module is imported or constructed: deleting `networksecurity/engine/kitsune/` and `networksecurity/engine/lucid/` leaves a working, rules-only deployment. With it on, a detector that cannot be built is logged and skipped rather than taking the process down. The interface a third-party detector implements (`process_packet` / `configure` / `ready` / `status`) and the fail-closed rules that follow from the switch are in [ARCHITECTURE.md — The Detector Contract](ARCHITECTURE.md); `networksecurity/engine/threshold_detector.py` is a complete example to copy.
+
+What detection here does and does not achieve is measured, not asserted: see [Measured results and limits](#measured-results-and-limits).
+
+LUCID (a CNN-based DDoS detector) is optional in its own right as well: it needs TensorFlow (`pip install -e ".[lucid]"` or `pip install tensorflow`) **and** a trained model at `engine.lucid.model_path`. Without a model that loads, it is not mounted at all — it no longer sits in the chain as an inactive detector the status page would still list.
 
 ### Algorithms
 
@@ -77,6 +91,7 @@ pip install -e ".[lucid]"     # or: pip install tensorflow
 
 `config/config.yaml` drives both the engine and live interception:
 
+- `engine.ml.enabled` / `engine.ml.detectors`: whether learning detection runs at all, and which detectors to mount (built-in short names, or `package.module:ClassName` with a `params:` block). Off by default.
 - `engine.kitsune.*`: grace periods, threshold percentile, learning_rate (passed to AfterImage)
 - `engine.lucid.model_path`: set a path to enable LUCID; empty string disables it
 - `api.auth_token`: set to enable authentication; empty string disables auth (development mode)
@@ -243,6 +258,8 @@ config/
 networksecurity/
   engine/                      # Detection engine
     detector.py                # BaseDetector interface + PacketInfo
+    assembly.py                # Mounts the detectors config asks for (engine.ml)
+    threshold_detector.py      # Complete worked example of the contract
     verdict.py                 # Verdict, Action, ThreatLevel types
     pipeline.py                # DetectionPipeline (multi-stage chain)
     rule_engine.py             # IP blacklist/whitelist, rate limiting
@@ -361,9 +378,27 @@ python scripts/train_lucid.py --pcap capture.pcap \
 
 ---
 
-## Benchmarks
+## Measured results and limits
 
-Two scripts measure behavior on your own hardware — numbers below are not validated across environments and will vary:
+These are numbers this repository actually produces, with the command that reproduces each one. They are not stable — Kitsune's projections are unseeded — so treat them as ranges.
+
+| what | result | reproduce with |
+|---|---|---|
+| Rule engine vs. single-source SYN flood | **100%** detected (1000 pkt/s from a small pool trips the per-source limit), **2.4%** FPR on normal traffic | `python scripts/verify_fpr_regression.py` |
+| Same flood spread over 2000 spoofed sources | **0.1%** — per-source rate never crosses the limit, and per-host modelling cannot see it | `python scripts/attack_simulation.py --full` |
+| Volumetric floods on synthetic traffic (UDP, ICMP) | 100% (ICMP by protocol rule, UDP by the anomaly stage) | same |
+| Whole synthetic run, every phase counted | 64.7% attack packets detected, **26.75% of normal packets blocked** | same |
+| Real UNSW-NB15 reconstruction | false-positive rate **1.8–3.7%** | `python scripts/evaluate_pcap.py` |
+| Real UNSW-NB15 reconstruction, detection rate | ~~0.0–0.7%~~ — **void as an accuracy claim**, see below | same |
+| Offline pipeline throughput | ~660–870 pkt/s, single process | either of the above |
+
+**The bundled "real capture" benchmark leaks its own labels.** `scripts/build_unsw_pcap.py` assigns source addresses *from the label* (`ATTACK_NET` for attack flows, `NORMAL_NET` for normal ones, since UNSW-NB15 ships no per-row IPs), and `scripts/evaluate_pcap.py` then reads the label back out of those addresses as ground truth. Any rule keyed on source address therefore scores 100% on it for free, and the detection-rate number measures the reconstruction, not the detector. The false-positive rate is still meaningful — a leaked label cannot cause a false positive on normal traffic. Closing that hole (label-independent address assignment, then re-measure both numbers) is open work; until then this row is a methodology note, not a result.
+
+**Why the two "detection" rows disagree by three orders of magnitude**: they are different attacks with the same name. A concentrated flood trips a per-source connection limit; a distributed one is invisible to it by construction, and Kitsune scores per host, so spoofed sources each look like a well-behaved client. This is the boundary of the approach, not a tuning gap.
+
+**Calibrate `blocking:` before trusting either number.** Strikes are counted per BLOCK verdict, i.e. per packet, so at a 2–3% packet-level false-positive rate a legitimate source sending a few hundred packets inside `strikes_window` reaches the shipped `strikes_threshold: 5` and takes a 10-minute kernel ban; repeated cycles persist a permanent one. Measure on your own traffic (`cli.py test --pcap`, watching `nips_alert_events_written_total`) and set the threshold to a multiple of what your traffic produces.
+
+### Reproducing this on your own hardware
 
 - `scripts/benchmark.py` — trains Kitsune on synthesized normal traffic, then reports rule-engine accuracy, training/detection throughput, and attack detection rate.
 - `scripts/benchmark_nslkdd.py` — downloads NSL-KDD, maps flow records to synthetic packets, trains Kitsune on normal flows, and reports precision/recall/FPR.
@@ -372,25 +407,25 @@ Why detection on NSL-KDD is weak here: NSL-KDD records are **flow-level summarie
 
 The rule engine itself is exact: blacklist/whitelist, protocol filtering, and rate limiting are deterministic and always applied before the ML stage. Rate limit counts only TCP SYN (ACK clear) and UDP datagrams; established TCP sessions (ACK/data/FIN) do not consume the budget.
 
-### Offline testing with real traffic
+### Offline testing with your own traffic
 
-Two paths exercise the detection pipeline **without** root or iptables — useful for verifying behavior on real captures:
+The detection pipeline can be exercised **without** root or iptables, which is the practical way to measure what it would do on the traffic you actually carry:
 
-- **Real pcap (recommended for true performance):** capture packets and run them through the pipeline offline.
+- **Real pcap (the one that tells you something):** capture packets and run them through the pipeline offline.
   ```bash
   # capture 30s of live traffic (requires root for the sniff)
   sudo python -c "from scapy.all import sniff, wrpcap; wrpcap('cap.pcap', sniff(iface='en0', timeout=30))"
   # offline detection — no root needed
   python cli.py test --pcap cap.pcap
   ```
-  This surfaces the **real** false-positive rate (e.g. legitimate ICMP being blocked by the protocol filter — in this offline path ICMP does reach the engine, unlike live interception with `intercept_icmp: false`), which the synthetic sim below does not. Note Kitsune needs ~55k normal packets before it leaves training mode, so short captures mostly exercise the rule engine.
-- **Synthetic attack simulation:** `scripts/attack_simulation.py` generates labeled traffic and reports per-attack detection rates. Its ICMP/SSH results reflect the hard protocol rule and a separable generator distribution, not production accuracy — the ~20% attack detection in fast mode is a property of that generator, not a floor for real traffic.
-- **Real capture, measured in CI:** `scripts/verify_real_capture_quality.py` rebuilds the shipped UNSW-NB15 reconstruction (82,523 packets) and runs it through the full pipeline, gating the false-positive rate. Across five runs on two platforms: detection rate **0.0–0.7%**, false-positive rate **1.8–3.7%** — Kitsune's projections are unseeded so the two rates move between runs, and the capture is rebuilt from flow records with shortened grace periods. Read it as calibration, not accuracy: on this capture the ML stage barely separates attack from normal, and the detections that matter come from the rules you write.
-- **Calibrate `blocking:` against that rate.** Strikes are counted per BLOCK verdict, i.e. **per packet**. At a 3% packet-level false-positive rate, a legitimate source that sends a few hundred packets inside `strikes_window` reaches the shipped `strikes_threshold: 5` and takes a kernel-level temp ban (10 minutes), and repeated cycles persist a permanent ban to `rules.json`. Measure your own rate on your own traffic first (`cli.py test --pcap`, and watch `nips_alert_events_written_total` against real traffic volume), then set `strikes_threshold` to a multiple of what your traffic produces.
+  This surfaces the **real** false-positive rate (e.g. legitimate ICMP being blocked by the protocol filter — in this offline path ICMP does reach the engine, unlike live interception with `intercept_icmp: false`), which the synthetic simulation does not. Note Kitsune needs ~55k normal packets before it leaves training mode, so short captures mostly exercise the rule engine.
+- The synthetic simulation and the bundled reconstruction are covered by the table above; their limits are stated there rather than repeated here.
 
 #### Fail-closed behavior
 
-When all ML detectors are broken or untrained, the pipeline raises `DetectionUnavailable` and drops every packet that the rule engine does not decide. This is intentional: a silent network outage is safer than allowing unknown traffic when the anomaly detector is unavailable. The status API exposes `detection_unavailable_drops` and `broken_detectors` so operators can see this state.
+With learning detection **enabled**, a packet the rule engine does not decide must be scored by something. If every mounted detector that could score has raised or tripped its circuit breaker, the pipeline raises `DetectionUnavailable` and that packet is dropped rather than waved through: a silent outage is safer than allowing unknown traffic while the detector you paid for is dead. Turning `engine.ml.enabled` off is the opposite case — a decision, so undecided traffic is allowed, and it never triggers this path. A detector mounted without its model (`ready: false`) is treated as not deployed: it neither decides nor counts as coverage.
+
+The status API exposes `detection_unavailable_drops`, `broken_detectors`, `ml_enabled`, `ml_consulted` and `ml_idle` so an operator can tell these three states apart instead of guessing from one boolean.
 
 ---
 
