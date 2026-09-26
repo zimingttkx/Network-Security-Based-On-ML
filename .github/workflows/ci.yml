@@ -70,7 +70,8 @@ jobs:
           suites=$(for f in scripts/verify_*.py; do
             s=$(basename "$f" .py); s=${s#verify_}
             case "$s" in
-              # 这两个要 root + netns，各有专门 job；那个要重建 59MB 抓包，属 nightly。
+              # 这两个要 root + netns，各有专门 job；那个要练三个种子、半小时
+              # 起步，属 nightly。真值那一半已拆到 capture_truth，跟矩阵走。
               live_nfqueue|kernel_rules|real_capture_quality) continue ;;
             esac
             printf '"%s",' "$s"

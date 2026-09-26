@@ -59,14 +59,22 @@ accepts a direct push, so work starts on its own short-lived branch.
 | layer | jobs | blocks merge |
 |-------|------|--------------|
 | static | `workflow-lint` (actionlint), `preflight` (fatal ruff subset, forbidden-keyword scan, bandit at MEDIUM+, packaging install, import sweep) | yes |
-| unit | `unit` (one job per `scripts/verify_*.py`), `units-inline` | yes |
+| unit | `unit` (one job per `scripts/verify_*.py`, including the capture truth chain), `units-inline` | yes |
 | system | `kernel-rules`, `live-nfqueue`, `docker`, `systemd` | yes |
-| quality | nightly: real-capture detection quality, LUCID training, attack simulation, Python 3.13 sweep, full static reports | no |
+| quality | nightly: real-capture detection quality (the half-hour measurement), LUCID training, attack simulation, Python 3.13 sweep, full static reports | no |
 
 The quality layer moved to `nightly.yml` on purpose: those three checks are slow,
 and the detection rate they report is a calibration value, not a production
 accuracy claim (see README). Gating merges on a synthetic percentage only pushes
 people to tune the threshold.
+
+The capture half of that layer sits in `capture_truth.py` instead, run by
+`verify_capture_truth.py` on every pull request. Both had lived in
+`verify_real_capture_quality.py`, which the matrix skips by name — so the cheap
+truth checks inherited the nightly schedule and a leak in the capture's answer
+key stayed green until the next night. Splitting them cost one file; the
+measurement still trains three KitNET draws and stays nightly, the truth checks
+rebuild the capture once (byte-identical, ≈1 min) and gate the PR.
 
 Two rules follow from this layout:
 
