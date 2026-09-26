@@ -18,14 +18,13 @@ gates the numbers an operator actually feels:
   * that the ML stage still flags *something* (a TPR of exactly zero would mean
     the detector is dead, not that the capture is clean).
 
-It also gates the thing that made the first version of this measurement
-worthless: ground truth used to be recovered from the wire (attack flows drew
-their source address from one documented block, and the evaluator read the
-label back out of it), so the score measured agreement with the builder's
-addressing convention.  Three checks keep that from coming back — the answer
-key must not be predictable from the source address, the retired prefix rule
-must not separate the classes, and the evaluator must refuse to invent truth
-when it is not given any.
+Ground truth is checked before any of that, by ``capture_truth.py``: the answer
+key must not be predictable from the capture, the sidecar must describe the
+capture it is scored against, and the evaluator must refuse to invent truth.
+Those checks are cheap, so they gate pull requests as well
+(``verify_capture_truth.py``); this file imports the same definition rather than
+keeping a copy, and refuses to spend half an hour measuring on a capture whose
+truth it cannot trust.
 
 The exact rates are printed as evidence and are what the READMEs quote.  They
 are calibration for this capture, not production accuracy: the pcap is rebuilt
@@ -47,23 +46,15 @@ operating point moves.
 """
 from __future__ import annotations
 
-import random
 import re
 import subprocess
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from capture_labels import read_sidecar, sidecar_path
-
-ROOT = Path(__file__).resolve().parent.parent
-PCAP = ROOT / "datasets/unsw-nb15/unsw_reconstructed.pcap"
-SIDECAR = sidecar_path(PCAP)
-BUILDER = ROOT / "scripts/build_unsw_pcap.py"
-EVAL = ROOT / "scripts/evaluate_pcap.py"
+from capture_truth import EVAL, PCAP, ROOT, run_truth_checks
 
 # The three draws the gate scores: the low, middle and high draw of the sweep
 # the READMEs quote.  KitNET seeds its own weights from the global RNG, and on
@@ -85,128 +76,10 @@ SEEDS = (5, 0, 10)
 MAX_MEDIAN_FPR = 5.0
 MAX_ANY_FPR = 15.0
 
-# The convention the first evaluator used to recover truth from the wire.  It
-# survives only as a canary: if it ever separates the classes again, the label
-# is back in the packet header.
-RETIRED_TRUTH_PREFIX = "175.45.176."
-MIN_INDEPENDENCE_P = 0.01
-MAX_RULE_ACCURACY_MARGIN = 0.05
-SHUFFLES = 1000
-
 
 def _run(args: list[str], timeout: float) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout,
                           cwd=str(ROOT))
-
-
-def _chi2(clients: list[str], labels: list[int]) -> float:
-    """Pearson chi-square for independence between source address and label."""
-    table: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-    for client, label in zip(clients, labels):
-        table[client][label] += 1
-    share = sum(labels) / len(labels)
-    stat = 0.0
-    for normal, attack in table.values():
-        size = normal + attack
-        for observed, expected in ((normal, size * (1 - share)), (attack, size * share)):
-            if expected > 0:
-                stat += (observed - expected) ** 2 / expected
-    return stat
-
-
-def _address_independence(flows: list[dict], shuffles: int = SHUFFLES,
-                          seed: int = 7) -> tuple[float, float]:
-    """(chi-square, permutation p-value) for "the source address predicts the label".
-
-    The null is exactly "address carries no information about the label", and it
-    is calibrated by shuffling labels across the same address partition — no
-    distribution tables, and no assumption about how many flows each address
-    happens to send.  A capture whose addresses encode the label scores orders
-    of magnitude above every shuffle and lands at the p-value floor.
-    """
-    clients = [f["client"] for f in flows]
-    labels = [f["label"] for f in flows]
-    observed = _chi2(clients, labels)
-    rng = random.Random(seed)
-    shuffled = list(labels)
-    at_least = 0
-    for _ in range(shuffles):
-        rng.shuffle(shuffled)
-        if _chi2(clients, shuffled) >= observed:
-            at_least += 1
-    return observed, (at_least + 1) / (shuffles + 1)
-
-
-def _retired_rule_accuracy(flows: list[dict]) -> tuple[float, float]:
-    """Accuracy of the retired prefix rule, against the majority-class base rate."""
-    share = sum(f["label"] for f in flows) / len(flows)
-    hits = sum(1 for f in flows
-               if f["client"].startswith(RETIRED_TRUTH_PREFIX) == bool(f["label"]))
-    return hits / len(flows), max(share, 1 - share)
-
-
-def _canary_self_test() -> list[str]:
-    """The canary must fire on a partition where the address does encode the label.
-
-    A check that cannot fail is not a check.  This rebuilds the retired
-    convention — attacks in one block, normal traffic in the other — and
-    requires the canary to reject it, so a later edit that loosens the
-    thresholds fails here instead of silently passing the real capture.
-    """
-    flows = ([{"client": f"175.45.176.{i % 200 + 2}", "label": 1} for i in range(300)]
-             + [{"client": f"147.46.0.{i % 200 + 2}", "label": 0} for i in range(300)])
-    _, p = _address_independence(flows)
-    accuracy, base = _retired_rule_accuracy(flows)
-    bad: list[str] = []
-    if p >= MIN_INDEPENDENCE_P:
-        bad.append(f"the canary accepted a label-split partition (p={p:.3f})")
-    if accuracy <= base + MAX_RULE_ACCURACY_MARGIN:
-        bad.append(f"the retired rule failed to separate a label-split partition "
-                   f"({accuracy:.3f} vs base {base:.3f})")
-    return bad
-
-
-def _check_answer_key(flows: list[dict]) -> list[str]:
-    """The label must not be recoverable from the packet header."""
-    bad: list[str] = _canary_self_test()
-    stat, p = _address_independence(flows)
-    accuracy, base = _retired_rule_accuracy(flows)
-    print(f"answer key     : {len(flows)} flows over "
-          f"{len({f['client'] for f in flows})} client addresses")
-    print(f"                 address independence: chi2={stat:.1f}, p={p:.3f}"
-          f"   (canary self-test: {'ok' if not bad else 'BROKEN'})")
-    print(f"                 retired '{RETIRED_TRUTH_PREFIX}* => attack' rule: "
-          f"accuracy {accuracy:.3f} vs base rate {base:.3f}")
-    if p < MIN_INDEPENDENCE_P:
-        bad.append(f"the source address predicts the label (chi2={stat:.1f}, "
-                   f"p={p:.3f} < {MIN_INDEPENDENCE_P}) — the answer key is on the wire")
-    if accuracy > base + MAX_RULE_ACCURACY_MARGIN:
-        bad.append(f"the retired prefix rule still scores {accuracy:.3f} against a "
-                   f"{base:.3f} base rate")
-    return bad
-
-
-def _check_evaluator_refuses_unlabelled_truth() -> list[str]:
-    """Truth is an input: the evaluator must never infer it from packet contents."""
-    bad: list[str] = []
-    missing = _run([sys.executable, str(EVAL), "--labels", "does-not-exist.json",
-                    "--limit", "1"], timeout=300)
-    if missing.returncode == 0:
-        bad.append("the evaluator ran with a missing label file instead of refusing")
-    elif "does-not-exist.json" not in (missing.stdout + missing.stderr):
-        bad.append("the evaluator refused a missing label file without naming it")
-
-    plain = _run([sys.executable, str(EVAL), "--no-labels", "--limit", "3000"],
-                 timeout=900)
-    out = plain.stdout
-    if plain.returncode != 0:
-        bad.append("the unlabelled run crashed")
-    for field in ("detection rate", "false positive rate", "precision"):
-        if field in out:
-            bad.append(f"the unlabelled run printed a {field} with no ground truth")
-    if not re.search(r"pcap packets processed\s*: [1-9]", out):
-        bad.append("the unlabelled run processed nothing")
-    return bad
 
 
 def _score_draw(seed: int) -> tuple[dict | None, list[str]]:
@@ -263,29 +136,7 @@ def _score_draw(seed: int) -> tuple[dict | None, list[str]]:
 
 
 def main() -> int:
-    if not PCAP.exists() or not SIDECAR.exists():
-        # The capture is gitignored (the parquet it is built from is not), so
-        # CI rebuilds it — the builder is seeded, which keeps the numbers
-        # comparable between runs.  The sidecar ships with it: a capture
-        # without its answer key cannot be scored, and a builder that emits one
-        # is a failure to report, not a reason to skip.
-        built = _run([sys.executable, str(BUILDER)], timeout=900)
-        if not PCAP.exists():
-            last = (built.stderr or built.stdout).strip().splitlines()[-1:]
-            print(f"SKIP: no capture and the rebuild did not produce one — {last}")
-            return 0
-        if not SIDECAR.exists():
-            print(f"FAIL: the builder produced {PCAP.name} without its answer key "
-                  f"({SIDECAR.name})")
-            print((built.stderr or built.stdout).strip()[-2000:])
-            return 1
-        print(f"rebuilt {PCAP.name}: {built.stdout.strip().splitlines()[-1:]}")
-
-    _, flows_by_key = read_sidecar(SIDECAR)
-    flows = list(flows_by_key.values())
-
-    bad = _check_answer_key(flows)
-    bad += _check_evaluator_refuses_unlabelled_truth()
+    bad = run_truth_checks()
     if bad:
         # Fail before the 30-minute run: a broken answer key makes every number
         # below meaningless, so there is nothing to measure.

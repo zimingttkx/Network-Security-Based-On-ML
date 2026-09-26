@@ -10,6 +10,11 @@ circular, and it is the one failure mode this file is written to make
 impossible.  With ``--no-labels`` it reports verdicts and block reasons only,
 which is what can honestly be measured on a capture you have no truth for.
 
+A sidecar that describes none of the capture is refused for the same reason: an
+empty labelled set scores 0.0% false positives and 0.0% detection, which is what
+a perfect detector scores, so printing rates over it would be a report no one
+can tell apart from success.
+
 Both directions of a flow inherit that flow's label: a labelled attack's server
 responses are attack packets too.  They used to be scored as normal traffic
 (their source address was the victim's), which quietly padded the normal class
@@ -162,6 +167,17 @@ async def _evaluate(args: argparse.Namespace) -> int:
         print(f" post-training blocks   : {blocked_total}")
         print(f" block reasons          : {dict(reasons)}")
     else:
+        if post["attack"] + post["normal"] == 0:
+            # An empty labelled set scores 0.0% false positives and 0.0%
+            # detection — the same numbers a perfect detector produces.  A
+            # sidecar that drifted off this capture (or a --limit inside the
+            # grace periods) must end here rather than print those.
+            print(f"ERROR: no packet in the scoring window carries a label "
+                  f"({counted} scored, {unmatched} unmatched against {labels_path}) — "
+                  f"rates over an empty labelled set would be fiction.  Check "
+                  f"--labels, or raise --limit above the grace periods "
+                  f"({args.fm_grace} + {args.ad_grace}).", file=sys.stderr)
+            return 2
         tp, fn = post_block["attack"], post["attack"] - post_block["attack"]
         fp, tn = post_block["normal"], post["normal"] - post_block["normal"]
         tpr = tp / max(1, tp + fn) * 100
