@@ -4,6 +4,8 @@
 
 一个运行在服务器侧的 IPS：在 Linux 上拦截流量，先用规则引擎再用异常检测器对每个数据包打分，最后通过 iptables 丢弃恶意包。
 
+**为什么叫 NIPS？** 这个短名不只是文档叫法：iptables 链名（`NIPS`）、API 令牌环境变量（`NIPS_API_TOKEN`）、systemd 单元前缀（`nips-*`）与 Prometheus 指标前缀（`nips_*`）都用它。仓库名 `Network-Security-Based-On-ML` 描述的是项目内容；NIPS 是代码里真正的名字。
+
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.104+-green.svg" alt="FastAPI">
