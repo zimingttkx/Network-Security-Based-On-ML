@@ -4,6 +4,8 @@
 
 A server-side IPS that intercepts traffic on Linux, scores each packet through a rule engine plus an anomaly detector, and drops malicious packets via iptables.
 
+**Why "NIPS"?** The short name is load-bearing: it is the iptables chain (`NIPS`), the API token variable (`NIPS_API_TOKEN`), the systemd unit prefix (`nips-*`) and the Prometheus metric prefix (`nips_*`). The repository name, `Network-Security-Based-On-ML`, describes the project; NIPS is what the code actually calls it.
+
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.104+-green.svg" alt="FastAPI">
