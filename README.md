@@ -52,7 +52,11 @@ LUCID (a CNN-based DDoS detector) is optional in its own right as well: it needs
 - **Kitsune (NDSS'18)** — AfterImage incremental statistics (90 features) + a KitNET autoencoder ensemble. Trains online, no labels needed. When link-layer headers are absent (live NFQUEUE), the MAC channel uses a `(protocol, ttl)` proxy key so it never collapses to zero variance. Grace periods (`fm_grace_period`, `ad_grace_period`) allow warmup before detection starts; during this time packets are logged but not blocked.
 - **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model and `engine.lucid.model_path` set in config. Produce the model with `scripts/train_lucid.py` (see "Training LUCID" below).
 
-> **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17); anything else it inspects is blocked, including **ICMP(1)**. In live interception, however, only TCP and UDP are redirected into NFQUEUE (`interception.intercept_icmp` is off by default) — so there ICMP is **not inspected and not blocked**: the host's own firewall decides. Turn `interception.intercept_icmp: true` on to bring ICMP into the pipeline, then allow individual types through `engine.rule_engine.allowed_icmp_types` — blocking the whole protocol also breaks Path MTU Discovery (type 3, "frag needed"), which blackholes large connections, so a type list is the useful setting rather than an all-or-nothing ban. **ICMPv6(58)** has one exception to that list: the types that maintain the link itself — neighbour and router solicitation/advertisement (135/136/133/134) and "packet too big" (2) — always pass, because a host whose neighbour discovery is queued and dropped has not blocked an attacker, it has taken itself off the network. ICMPv6 echo is *not* in that set and stays behind the protocol filter (allow-by-type covers ICMPv4 above). Offline pcap runs (`cli.py test --pcap`) do exercise the protocol filter, since those packets reach the engine whatever their protocol.
+> **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17); anything else it inspects is blocked, including **ICMP(1)**. In live interception, however, only TCP and UDP are redirected into NFQUEUE (`interception.intercept_icmp` is off by default) — so there ICMP is **not inspected and not blocked**: the host's own firewall decides.
+>
+> Turn `interception.intercept_icmp: true` on to bring ICMP into the pipeline, then allow individual types through `engine.rule_engine.allowed_icmp_types`. Blocking the whole protocol also breaks Path MTU Discovery (type 3, "frag needed"), which blackholes large connections — a type list is the useful setting, not an all-or-nothing ban.
+>
+> **ICMPv6(58)** has one exception to that list: the types that maintain the link itself — neighbour and router solicitation/advertisement (135/136/133/134) and "packet too big" (2) — always pass, because a host whose neighbour discovery is queued and dropped has not blocked an attacker, it has taken itself off the network. ICMPv6 echo is *not* in that set and stays behind the protocol filter (allow-by-type covers ICMPv4 above). Offline pcap runs (`cli.py test --pcap`) do exercise the protocol filter, since those packets reach the engine whatever their protocol.
 
 ---
 
@@ -89,48 +93,7 @@ pip install -e ".[lucid]"     # or: pip install tensorflow
 
 ### 3. Configure
 
-`config/config.yaml` drives both the engine and live interception:
-
-- `engine.ml.enabled` / `engine.ml.detectors`: whether learning detection runs at all, and which detectors to mount (built-in short names, or `package.module:ClassName` with a `params:` block). Off by default.
-- `engine.kitsune.*`: grace periods, threshold percentile, learning_rate (passed to AfterImage)
-- `engine.lucid.model_path`: set a path to enable LUCID; empty string disables it
-- `api.auth_token`: set to enable authentication; empty string disables auth (development mode)
-- `api.host` / `api.port`: what `python app.py` binds to
-- `interception.safe_ips`: add IPs that must never be blocked (loopback included by default)
-- `interception.intercept_icmp` / `engine.rule_engine.allowed_icmp_types`: ICMP policy (see the protocol-filtering note above)
-- `storage.*`: event database path, row cap and retention window (see "Alerts, audit and metrics")
-- `logging.*`: level, rotating file target and syslog forwarding
-
-### 4. Run the API
-
-```bash
-python app.py
-# /docs, /redoc and the OpenAPI schema are all disabled in production.
-```
-
-### 5. CLI
-
-```bash
-python cli.py start                  # start live interception (Linux, root)
-python cli.py stop                   # stop live interception (via API)
-python cli.py status                 # engine status
-python cli.py block 1.2.3.4          # block an IP (POST /api/v1/rules/blacklist)
-python cli.py unblock 1.2.3.4        # unblock an IP (DELETE /api/v1/rules/blacklist/{ip})
-python cli.py whitelist --ip 10.0.0.0/8   # whitelist a subnet (rejects /0 default routes)
-python cli.py unwhitelist --ip 10.0.0.0/8 # remove from whitelist
-python cli.py rules                  # list blacklist/whitelist entries
-python cli.py reload                 # apply edited rules.json / config to the running engine
-python cli.py alerts --last 20       # stored alerts, newest first (via API)
-python cli.py alerts --source-ip 203.0.113.7 --action block
-python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
-python cli.py audit --last 20        # who changed which rule, and the outcome
-python cli.py audit --result 401     # rejected management attempts
-python cli.py test --pcap sample.pcap  # offline detection test (no root needed)
-```
-
-#### Configuration
-
-`config/config.yaml` drives both the engine and live interception:
+`config/config.yaml` drives both the engine and live interception. The blocks an operator actually touches:
 
 ```yaml
 interception:
@@ -161,9 +124,49 @@ api:
   auth_token: ""             # empty = auth disabled (dev only); NIPS_API_TOKEN overrides
   cors_origins:              # explicit allowlist — "*" is not supported
     - "http://localhost:8000"
+    - "http://127.0.0.1:8000"
 ```
 
+| key | effect |
+| --- | --- |
+| `engine.ml.enabled` / `engine.ml.detectors` | whether learning detection runs at all, and which detectors to mount (built-in short names, or `package.module:ClassName` with a `params:` block). Off by default. |
+| `engine.kitsune.*` | grace periods, threshold percentile, learning_rate (passed to AfterImage) |
+| `engine.lucid.model_path` | set a path to enable LUCID; empty string disables it |
+| `api.auth_token` | set to enable authentication; empty string disables auth (development mode) |
+| `api.host` / `api.port` | what `python app.py` binds to |
+| `interception.safe_ips` | add IPs that must never be blocked (loopback included by default) |
+| `interception.intercept_icmp` / `engine.rule_engine.allowed_icmp_types` | ICMP policy (see the protocol-filtering note above) |
+| `storage.*` | event database path, row cap and retention window (see "Alerts, audit and metrics") |
+| `logging.*` | level, rotating file target and syslog forwarding |
+
 On `engine/start` the API/CLI read the `interception`, `engine`, `blocking`, and `api` blocks from this file and apply them at runtime. If the file is missing or malformed, each loader falls back to safe defaults (loopback protection included) rather than crashing.
+
+### 4. Run the API
+
+```bash
+python app.py
+# /docs, /redoc and the OpenAPI schema are all disabled in production.
+```
+
+### 5. CLI
+
+```bash
+python cli.py start                  # start live interception (Linux, root)
+python cli.py stop                   # stop live interception (via API)
+python cli.py status                 # engine status
+python cli.py block 1.2.3.4          # block an IP (POST /api/v1/rules/blacklist)
+python cli.py unblock 1.2.3.4        # unblock an IP (DELETE /api/v1/rules/blacklist/{ip})
+python cli.py whitelist --ip 10.0.0.0/8   # whitelist a subnet (rejects /0 default routes)
+python cli.py unwhitelist --ip 10.0.0.0/8 # remove from whitelist
+python cli.py rules                  # list blacklist/whitelist entries
+python cli.py reload                 # apply edited rules.json / config to the running engine
+python cli.py alerts --last 20       # stored alerts, newest first (via API)
+python cli.py alerts --source-ip 203.0.113.7 --action block
+python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
+python cli.py audit --last 20        # who changed which rule, and the outcome
+python cli.py audit --result 401     # rejected management attempts
+python cli.py test --pcap sample.pcap  # offline detection test (no root needed)
+```
 
 ---
 
@@ -241,7 +244,7 @@ python cli.py signature delete ssh-brute
 `rules.json` and `config/config.yaml` are watched by mtime, so a running engine picks up edits within 30 s; `POST /api/v1/rules/reload` (or `cli.py reload`) applies them immediately. Restarting is not required — and would be costly, since Kitsune re-trains from zero.
 
 - `rules.json` is applied with **replace** semantics, so deleting an entry really stops enforcing it (startup uses merge, which only adds).
-- `engine.rule_engine.rate_limit.*` and `allowed_protocols` take effect on the next packet.
+- `engine.rule_engine.rate_limit.*`, `allowed_protocols` and `allowed_icmp_types` take effect on the next packet.
 - A malformed file is rejected wholesale: the live rules stay exactly as they were, `/api/v1/status` raises `reload.failures`, and the attempt is audited as `reload_failed`.
 - Entries the kernel would refuse anyway (loopback / `safe_ips`) are swept as at startup and reported as `dropped_unenforceable`.
 - Kitsune's `fm_grace_period`, `ad_grace_period`, `threshold_percentile` and `learning_rate` are **not** re-applied — they describe how the detector was trained, so they need a restart. The reload summary names them.
@@ -263,6 +266,7 @@ networksecurity/
     verdict.py                 # Verdict, Action, ThreatLevel types
     pipeline.py                # DetectionPipeline (multi-stage chain)
     rule_engine.py             # IP blacklist/whitelist, rate limiting
+    signature_engine.py        # Declarative matchers: CIDR/protocol/ports/flags + rate threshold
     block_policy.py            # BLOCK escalation: strikes → temp ban → permanent ban
     kitsune/                   # Kitsune anomaly detector (NDSS'18)
       afterimage.py            # 90-dim incremental statistics
@@ -292,12 +296,15 @@ networksecurity/
   utils/                       # Shared helpers
     config.py                  # config.yaml loading (engine / api / blocking / storage / logging)
     validation.py              # IP/CIDR validation and blacklist refusal rules
+    reload.py                  # ReloadProbe: mtime watch over rules.json + config.yaml
 scripts/                       # Benchmarks, evaluation & regression checks
   benchmark.py                 # Throughput + rule-engine accuracy
   benchmark_nslkdd.py          # NSL-KDD detection benchmark
   attack_simulation.py         # Large-scale attack simulation
   build_unsw_pcap.py           # Rebuild real-traffic pcaps from the bundled UNSW-NB15 flows
   capture_labels.py            # Label sidecar format: truth next to the capture, not in it
+  capture_truth.py             # Shared truth-chain checks: independence, alignment, evaluator refusal
+  live_nfqueue_topology.sh     # Rootless netns topology for the live NFQUEUE CI job
   train_lucid.py               # Train the LUCID CNN and write engine.lucid.model_path
   evaluate_pcap.py             # End-to-end pcap evaluation (per attack category)
   verify_*.py                  # Module regression checks, incl. the CI FPR guard
@@ -330,7 +337,10 @@ The interceptor:
 - Leaves loopback traffic untouched — everything arriving on `lo` is ACCEPTed before the NFQUEUE rules, and loopback sources (`127.0.0.0/8`, `::1`) are never eligible for a permanent block (host-local traffic cannot be an attacker; blocking the DNS stub `127.0.0.53` would silently break host DNS)
 - Leaves SSH (port 22) untouched
 - Redirects only TCP and UDP into NFQUEUE unless `interception.intercept_icmp` is on; with it on, `allowed_icmp_types` decides which ICMP types the engine then accepts (ICMPv6 link maintenance passes regardless)
-- Enforces BLOCK verdicts through an escalation policy (`blocking:` in `config.yaml`) that applies **only to ML-detector BLOCKs**. Rule-engine verdicts (blacklist hit, rate limit, protocol filter) are deterministic and already enforced inline on every packet, so they never count strikes and cannot escalate — this also guarantees an operator's blacklist entry can never be modified by the ban lifecycle. A single ML BLOCK only inline-drops that packet and counts a strike against the source. Crossing `strikes_threshold` inside the rolling window triggers a **temp ban** — kernel DROP plus a rule-engine blacklist *mirror* with a TTL, lifted automatically on expiry (only the mirror is removed; an operator's own entry is never touched). Repeated temp bans escalate to a **permanent ban**, which is mirrored into `rules.json`; on the next start it is loaded back into the rule engine and enforced per-packet in userspace — the kernel DROP itself is **not** reinstalled
+- Enforces BLOCK verdicts through an escalation policy (`blocking:` in `config.yaml`) that applies **only to ML-detector BLOCKs**. Rule-engine verdicts (blacklist hit, rate limit, protocol filter) are deterministic and already enforced inline on every packet, so they never count strikes and cannot escalate — this also guarantees an operator's blacklist entry can never be modified by the ban lifecycle.
+  - A single ML BLOCK only inline-drops that packet and counts a strike against the source.
+  - Crossing `strikes_threshold` inside the rolling window triggers a **temp ban** — kernel DROP plus a rule-engine blacklist *mirror* with a TTL, lifted automatically on expiry (only the mirror is removed; an operator's own entry is never touched).
+  - Repeated temp bans escalate to a **permanent ban**, which is mirrored into `rules.json`; on the next start it is loaded back into the rule engine and enforced per-packet in userspace — the kernel DROP itself is **not** reinstalled.
 - Removes all of its iptables rules on shutdown
 
 **Dual-stack, with an honest fallback.** IPv4 *and* IPv6 TCP/UDP are redirected into NFQUEUE, parsed (including the IPv6 extension-header chain) and blocked through `ip6tables`. If `ip6tables` is unavailable the interceptor starts anyway, refuses every IPv6 block instead of pretending, and reports the gap: `ipv6_intercepted: false` in `/api/v1/status` and `nips_ipv6_intercepted 0` in `/metrics`. Check that gauge on any dual-stack host — a silently uninspected second address family is exactly the failure an operator would not notice until an incident.

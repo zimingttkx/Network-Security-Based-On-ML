@@ -38,6 +38,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Detection enforcement is fail-closed: detection errors and timeouts drop only the in-flight packet and never commit a permanent block.
 - Applied ruff auto-fix across the entire project and updated CONTRIBUTING.md.
 - Updated README to match the current codebase (CLI commands, API endpoints, architecture tree).
+- Documentation audit against the code: CODE_STYLE.md now lists all six packages (including `observability/`, with its dependency rules) and replaces a model-inference example that taught the removed LOG-answer anti-pattern; CONTRIBUTING.md's commit-message examples match the repository's actual Chinese conventional style, `dev` joins the branch-name exemptions, and the stale CI description in the review process now points at the layer table; both READMEs merge the duplicated Configure/Configuration sections, complete the Layout trees (`signature_engine.py`, `utils/reload.py`, `live_nfqueue_topology.sh`, `capture_labels.py`, `capture_truth.py`), and correct the hot-reload list (`allowed_icmp_types` does re-apply) and the `cors_origins` excerpt.
 
 ### Removed
 

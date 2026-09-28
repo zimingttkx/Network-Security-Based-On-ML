@@ -104,11 +104,13 @@ networksecurity/
   engine/           # Detection logic.  Pure Python, no OS calls.
     detector.py     # BaseDetector ABC, PacketInfo dataclass
     verdict.py      # Action, ThreatLevel, Verdict types
+    assembly.py     # Mounts the detectors engine.ml asks for; skips broken entries
     rule_engine.py  # IP whitelist/blacklist, rate limiting, signature dispatch
     signature_engine.py  # Declarative rules: src/dst CIDR + protocol + ports +
                     # TCP flags + rate threshold; action block or log
     pipeline.py     # DetectionPipeline chain with short-circuit
     block_policy.py # BLOCK escalation policy: strikes → temp ban → permanent ban
+    threshold_detector.py  # Complete worked example of the detector contract
     kitsune/        # AfterImage + KitNET anomaly detection (NDSS'18)
     lucid/          # CNN DDoS flow detection (IEEE TNSM 2020)
 
