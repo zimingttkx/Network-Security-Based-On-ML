@@ -193,6 +193,14 @@ def main() -> int:
         # Both sides are scoped to the alert table: the store-wide total also
         # counts audit rows, so one landing inside this window used to inflate
         # the write delta by one and turn the check red at random.
+        # The two 422 refusals above and the two exports each leave an audit
+        # row behind, and the background writer commits them on its own 0.25 s
+        # cadence — usually before this window opens, but "usually" is not a
+        # measurement: one still queued here lands inside the flush below and
+        # inflates both counters by one, red at random (seen in CI as
+        # store+7 audit+2).  Settle first, so the window contains exactly the
+        # rows this section enqueues.
+        store.flush(3.0)
         stats0 = store.stats()
         total_before = c.get("/api/v1/alerts?limit=1").json()["total"]
         for i in range(5):
