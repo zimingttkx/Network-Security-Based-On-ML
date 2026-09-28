@@ -33,19 +33,27 @@ perf/<description>        # Performance work
 ci/<description>          # .github/ and pipeline changes
 ```
 
-Enforced by `.github/workflows/branch-name-check.yml`; `main`, `release/*` and
-`dependabot/*` are exempt.
+Enforced by `.github/workflows/branch-name-check.yml`; `main`, `dev`,
+`release/*` and `dependabot/*` are exempt.
 
 ### Commit Messages
 
-Use [Conventional Commits](https://www.conventionalcommits.org/):
+Use [Conventional Commits](https://www.conventionalcommits.org/) types
+(`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `ci`) with an
+optional scope, and write the summary line and body in Chinese — this
+repository's history is in Chinese. The summary states what changed and why,
+not just what:
 
 ```
-feat: add rate limiting to RuleEngine
-fix: nfqueue handler crashes on fragmented packets
-docs: update ARCHITECTURE.md with Lucid data flow
-refactor: extract verdict types to separate module
+feat(engine): ML 检测器改为可拆卸，示例检测器给出完整契约
+fix(eval): 抓包不再把标签写进源地址，真值改成显式输入
+docs: 检测器契约与默认关闭的 ML 写进文档，评测数字改为可复现清单
+ci: 分静态/单元/系统三层，慢的标定项挪 nightly
 ```
+
+Non-trivial changes carry a body explaining the motivation and the trade-offs
+rejected; trivial ones are a single line. Commits carry no generated
+attribution trailers.
 
 ### What CI Runs
 
@@ -227,7 +235,7 @@ These will result in an immediate PR rejection:
 ## Review Process
 
 1. PR author completes the pre-submission checklist.
-2. CI must pass (keyword scan, import check, basic smoke test).
+2. CI must pass — the layers and jobs are listed under "What CI Runs" above.
 3. At least one maintainer reviews and approves.
 4. No direct pushes to `main`. All changes go through PRs.
 

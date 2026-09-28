@@ -52,7 +52,11 @@ LUCID（基于 CNN 的 DDoS 检测器）另外还有它自己的可选条件：�
 - **Kitsune (NDSS'18)** — AfterImage 增量统计（90 维特征）+ KitNET 自编码器集成。在线训练，无需标签。当链路层头部缺失（实时 NFQUEUE 场景）时，MAC 通道使用 `(protocol, ttl)` 代理键，避免方差退化为零。宽限期（`fm_grace_period`、`ad_grace_period`）允许在检测开始前先预热；此期间数据包只记录不拦截。
 - **LUCID (IEEE TNSM 2020)** — 在 10 包流窗口（每包 11 维特征）上跑的 1D CNN。默认关闭，需要训练好的模型，且在配置中设置 `engine.lucid.model_path`；权重用 `scripts/train_lucid.py` 生成（见下文"训练 LUCID"）。
 
-> **关于协议过滤：** 规则引擎的协议白名单只包含 TCP(6) 与 UDP(17)，凡是被它检查到的其他协议——包括 **ICMP(1)**——都会拦截。但在实时拦截中，只有 TCP 与 UDP 会被导入 NFQUEUE（`interception.intercept_icmp` 默认关闭），因此 ICMP 在那里**既不被检查、也不被拦截**：由主机自身的防火墙决定。把 `interception.intercept_icmp` 设为 true 才能让 ICMP 进入流水线，然后用 `engine.rule_engine.allowed_icmp_types` 按类型放行——整协议封禁会一并打断 Path MTU Discovery（type 3 "frag needed"），导致大连接被黑洞，所以有用的配置是"按类型放行"而不是一刀切封禁。**ICMPv6(58)** 在这份名单之外还有一个例外：维持链路本身的类型——邻居/路由器请求与通告（135/136/133/134）以及 "packet too big"（2）——永远放行。因为把邻居发现丢进队列再丢掉的主机，并没有拦住攻击者，只是把自己踢出了网络。ICMPv6 echo 不在此列，仍受协议过滤拦截（上面说的按类型放行只覆盖 ICMPv4）。离线 pcap 测试（`cli.py test --pcap`）确实会走到协议过滤，因为不论何种协议，包都会进入引擎。
+> **关于协议过滤：** 规则引擎的协议白名单只包含 TCP(6) 与 UDP(17)，凡是被它检查到的其他协议——包括 **ICMP(1)**——都会拦截。但在实时拦截中，只有 TCP 与 UDP 会被导入 NFQUEUE（`interception.intercept_icmp` 默认关闭），因此 ICMP 在那里**既不被检查、也不被拦截**：由主机自身的防火墙决定。
+>
+> 把 `interception.intercept_icmp` 设为 true 才能让 ICMP 进入流水线，然后用 `engine.rule_engine.allowed_icmp_types` 按类型放行。整协议封禁会一并打断 Path MTU Discovery（type 3 "frag needed"），导致大连接被黑洞——有用的配置是"按类型放行"，不是一刀切封禁。
+>
+> **ICMPv6(58)** 在这份名单之外还有一个例外：维持链路本身的类型——邻居/路由器请求与通告（135/136/133/134）以及 "packet too big"（2）——永远放行。因为把邻居发现丢进队列再丢掉的主机，并没有拦住攻击者，只是把自己踢出了网络。ICMPv6 echo 不在此列，仍受协议过滤拦截（上面说的按类型放行只覆盖 ICMPv4）。离线 pcap 测试（`cli.py test --pcap`）确实会走到协议过滤，因为不论何种协议，包都会进入引擎。
 
 ---
 
@@ -89,46 +93,7 @@ pip install -e ".[lucid]"     # 或：pip install tensorflow
 
 ### 3. 配置
 
-`config/config.yaml` 同时驱动引擎和实时拦截：
-
-- `engine.ml.enabled` / `engine.ml.detectors`：是否启用学习检测，以及挂载哪些检测器（内建短名，或 `包.模块:类名` 加一个 `params:` 块）。默认关闭。
-- `engine.kitsune.*`：宽限期、阈值百分位、learning_rate（传给 AfterImage）
-- `engine.lucid.model_path`：设置路径即启用 LUCID；空字符串表示禁用
-- `api.auth_token`：设置后启用认证；空字符串表示关闭认证（仅开发环境）
-- `api.host` / `api.port`：`python app.py` 的监听地址与端口
-- `interception.safe_ips`：添加永远不会被封禁的 IP（回环默认包含）
-- `interception.intercept_icmp` / `engine.rule_engine.allowed_icmp_types`：ICMP 策略（见上文协议过滤说明）
-- `storage.*`：事件库路径、行数上限与保留窗口（见"告警、审计与指标"）
-- `logging.*`：日志级别、轮转文件与 syslog 转发
-
-### 4. 运行 API
-
-```bash
-python app.py
-# /docs、/redoc 和 OpenAPI schema 在生产环境中全部关闭。
-```
-
-### 5. CLI
-
-```bash
-python cli.py start                  # 启动实时拦截（Linux，需 root）
-python cli.py stop                   # 停止实时拦截（通过 API）
-python cli.py status                 # 引擎状态
-python cli.py block 1.2.3.4          # 封禁某个 IP（POST /api/v1/rules/blacklist）
-python cli.py unblock 1.2.3.4        # 解封某个 IP（DELETE /api/v1/rules/blacklist/{ip}）
-python cli.py whitelist --ip 10.0.0.0/8   # 将某个子网加入白名单（拒绝 /0 默认路由）
-python cli.py unwhitelist --ip 10.0.0.0/8 # 从白名单移除
-python cli.py rules                  # 列出黑名单/白名单条目
-python cli.py reload                 # 把改过的 rules.json / 配置应用到运行中的引擎
-python cli.py alerts --last 20       # 查看已存储告警（最新在前，走 API）
-python cli.py alerts --source-ip 203.0.113.7 --action block
-python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
-python cli.py audit --last 20        # 谁改了哪条规则，结果如何
-python cli.py audit --result 401     # 被拒绝的管理请求
-python cli.py test --pcap sample.pcap  # 离线检测测试（无需 root）
-```
-
-#### 配置示例
+`config/config.yaml` 同时驱动引擎和实时拦截，运维真正会碰的几块：
 
 ```yaml
 interception:
@@ -158,9 +123,49 @@ api:
   auth_token: ""             # 空 = 关闭认证（仅开发）；NIPS_API_TOKEN 环境变量优先
   cors_origins:              # 显式白名单——不支持 "*"
     - "http://localhost:8000"
+    - "http://127.0.0.1:8000"
 ```
 
+| 配置键 | 作用 |
+| --- | --- |
+| `engine.ml.enabled` / `engine.ml.detectors` | 是否启用学习检测，以及挂载哪些检测器（内建短名，或 `包.模块:类名` 加一个 `params:` 块）。默认关闭。 |
+| `engine.kitsune.*` | 宽限期、阈值百分位、learning_rate（传给 AfterImage） |
+| `engine.lucid.model_path` | 设置路径即启用 LUCID；空字符串表示禁用 |
+| `api.auth_token` | 设置后启用认证；空字符串表示关闭认证（仅开发环境） |
+| `api.host` / `api.port` | `python app.py` 的监听地址与端口 |
+| `interception.safe_ips` | 添加永远不会被封禁的 IP（回环默认包含） |
+| `interception.intercept_icmp` / `engine.rule_engine.allowed_icmp_types` | ICMP 策略（见上文协议过滤说明） |
+| `storage.*` | 事件库路径、行数上限与保留窗口（见"告警、审计与指标"） |
+| `logging.*` | 日志级别、轮转文件与 syslog 转发 |
+
 `engine/start` 时 API/CLI 从该文件读取 `interception`、`engine`、`blocking`、`api` 各块并在运行时应用。文件缺失或格式错误时，各加载器回退到安全默认值（包含回环保护），不会崩溃。
+
+### 4. 运行 API
+
+```bash
+python app.py
+# /docs、/redoc 和 OpenAPI schema 在生产环境中全部关闭。
+```
+
+### 5. CLI
+
+```bash
+python cli.py start                  # 启动实时拦截（Linux，需 root）
+python cli.py stop                   # 停止实时拦截（通过 API）
+python cli.py status                 # 引擎状态
+python cli.py block 1.2.3.4          # 封禁某个 IP（POST /api/v1/rules/blacklist）
+python cli.py unblock 1.2.3.4        # 解封某个 IP（DELETE /api/v1/rules/blacklist/{ip}）
+python cli.py whitelist --ip 10.0.0.0/8   # 将某个子网加入白名单（拒绝 /0 默认路由）
+python cli.py unwhitelist --ip 10.0.0.0/8 # 从白名单移除
+python cli.py rules                  # 列出黑名单/白名单条目
+python cli.py reload                 # 把改过的 rules.json / 配置应用到运行中的引擎
+python cli.py alerts --last 20       # 查看已存储告警（最新在前，走 API）
+python cli.py alerts --source-ip 203.0.113.7 --action block
+python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
+python cli.py audit --last 20        # 谁改了哪条规则，结果如何
+python cli.py audit --result 401     # 被拒绝的管理请求
+python cli.py test --pcap sample.pcap  # 离线检测测试（无需 root）
+```
 
 ---
 
@@ -238,7 +243,7 @@ python cli.py signature delete ssh-brute
 `rules.json` 与 `config/config.yaml` 按 mtime 被监视，运行中的引擎最多 30 秒内拾取修改；`POST /api/v1/rules/reload`（或 `cli.py reload`）立即应用。无需重启——重启代价很高，因为 Kitsune 要从零重新训练。
 
 - `rules.json` 按**替换**语义应用，删掉的条目会真正停止生效（启动时是合并语义，只会新增）。
-- `engine.rule_engine.rate_limit.*` 与 `allowed_protocols` 在下一个包即生效。
+- `engine.rule_engine.rate_limit.*`、`allowed_protocols` 与 `allowed_icmp_types` 在下一个包即生效。
 - 文件损坏时整体拒绝：在线规则保持原样，`/api/v1/status` 的 `reload.failures` 上升，该次尝试以 `reload_failed` 记入审计。
 - 内核本来就不会执行的条目（回环 / `safe_ips`）与启动时一样被清理，并在 `dropped_unenforceable` 中报告。
 - Kitsune 的 `fm_grace_period`、`ad_grace_period`、`threshold_percentile`、`learning_rate` **不会**热应用——它们描述的是检测器如何训练，改动必须重启；重载摘要会列出这几项。
@@ -260,6 +265,7 @@ networksecurity/
     verdict.py                 # Verdict、Action、ThreatLevel 类型
     pipeline.py                # DetectionPipeline（多阶段链）
     rule_engine.py             # IP 黑名单/白名单、限速
+    signature_engine.py        # 声明式匹配规则：CIDR/协议/端口/TCP 标志 + 速率阈值
     block_policy.py            # BLOCK 判决升级：strike 累计 → 临时封禁 → 永久封禁
     kitsune/                   # Kitsune 异常检测器（NDSS'18）
       afterimage.py            # 90 维增量统计
@@ -289,11 +295,13 @@ networksecurity/
   utils/                       # 共享工具
     config.py                  # config.yaml 读取（engine / api / blocking / storage / logging 块）
     validation.py              # IP/CIDR 校验与黑名单拒绝规则
+    reload.py                  # ReloadProbe：对 rules.json + config.yaml 的 mtime 监视
 scripts/                       # 基准测试、评估与回归检查
   benchmark.py                 # 吞吐量 + 规则引擎准确率
   benchmark_nslkdd.py          # NSL-KDD 检测基准
   attack_simulation.py         # 大规模攻击模拟
   build_unsw_pcap.py           # 用内置 UNSW-NB15 流记录重建真实流量 pcap
+  live_nfqueue_topology.sh     # live NFQUEUE CI 任务用的无 root netns 拓扑
   train_lucid.py               # 训练 LUCID CNN 并产出 engine.lucid.model_path 指向的权重
   evaluate_pcap.py             # 端到端 pcap 评估（按攻击类别报告）
   verify_*.py                  # 模块回归检查，含 CI 的 FPR 守卫
@@ -327,7 +335,10 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 - 回环流量完全不进检测流水线——`lo` 接口到达的包在 NFQUEUE 规则之前就被 ACCEPT；回环源地址（`127.0.0.0/8`、`::1`）永远不会被永久封禁（本机流量不可能是攻击者；封掉 DNS stub `127.0.0.53` 会静默瘫痪本机域名解析）
 - 不动 SSH（22 端口）
 - 除非开启 `interception.intercept_icmp`，只把 TCP 与 UDP 导入 NFQUEUE；开启后由 `allowed_icmp_types` 决定引擎接受哪些 ICMP 类型（ICMPv6 链路维护类型始终放行）
-- 通过升级策略（`config.yaml` 的 `blocking:`）执行 BLOCK 判决，且**仅对 ML 检测器的 BLOCK 生效**。规则引擎的判决（黑名单命中、限速、协议过滤）是确定性的、已经逐包内联执行，因此不计 strike、不参与升级——这同时保证了操作员的黑名单条目永远不会被封禁生命周期改动。单次 ML BLOCK 只内联丢弃当前包，并给源 IP 计一次 strike。滚动窗口内累计达到 `strikes_threshold` 触发**临时封禁**——内核 DROP 加规则引擎黑名单*镜像*（带 TTL，到期自动解除；解除时只删除镜像，绝不触碰操作员自己的条目）；反复触发临时封禁会升级为**永久封禁**，写入 `rules.json`，下次启动时加载回规则引擎、在用户态逐包拦截——内核 DROP 本身**不会**被重新安装
+- 通过升级策略（`config.yaml` 的 `blocking:`）执行 BLOCK 判决，且**仅对 ML 检测器的 BLOCK 生效**。规则引擎的判决（黑名单命中、限速、协议过滤）是确定性的、已经逐包内联执行，因此不计 strike、不参与升级——这同时保证了操作员的黑名单条目永远不会被封禁生命周期改动。
+  - 单次 ML BLOCK 只内联丢弃当前包，并给源 IP 计一次 strike。
+  - 滚动窗口内累计达到 `strikes_threshold` 触发**临时封禁**——内核 DROP 加规则引擎黑名单*镜像*（带 TTL，到期自动解除；解除时只删除镜像，绝不触碰操作员自己的条目）。
+  - 反复触发临时封禁会升级为**永久封禁**，写入 `rules.json`，下次启动时加载回规则引擎、在用户态逐包拦截——内核 DROP 本身**不会**被重新安装。
 - 关闭时清除自己添加的所有 iptables 规则
 
 **双栈，且退化时如实报告。** IPv4 与 IPv6 的 TCP/UDP 都会被重定向进 NFQUEUE、解析（含 IPv6 扩展头链）并通过 `ip6tables` 拦截。若 `ip6tables` 不可用，拦截器照常启动，但会**拒绝**所有 IPv6 封禁而不是假装成功，并把这个缺口报出来：`/api/v1/status` 的 `ipv6_intercepted: false`、`/metrics` 的 `nips_ipv6_intercepted 0`。双栈主机上请确认这个指标——被静默跳过的第二个地址族，正是出事之前没人会注意到的那种缺口。
