@@ -696,11 +696,13 @@ interS._iptables = StubIptables()  # type: ignore[assignment]
 SHADOW_SRC = "198.51.100.70"
 handled = asyncio.run(interS._handle(pkt(SHADOW_SRC, 1_000_000.01), NO_DEADLINE))
 check("S1: a shadow BLOCK is not dropped inline", handled is False)
-check("S2: no strike, no kernel DROP, no mirror entry",
+check("S2: no strike, no kernel DROP, no mirror or persistent entry",
       policyS.get(SHADOW_SRC) is None
       and SHADOW_SRC not in interS._iptables.blocked
-      and SHADOW_SRC not in engineS.get_ephemeral_blacklist(),
-      f"record={policyS.get(SHADOW_SRC)} kernel={interS._iptables.blocked}")
+      and SHADOW_SRC not in engineS.get_ephemeral_blacklist()
+      and SHADOW_SRC not in engineS.get_blacklist(),
+      f"record={policyS.get(SHADOW_SRC)} kernel={interS._iptables.blocked} "
+      f"persistent={engineS.get_blacklist()}")
 check("S3: the shadow verdict reached on_verdict, ready for alerting",
       len(alertsS) == 1 and alertsS[0][1].action.value == "allow"
       and len(alertsS[0][1].metadata.get("shadow", [])) == 1

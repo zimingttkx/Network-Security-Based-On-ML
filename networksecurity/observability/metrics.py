@@ -78,9 +78,10 @@ def render_metrics(*, pipeline, store, interceptor, started_at: float) -> str:
                        1 if interceptor is not None and getattr(interceptor, "running", False) else 0))
     lines.append(_line("nips_detectors_total", len(status["detectors"])))
     for name in status["detectors"]:
-        lines.append(_line("nips_detector_state", 1, {"detector": str(name), "state": "registered"}))
-    for name in status.get("ml_shadow", []):
-        lines.append(_line("nips_detector_state", 1, {"detector": str(name), "state": "shadow"}))
+        # Mutually exclusive states: a shadow detector reports state="shadow"
+        # only, so summing by state never counts one detector twice.
+        state = "shadow" if name in status.get("ml_shadow", []) else "registered"
+        lines.append(_line("nips_detector_state", 1, {"detector": str(name), "state": state}))
     for name in status["broken_detectors"]:
         lines.append(_line("nips_detector_broken", 1, {"detector": str(name)}))
     if not status["broken_detectors"]:
