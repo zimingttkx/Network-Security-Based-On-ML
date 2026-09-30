@@ -75,6 +75,10 @@ def _parse_args() -> argparse.Namespace:
                     help="seed numpy before building the detector; KitNET's "
                          "autoencoders are otherwise initialised from the global "
                          "RNG, so the same capture scores differently each run")
+    ap.add_argument("--threshold-percentile", type=float, default=99.0,
+                    help="anomaly threshold percentile over the training RMSEs "
+                         "(lower = more sensitive: higher detection rate and "
+                         "higher false-positive rate)")
     return ap.parse_args()
 
 
@@ -98,7 +102,7 @@ async def _evaluate(args: argparse.Namespace) -> int:
     if args.seed is not None:
         np.random.seed(args.seed)
     pipeline = DetectionPipeline()
-    kitsune = KitsuneDetector()
+    kitsune = KitsuneDetector(threshold_percentile=args.threshold_percentile)
     # Grace periods must be set before the first packet is processed.
     kitsune.set_grace_periods(fm_grace_period=args.fm_grace,
                               ad_grace_period=args.ad_grace)
