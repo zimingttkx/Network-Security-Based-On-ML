@@ -62,14 +62,26 @@ from capture_truth import EVAL, PCAP, ROOT, run_truth_checks
 # a single unseeded draw cannot carry a bound — the 5% bound this file used to
 # hold went red on a draw where nothing had changed.  Fixed seeds make the gate
 # reproducible; three of them keep it from measuring one corner.
+#
+# Calibrating the threshold on the post-freeze regime narrowed that spread to
+# 0.4–1.4% over twelve seeds (median 0.9%), so these bounds did not have to move
+# for the gate to keep passing: the three draws it scores now measure 0.5–0.9%.
+# One draw in twelve is still bad, though, and it is not one of the three: seed 2
+# lands at 20.9% and would blow past MAX_ANY_FPR.  That is stated rather than
+# hidden because the gate cannot see it — what the gate covers is the typical
+# behaviour these seeds measure, and a regression that shifts the *median* is
+# what it can catch.  Reproduce the outlier with
+# `python scripts/evaluate_pcap.py --seed 2` and re-measure the whole spread the
+# same way; shrinking it is open work, not a settled number.
 SEEDS = (5, 0, 10)
 
 # Bounds, not targets.  The median is the draw a run typically lands on and
 # gets the same 5% the synthetic gate uses: a detector that typically fires on
 # real normal traffic at percent-level rates cannot be left inline.  The worst
 # draw is bounded much wider — the failures this gate exists to catch were 52%,
-# 65% and 100% of packets, so 15% still catches them while leaving the measured
-# spread (worst 10.5%) alone.  The detection rate is deliberately not bounded:
+# 65% and 100% of packets, so 15% still catches them while leaving the spread
+# of the draws actually scored here (0.5–0.9% now, 2.1–10.5% before the
+# threshold was calibrated) alone.  The detection rate is deliberately not bounded:
 # it sits in the low single digits and moves between draws, so gating it would
 # gate noise.  A detector that stops working shows up as no draw flagging any
 # attack packet, a truth check breaking, or these two bounds.

@@ -64,6 +64,7 @@ class Kitsune:
                  ad_grace_period: int = 50000,
                  learning_rate: float = 0.1,
                  threshold_percentile: float = 99.0,
+                 *,
                  calibration_packets: int | None = None):
         self.max_ae_size = max_autoencoder_size
         self.fm_grace = fm_grace_period
