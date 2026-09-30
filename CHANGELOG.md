@@ -15,6 +15,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `scripts/verify_detector_contract.py`: contract, switch, external mount, skipped-on-failure, and config-degradation checks.
 - Per-kind event-store write counters (`written_alerts` / `written_audit`) in `stats()`; the store-wide `written` total keeps its meaning, so `nips_alert_events_written_total` is unchanged.
 - `requirements-dev.txt` separating development/CI dependencies (Parquet engine, scapy) from the runtime install.
+- Shadow mode for ML detectors: a detector entry with `enforce: false` is consulted and its verdicts recorded — BLOCKs count into `total_shadow_blocked` on `/api/v1/status` and `nips_packets_shadow_blocked_total` on `/metrics`, and every shadow verdict reaches the alert trail as an `action=log` row prefixed `[shadow]` — but no packet is dropped, no strike is recorded and no chain exit is short-circuited. A healthy shadow detector counts as ML coverage for the fail-closed posture.
 - `preflight` gate that imports every production module in an environment built from `requirements.txt` alone — the class of gap where a dependency exists only in the CI install list.
 - Real-data evaluation scripts: UNSW-NB15 pcap reconstruction (`scripts/build_unsw_pcap.py`) and end-to-end per-category evaluation (`scripts/evaluate_pcap.py`); cross-module regression scripts (`scripts/verify_*.py`) including a post-training FPR regression assertion in CI (`scripts/verify_fpr_regression.py`).
 - Large-scale attack simulation script (`scripts/attack_simulation.py`) for benchmarking detection efficacy across attack categories.
@@ -23,6 +24,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - Learning detection is off by default (`engine.ml.enabled: false`). The distinction is now explicit: switching it off is a decision, so packets the rule engine does not decide are allowed; having it on and unable to run is an outage, so those packets are dropped as before.
+- Removed `DetectionPipeline(short_circuit_on_block=...)`: a constructor flag no caller passed and no config key reached, whose "strongest-confidence BLOCK wins" semantics are unsound across detectors (an RMSE ratio and a probability are not comparable). Shadow mode (`enforce: false`) is the supported way to let detectors observe without deciding.
 - A detector mounted without its model (`ready: false`) is no longer registered and no longer counts as ML coverage. It used to answer `LOG`, which both ended the chain and made the pipeline believe detection had run — enough for a tripped live detector behind it to disable fail-closed silently.
 - `/api/v1/status` passes `pipeline.status()` through instead of copying fields one by one, and splits detector state into `ml_enabled` / `ml_consulted` / `ml_idle` plus a per-detector `detector_status` (a detector's own `status()` output, contained if it raises), so "not deployed", "could not run", "warming up" and "running" are no longer the same sentence.
 - README's `## Benchmarks` became `## Measured results and limits`: every number now carries the command that reproduces it.

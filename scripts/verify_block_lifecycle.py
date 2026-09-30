@@ -678,6 +678,58 @@ check("H2a: an in-time verdict still escalates (threshold=1)",
       f"blocked={interH._iptables.blocked} "
       f"ephemeral={engineH.get_ephemeral_blacklist()}")
 
+# ---------------------------------------------------------------- S
+print()
+print("=" * 60)
+print("S: shadow detectors reach the interceptor but never enforce")
+print("=" * 60)
+engineS = RuleEngine()
+pipelineS = DetectionPipeline(rule_engine=engineS)
+pipelineS.add_detector(Blocker(name="ShadowML"), enforce=False)
+alertsS: list = []
+policyS = BlockPolicy(strikes_threshold=1, temp_ban_seconds=600.0,
+                      temp_ban_count_to_perm=99, now=Clock())
+interS = Interceptor(pipelineS, block_policy=policyS,
+                     on_verdict=lambda p_, v: alertsS.append((p_.src_ip, v)))
+interS._iptables = StubIptables()  # type: ignore[assignment]
+
+SHADOW_SRC = "198.51.100.70"
+handled = asyncio.run(interS._handle(pkt(SHADOW_SRC, 1_000_000.01), NO_DEADLINE))
+check("S1: a shadow BLOCK is not dropped inline", handled is False)
+check("S2: no strike, no kernel DROP, no mirror entry",
+      policyS.get(SHADOW_SRC) is None
+      and SHADOW_SRC not in interS._iptables.blocked
+      and SHADOW_SRC not in engineS.get_ephemeral_blacklist(),
+      f"record={policyS.get(SHADOW_SRC)} kernel={interS._iptables.blocked}")
+check("S3: the shadow verdict reached on_verdict, ready for alerting",
+      len(alertsS) == 1 and alertsS[0][1].action.value == "allow"
+      and len(alertsS[0][1].metadata.get("shadow", [])) == 1
+      and alertsS[0][1].metadata["shadow"][0]["reason"] == "anomaly",
+      f"verdict={alertsS[0][1].action.value if alertsS else None} "
+      f"metadata={alertsS[0][1].metadata if alertsS else None}")
+
+# S4: shadow in front of an enforcer — the strike comes from the enforcer
+# alone, and the shadow verdict still rides to the caller.
+pipelineS4 = DetectionPipeline(rule_engine=RuleEngine())
+pipelineS4.add_detector(Blocker(name="ShadowML"), enforce=False)
+pipelineS4.add_detector(Blocker(name="EnforcingML"))
+alertsS4: list = []
+policyS4 = BlockPolicy(strikes_threshold=2, temp_ban_seconds=600.0,
+                       temp_ban_count_to_perm=99, now=Clock())
+interS4 = Interceptor(pipelineS4, block_policy=policyS4,
+                      on_verdict=lambda p_, v: alertsS4.append(v))
+interS4._iptables = StubIptables()  # type: ignore[assignment]
+ENF_SRC = "198.51.100.71"
+handled4 = asyncio.run(interS4._handle(pkt(ENF_SRC, 1_000_001.0), NO_DEADLINE))
+rec4 = policyS4.get(ENF_SRC)
+check("S4: shadow + enforcer -> the enforcer's BLOCK decides, one strike",
+      handled4 is True and len(alertsS4) == 1
+      and alertsS4[0].detector == "EnforcingML"
+      and len(alertsS4[0].metadata.get("shadow", [])) == 1
+      and rec4 is not None and rec4.strikes == 1,
+      f"verdict={alertsS4[0].detector if alertsS4 else None} "
+      f"strikes={rec4.strikes if rec4 else None}")
+
 print()
 print("=" * 60)
 print("RESULT:", "ALL FIXES VERIFIED" if ok else "FAILURES PRESENT (see FAIL lines)")

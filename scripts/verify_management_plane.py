@@ -105,6 +105,43 @@ def main() -> int:
           and on.status()["ml_consulted"] == ["KitsuneDetector"],
           f"mounted={mounted} consulted={on.status()['ml_consulted']}")
 
+    # -- shadow mode is visible on the operator's two screens -----------------
+    # A detector mounted with enforce=false never blocks, so its only trace is
+    # what the operator can read: the status keys and the metrics series.
+    from networksecurity.engine import PacketInfo as _PI
+    from networksecurity.engine.detector import BaseDetector as _BD
+    from networksecurity.engine.verdict import Action as _A, Verdict as _V
+    from networksecurity.observability.metrics import render_metrics
+
+    class _ShadowBlocker(_BD):
+        def __init__(self):
+            super().__init__(name="ShadowBlocker")
+
+        async def process_packet(self, packet):
+            return _V(_A.BLOCK, 0.9, reason="shadow probe", detector=self.name)
+
+    spipe = DetectionPipeline(RuleEngine())
+    spipe.add_detector(_ShadowBlocker(), enforce=False)
+    _sv = asyncio.run(spipe.process_packet(
+        _PI(src_ip="203.0.113.99", dst_ip="10.0.0.1", src_port=1, dst_port=80,
+            protocol=6, packet_size=60, timestamp=1000.0)))
+    sshadow = spipe.status()
+    check("shadow verdicts counted separately and named in status",
+          _sv.action.value == "allow" and sshadow["total_shadow_blocked"] == 1
+          and sshadow["total_blocked"] == 0
+          and sshadow["ml_shadow"] == ["ShadowBlocker"],
+          f"verdict={_sv.action.value} blocked={sshadow['total_blocked']} "
+          f"shadow_blocked={sshadow['total_shadow_blocked']} "
+          f"ml_shadow={sshadow['ml_shadow']}")
+
+    rendered = render_metrics(pipeline=spipe, store=appmod.event_store,
+                              interceptor=None, started_at=time.time())
+    check("shadow counters render on /metrics",
+          "nips_packets_shadow_blocked_total 1" in rendered
+          and 'state="shadow"' in rendered,
+          f"counter={'nips_packets_shadow_blocked_total 1' in rendered} "
+          f"state_line={'state=\"shadow\"' in rendered}")
+
     with TestClient(appmod.app) as c:
         check("/health open", c.get("/health").status_code == 200)
         for path in ("/docs", "/redoc", "/openapi.json"):

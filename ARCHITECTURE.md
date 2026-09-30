@@ -240,9 +240,13 @@ engine:
     detectors:
       - uses: networksecurity.engine.threshold_detector:ThresholdDetector
         params: {window_seconds: 5, max_packets: 1000}
+      - uses: kitsune
+        enforce: false        # shadow mode
 ```
 
 `uses` is a built-in short name (`kitsune`, `lucid` — those read their tuning from the `engine.kitsune` / `engine.lucid` blocks) or a `package.module:ClassName` path. A detector that cannot be constructed or configured is logged and skipped: one bad entry must not stop the management plane from starting.
+
+`enforce: false` is a **mount-level** key, consumed by the assembly like `enabled` and never passed to the detector's `configure()`. It mounts the detector in shadow mode: every verdict it returns is recorded — BLOCKs bump `total_shadow_blocked` on `/api/v1/status` and `nips_packets_shadow_blocked_total` on `/metrics`, and all of them ride to the caller in `metadata["shadow"]`, where the interceptor's verdict callback writes them into the alert trail as `action=log` rows prefixed `[shadow]` — and the chain moves on exactly as if the detector had abstained. Two properties are load-bearing: a shadow verdict **never ends the chain** (otherwise a shadow detector mounted in front of an enforcing one would shield it from every packet), and a shadow BLOCK **never reaches the escalation policy** (no strikes, no kernel bans). Shadow mode is how a detector earns enforcement: run it on real traffic, read who it *would* have blocked, then flip `enforce` when the numbers justify it.
 
 `networksecurity/engine/threshold_detector.py` is the worked example — small, deterministic, and complete enough to copy.
 
@@ -254,6 +258,7 @@ engine:
 | ML on, and **no** `ready` detector could execute (all raised, or all tripped) | **DROP** — an outage must not quietly become an open port |
 | ML on, one detector dead but another ready one abstained | **ALLOW** — the surviving detector is the coverage; a partial outage is not a total one |
 | ML on, but only `ready: false` detectors were mounted | **ALLOW**, loudly: the startup log says no detector was mounted |
+| ML on, only shadow (`enforce: false`) detectors mounted, and they ran | **ALLOW** — a healthy shadow detector is coverage: it looked at the packet and recorded what it saw |
 
 Two of these rows used to be one, and wrong. An adapter with no model answered `LOG` rather than abstaining, which both ended the chain and counted as coverage — so a tripped live detector behind it switched fail-closed off silently while the status page still listed three detectors. `ready` exists to keep "not deployed", "could not run" and "running" from collapsing into the same sentence.
 

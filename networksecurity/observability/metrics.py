@@ -17,8 +17,12 @@ _HEADER = """# HELP nips_up Whether the NIPS management API is responding.
 # TYPE nips_packets_processed_total counter
 # HELP nips_packets_blocked_total Packets carrying a BLOCK verdict.
 # TYPE nips_packets_blocked_total counter
+# HELP nips_packets_shadow_blocked_total BLOCK verdicts from shadow-mode (enforce: false) detectors — recorded, never enforced.
+# TYPE nips_packets_shadow_blocked_total counter
 # HELP nips_detector_broken ML detectors the circuit breaker has taken out of service.
 # TYPE nips_detector_broken gauge
+# HELP nips_detector_state Registered ML detectors by state (registered/broken/shadow).
+# TYPE nips_detector_state gauge
 # HELP nips_detection_unavailable_drops_total Packets dropped fail-closed because no ML detector ran.
 # TYPE nips_detection_unavailable_drops_total counter
 # HELP nips_nfqueue_parse_failed_total Frames the parser rejected and dropped fail-closed.
@@ -68,11 +72,15 @@ def render_metrics(*, pipeline, store, interceptor, started_at: float) -> str:
     lines.append(_line("nips_uptime_seconds", round(now - started_at, 3)))
     lines.append(_line("nips_packets_processed_total", status["total_processed"]))
     lines.append(_line("nips_packets_blocked_total", status["total_blocked"]))
+    lines.append(_line("nips_packets_shadow_blocked_total",
+                       status.get("total_shadow_blocked", 0)))
     lines.append(_line("nips_interception_active",
                        1 if interceptor is not None and getattr(interceptor, "running", False) else 0))
     lines.append(_line("nips_detectors_total", len(status["detectors"])))
     for name in status["detectors"]:
         lines.append(_line("nips_detector_state", 1, {"detector": str(name), "state": "registered"}))
+    for name in status.get("ml_shadow", []):
+        lines.append(_line("nips_detector_state", 1, {"detector": str(name), "state": "shadow"}))
     for name in status["broken_detectors"]:
         lines.append(_line("nips_detector_broken", 1, {"detector": str(name)}))
     if not status["broken_detectors"]:

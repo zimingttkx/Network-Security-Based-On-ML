@@ -333,9 +333,11 @@ def load_ml_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
     fail-closed drop — which is what turning ML *on* opts into.
 
     ``detectors`` entries are ``{uses: kitsune | lucid | package.mod:Class,
-    enabled: true, params: {}}``.  Built-ins read their own tuning from
-    ``engine.kitsune`` / ``engine.lucid``; ``params`` goes to a third-party
-    detector's ``configure()`` unchanged.
+    enabled: true, enforce: true, params: {}}``.  Built-ins read their own
+    tuning from ``engine.kitsune`` / ``engine.lucid``; ``params`` goes to a
+    third-party detector's ``configure()`` unchanged.  ``enforce: false``
+    mounts the detector in shadow mode: it is consulted and its verdicts
+    recorded, but they never block, escalate, or end the detection chain.
     """
     data = _load_mapping(path)
     ml = _as_mapping(_as_mapping(data, "engine"), "ml")
@@ -371,7 +373,13 @@ def load_ml_config(path: str | Path = _DEFAULT_CONFIG_PATH) -> dict:
             logger.warning("detector %r: enabled=%r is not a bool; using true",
                            uses, flag)
             flag = True
-        detectors.append({"uses": uses, "params": params, "enabled": bool(flag)})
+        enforce = item.get("enforce", True)
+        if not isinstance(enforce, bool):
+            logger.warning("detector %r: enforce=%r is not a bool; using true "
+                           "(enforcing)", uses, enforce)
+            enforce = True
+        detectors.append({"uses": uses, "params": params, "enabled": bool(flag),
+                          "enforce": bool(enforce)})
 
     return {"enabled": enabled, "detectors": detectors}
 
