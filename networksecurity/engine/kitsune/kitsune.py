@@ -146,7 +146,10 @@ class Kitsune:
 
         if is_training and self.packet_count % _WARMUP_LOG_INTERVAL == 0:
             calibrating = self.kitnet.calibration_packets if self.kitnet else 0
-            total = self.fm_grace + self.ad_grace
+            # The calibration window is abstaining too, so both the percentage
+            # and the start packet have to count it; quoting the grace periods
+            # alone tells an operator detection is live 5 000 packets early.
+            total = self.fm_grace + self.ad_grace + calibrating
             logger.warning(
                 "Kitsune still training: abstaining on every packet, so all "
                 "traffic is being allowed through (%d/%d packets, %.1f%%); "

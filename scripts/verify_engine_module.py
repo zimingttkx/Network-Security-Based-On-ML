@@ -557,6 +557,35 @@ async def main():
            f"calibrated {flags}/{len(shifted)}, legacy {legacy_flags}/{len(shifted)} "
            f"(both must react: calibration must not become a detector that never fires)")
 
+    # K12: /api/v1/status carries threshold_source, so "which ruler is this
+    # operating point on" is an operator-visible claim — it must never name a
+    # regime that has not been scored yet.  The legacy mode used to answer
+    # "calibration" from the first second of warm-up, with no threshold at all.
+    def _source_trail(calibration_packets):
+        probe = KitNET(input_dim=30, fm_grace_period=300, ad_grace_period=4000,
+                       calibration_packets=calibration_packets,
+                       threshold_percentile=99.0)
+        trail = {0: (probe.threshold_source, probe.threshold)}
+        for i, x in enumerate(station[:6400], start=1):
+            probe.process(x)
+            if i in (4300, 4301, 5000, 6300):
+                trail[i] = (probe.threshold_source, probe.threshold)
+        return trail
+
+    cal_trail = _source_trail(2000)
+    legacy_trail = _source_trail(0)
+    ok = (cal_trail[0] == ("pending", None)
+          and cal_trail[4301] == ("pending", None)   # frozen, nothing scored yet
+          and cal_trail[5000] == ("pending", None)   # mid calibration window
+          and cal_trail[6300][0] == "calibration" and cal_trail[6300][1] is not None
+          and legacy_trail[0] == ("pending", None)
+          and legacy_trail[4300] == ("pending", None)
+          and legacy_trail[4301][0] == "training" and legacy_trail[4301][1] is not None
+          and all(src != "calibration" for src, _ in legacy_trail.values()))
+    report("K12 threshold_source never names a regime that has not been scored", not ok,
+           f"calibrated: " + ", ".join(f"{i}={s}" for i, (s, _) in cal_trail.items())
+           + "; legacy: " + ", ".join(f"{i}={s}" for i, (s, _) in legacy_trail.items()))
+
     # --- L1-L6: lucid adapter interface --------------------------------------
     from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
     from networksecurity.engine.lucid.dataset_parser import LucidDatasetParser

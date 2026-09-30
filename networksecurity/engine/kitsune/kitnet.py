@@ -231,7 +231,11 @@ class KitNET:
         self.calib_scores: list[float] = []
         self.is_calibrated = self.calibration_packets == 0
         self._freeze_done = False
-        self.threshold_source = "calibration" if self.is_calibrated else "pending"
+        # Nothing has been scored yet, in either mode: the legacy path is
+        # labelled "training" at the freeze, the calibrated one at the end of
+        # its window.  Reporting a source before it exists would put a regime
+        # name on `/api/v1/status` that the threshold cannot have come from.
+        self.threshold_source = "pending"
     
     def _build_feature_map(self, X: np.ndarray):
         """Build feature map via correlation clustering."""
