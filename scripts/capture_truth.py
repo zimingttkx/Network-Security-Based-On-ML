@@ -316,6 +316,40 @@ def ensure_capture() -> list[str]:
     return []
 
 
+def check_buckets_are_portable() -> list[str]:
+    """--buckets adds a reading of the same run; it must not move a field.
+
+    The nightly gate parses this summary by first regex match, so a bucket block
+    that reused one of those labels would silently change what the gate reads —
+    a green pipeline measuring a different number than before.  Same 200 packets
+    both ways: every gated label appears exactly once, and the default summary
+    stays exactly as silent about buckets as it always was.
+    """
+    base = [sys.executable, str(EVAL), "--fm-grace", str(PROBE_FM_GRACE),
+            "--ad-grace", str(PROBE_AD_GRACE), "--limit", str(PROBE_LIMIT)]
+    plain = _run(base, timeout=900)
+    bucketed = _run(base + ["--buckets", "7"], timeout=900)
+    if plain.returncode or bucketed.returncode:
+        return [f"the evaluator exited {plain.returncode}/{bucketed.returncode} "
+                f"with/without --buckets: {_tail(bucketed) or _tail(plain)}"]
+
+    bad: list[str] = []
+    for label in ("pcap packets processed", "Kitsune trained", "unmatched packets",
+                  "TP=", "false positive rate", "detection rate (TPR)",
+                  "block reasons"):
+        seen = bucketed.stdout.count(label)
+        if seen != 1:
+            bad.append(f"the bucketed summary contains {label!r} {seen} times; the "
+                       f"gate's first match would read an ambiguous summary")
+    if "drift profile" not in bucketed.stdout:
+        bad.append("--buckets printed no drift profile")
+    if "drift profile" in plain.stdout:
+        bad.append("the default summary grew a drift profile nobody asked for")
+    if not bad:
+        print("buckets        : --buckets leaves every gated field unambiguous")
+    return bad
+
+
 def run_truth_checks() -> list[str]:
     """Every cheap truth check, in one place.  Empty list means all passed."""
     bad = ensure_capture()
@@ -325,6 +359,7 @@ def run_truth_checks() -> list[str]:
     records = list(by_key.values())
     bad = check_answer_key(records, wire_flows())
     bad += check_evaluator_refuses()
+    bad += check_buckets_are_portable()
     meta = json.loads(SIDECAR.read_text(encoding="utf-8"))
     print(f"capture        : {meta['capture']} (builder seed {meta['seed']}, "
           f"source {Path(meta['source']).name})")

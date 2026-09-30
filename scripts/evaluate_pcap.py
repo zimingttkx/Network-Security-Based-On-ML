@@ -57,6 +57,42 @@ DEFAULT_PCAP = "datasets/unsw-nb15/unsw_reconstructed.pcap"
 FM_GRACE, AD_GRACE = 5_000, 50_000  # config/config.yaml defaults
 
 
+def _print_drift_buckets(samples: list[tuple[float, bool]], buckets: int) -> None:
+    """Report the flagged fraction per equal-width time bucket.
+
+    Aggregate flag rate cannot tell the two failure shapes apart: a threshold
+    calibrated on the wrong distribution is wrong from the first post-training
+    packet, while drift after the freeze starts low and climbs.  Printed after
+    every field the nightly gate parses, and deliberately carrying none of
+    those labels, so adding it changes no existing reading.
+    """
+    if not samples:
+        return
+    first, last = samples[0][0], samples[-1][0]
+    span = last - first
+    if span <= 0:  # a capture with one timestamp: bucket by arrival order
+        edges = [len(samples) * i // buckets for i in range(buckets + 1)]
+        groups = [(samples[edges[i]:edges[i + 1]], i * 1.0) for i in range(buckets)]
+    else:
+        groups = []
+        for i in range(buckets):
+            lo, hi = first + span * i / buckets, first + span * (i + 1) / buckets
+            rows = [s for s in samples if lo <= s[0] < hi or (i == buckets - 1 and s[0] == last)]
+            groups.append((rows, lo - first))
+    print(f" drift profile          : {buckets} buckets over {span:.1f}s "
+          f"of post-training traffic")
+    shown = 0
+    for (rows, offset), i in zip(groups, range(buckets)):
+        if not rows:
+            continue
+        flagged = sum(1 for _, f in rows if f)
+        print(f"   bucket {i + 1:>2} t+{offset:>7.1f}s  {flagged:>6}/{len(rows):<6} "
+              f"flagged ({flagged / len(rows) * 100:.1f}%)")
+        shown += 1
+    if shown < 2:
+        print("   (fewer than two populated buckets — no shape to read)")
+
+
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--pcap", default=DEFAULT_PCAP, help="capture to evaluate")
@@ -79,12 +115,22 @@ def _parse_args() -> argparse.Namespace:
                     help="anomaly threshold percentile over the training RMSEs "
                          "(lower = more sensitive: higher detection rate and "
                          "higher false-positive rate)")
+    ap.add_argument("--buckets", type=int, default=0,
+                    help="split the post-training window into N time buckets and "
+                         "report the flagged fraction per bucket (0 = off; the "
+                         "default output is then byte-identical).  A flat profile "
+                         "says the threshold was mis-calibrated from the first "
+                         "packet; a rising one says the model drifted after it "
+                         "froze")
     return ap.parse_args()
 
 
 async def _evaluate(args: argparse.Namespace) -> int:
     if args.no_labels and args.labels:
         print("ERROR: --no-labels and --labels are mutually exclusive", file=sys.stderr)
+        return 2
+    if args.buckets < 0:
+        print("ERROR: --buckets must be 0 (off) or a positive count", file=sys.stderr)
         return 2
 
     labels_by_key = None
@@ -121,6 +167,10 @@ async def _evaluate(args: argparse.Namespace) -> int:
     post_block = {"attack": 0, "normal": 0}
     per_cat: dict[str, list[int]] = {}  # category -> [blocked, total]
     reasons: Counter[str] = Counter()
+    # (timestamp, flagged) per post-training packet, kept only for --buckets:
+    # the drift-vs-miscalibration question is answered by the *shape* of this
+    # series, which the aggregate flag rate above cannot show.
+    samples: list[tuple[float, bool]] = []
     t0 = time.monotonic()
 
     async for pkt_dict in loader.load(args.pcap):
@@ -141,6 +191,8 @@ async def _evaluate(args: argparse.Namespace) -> int:
         if n > train_end:
             counted += 1
             blocked = verdict.action.value == "block"
+            if args.buckets:
+                samples.append((packet.timestamp, blocked))
             if blocked:
                 blocked_total += 1
                 reasons[verdict.reason.split("(")[0].strip()] += 1
@@ -203,6 +255,8 @@ async def _evaluate(args: argparse.Namespace) -> int:
                 print(f"   {cat:<14} {blocked}/{total} attack packets blocked "
                       f"({blocked / max(1, total) * 100:.1f}%)")
         print(f" block reasons          : {dict(reasons)}")
+    if args.buckets:
+        _print_drift_buckets(samples, args.buckets)
     print(f" pipeline counters      : processed={pipeline.total_processed} "
           f"blocked={pipeline.total_blocked}")
     print("=======================================================")
