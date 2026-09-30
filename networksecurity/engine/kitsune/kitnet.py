@@ -146,12 +146,27 @@ class KitNET:
 
     After the two grace periods the model keeps training on packets it scores
     as normal, so the baseline follows slow drift without absorbing attacks.
+
+    Before it can score anything it calibrates: once the grace periods end and
+    the normalisation is frozen, the next ``calibration_packets`` samples are
+    scored under the conditions detection will actually run in, and the
+    threshold is their percentile.  Taking that number from the *training* pass
+    instead — as this model used to — compares scores made on a scale that was
+    still moving, against scores made on a frozen one.  On a real capture that
+    mismatch flagged 89% of ordinary traffic in the very first bucket after
+    training, and no threshold percentile short of 99.99 could undo it.
     """
+
+    #: Calibration window as a fraction of the AD grace period.  A fraction, not
+    #: a constant packet count, so that shortened grace periods (unit tests,
+    #: small captures) still get a proportionate window instead of a blind one.
+    CALIBRATION_FRACTION = 0.1
 
     def __init__(self, input_dim: int, max_autoencoder_size: int = 10,
                  fm_grace_period: int = 5000, ad_grace_period: int = 50000,
                  learning_rate: float = 0.1, hidden_ratio: float = 0.75,
-                 threshold_percentile: float = 99.0):
+                 threshold_percentile: float = 99.0,
+                 calibration_packets: int | None = None):
         """
         Args:
             input_dim: Input feature dimension.
@@ -160,6 +175,12 @@ class KitNET:
             ad_grace_period: Anomaly detection training period (packets).
             learning_rate: Learning rate.
             hidden_ratio: Hidden layer ratio.
+            threshold_percentile: Percentile of the calibration scores that
+                becomes the anomaly threshold.
+            calibration_packets: Packets scored after the freeze to calibrate
+                that threshold.  None derives ``CALIBRATION_FRACTION`` of the AD
+                grace; 0 keeps the legacy threshold taken from the training
+                pass, which is what the drift study compares against.
         """
         self.input_dim = input_dim
         self.max_ae_size = max_autoencoder_size
@@ -199,6 +220,18 @@ class KitNET:
         # Anomaly threshold
         self.threshold = None
         self.rmse_history: list[float] = []
+
+        # Post-freeze calibration.  Scores taken here are produced by the exact
+        # weights and normalisation detection will use, on samples those weights
+        # were not trained on — so the percentile means what the detector will
+        # actually flag.
+        if calibration_packets is None:
+            calibration_packets = int(self.ad_grace * self.CALIBRATION_FRACTION)
+        self.calibration_packets = max(0, calibration_packets)
+        self.calib_scores: list[float] = []
+        self.is_calibrated = self.calibration_packets == 0
+        self._freeze_done = False
+        self.threshold_source = "calibration" if self.is_calibrated else "pending"
     
     def _build_feature_map(self, X: np.ndarray):
         """Build feature map via correlation clustering."""
@@ -310,8 +343,9 @@ class KitNET:
             self.rmse_history.append(rmse)
             return 0.0
 
-        # Training complete — set threshold
-        if not self.is_ad_done:
+        # Training complete — freeze the scale, then decide where the threshold
+        # comes from.
+        if not self.is_ad_done and not self._freeze_done:
             # Freeze the output layer's input normalization on the exact
             # statistics the output AE was trained against; detection-phase
             # inputs are z-scored with this frozen fit (original KitNET
@@ -323,15 +357,42 @@ class KitNET:
                 self.output_ae.norm_std = std
                 self.output_ae.is_fitted = True
             self._out_frozen = (self.output_ae.norm_mean, self.output_ae.norm_std)
-            if self.rmse_history:
-                self.threshold = np.percentile(
-                    self.rmse_history, self.threshold_percentile
-                )
+            self._freeze_done = True
+
+            if self.calibration_packets:
+                self.rmse_history = []
+                logger.info("KitNET: normalization frozen, calibrating the "
+                            "threshold over the next %d packets",
+                            self.calibration_packets)
             else:
-                self.threshold = 1.0
-            self.rmse_history = []
-            self.is_ad_done = True
-            logger.info("KitNET: training complete, threshold=%.4f", self.threshold)
+                # Legacy escape hatch: take the percentile of the training pass.
+                # Those scores were produced while the scale was still moving,
+                # which is the mismatch the calibration window exists to remove.
+                self.threshold = (np.percentile(self.rmse_history,
+                                                self.threshold_percentile)
+                                  if self.rmse_history else 1.0)
+                self.rmse_history = []
+                self.threshold_source = "training"
+                self.is_ad_done = True
+                logger.warning("KitNET: calibration disabled — threshold=%.4f "
+                               "taken from the training pass", self.threshold)
+
+        # Calibration window: score without training and without flagging, so
+        # the samples the threshold is derived from are the first the frozen
+        # model has never seen.  Until it is full the detector has no threshold,
+        # which reads as still training — it is warm-up, not an outage.
+        if not self.is_calibrated:
+            self.calib_scores.append(self._execute(x))
+            if len(self.calib_scores) >= self.calibration_packets:
+                self.threshold = float(np.percentile(
+                    self.calib_scores, self.threshold_percentile))
+                self.threshold_source = "calibration"
+                self.calib_scores = []
+                self.is_calibrated = True
+                self.is_ad_done = True
+                logger.info("KitNET: threshold=%.4f calibrated on %d post-freeze "
+                            "packets", self.threshold, self.calibration_packets)
+            return 0.0
 
         # Run detection.  Keep adapting on traffic the model considers normal
         # so the score tracks slow drift in the baseline; a packet that scores
@@ -403,5 +464,8 @@ class KitNET:
             'is_fm_done': self.is_fm_done,
             'is_ad_done': self.is_ad_done,
             'threshold': self.threshold,
+            'threshold_source': self.threshold_source,
+            'is_calibrated': self.is_calibrated,
+            'calibration_packets': self.calibration_packets,
             'n_ensembles': len(self.ensemble) if self.ensemble else 0
         }

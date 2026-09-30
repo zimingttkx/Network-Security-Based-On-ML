@@ -207,8 +207,27 @@ Kitsune uses **online unsupervised learning** — no offline dataset required:
 
 1. Deploy system on production host during normal traffic period
 2. KitNET auto-trains over first ~55,000 packets (fm_grace + ad_grace)
-3. After training, threshold set at 99th percentile of RMSE
+3. The output layer's input normalisation then **freezes**, and the next 10% of
+   the AD grace (5,000 packets at the shipped setting) is spent **calibrating**
+   the threshold: those packets are scored, not trained on, not flagged, and
+   not counted — the detector abstains through them the way it abstains through
+   the grace periods. The threshold is the configured percentile of those
+   scores.
 4. System transitions to detection mode automatically
+
+Step 3 exists because of a measured failure. The threshold used to be the
+percentile of the RMSEs seen *during* the AD grace, but those scores were
+produced while the normalisation was still being updated; detection then applies
+them to scores produced after it froze. On a real capture that mismatch put the
+operating point in the middle of the traffic's own distribution: **89% of
+ordinary packets were flagged in the first bucket after training**, and no
+percentile short of 99.99 undid it (a stationary synthetic stream does not
+reproduce this — the variety that triggers it comes from AfterImage's per-host
+statistics on real traffic, so the evidence is the capture, not a fixture).
+Calibrating on the frozen regime removed it: the same capture now flags
+**0 of 47,115** post-warm-up packets, and a stationary synthetic stream flags
+1.00% at p99 — the percentile means what it says (`verify_engine_module.py`
+K10, with K11 guarding that a genuine shift is still caught).
 
 LUCID requires **offline supervised training** on labeled DDoS datasets:
 
@@ -261,6 +280,8 @@ engine:
 | ML on, only shadow (`enforce: false`) detectors mounted, and they ran | **ALLOW** — a healthy shadow detector is coverage: it looked at the packet and recorded what it saw |
 
 Two of these rows used to be one, and wrong. An adapter with no model answered `LOG` rather than abstaining, which both ended the chain and counted as coverage — so a tripped live detector behind it switched fail-closed off silently while the status page still listed three detectors. `ready` exists to keep "not deployed", "could not run" and "running" from collapsing into the same sentence.
+
+A consequence of the same short-circuit deserves stating because it is easy to be surprised by: **a rule layer that blocks most traffic also starves the learning detectors of training samples.** Kitsune learns from every packet the chain shows it, and a packet decided by the rule engine never reaches it. Measured on a bidirectional capture where one source's UDP tunnel tripped the per-source rate limit on 91% of packets, KitNET saw too few packets to ever leave warm-up — it reported `trained: false` the whole time, correctly, and the pipeline stayed rules-only in effect while the config said ML was on. That is the chain behaving as specified, not a bug: if you turn ML on to learn from your traffic, look at `rule_engine` block counts first, because those are the samples the detector will never get.
 
 ### Do NOT
 

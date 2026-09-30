@@ -63,12 +63,16 @@ class Kitsune:
                  fm_grace_period: int = 5000,
                  ad_grace_period: int = 50000,
                  learning_rate: float = 0.1,
-                 threshold_percentile: float = 99.0):
+                 threshold_percentile: float = 99.0,
+                 calibration_packets: int | None = None):
         self.max_ae_size = max_autoencoder_size
         self.fm_grace = fm_grace_period
         self.ad_grace = ad_grace_period
         self.learning_rate = learning_rate
         self.threshold_percentile = threshold_percentile
+        # None = derive from the AD grace at KitNET construction, so an override
+        # of the grace periods drags the calibration window along with it.
+        self.calibration_packets = calibration_packets
 
         # Components
         self.afterimage = AfterImage()
@@ -88,6 +92,7 @@ class Kitsune:
             ad_grace_period=self.ad_grace,
             learning_rate=self.learning_rate,
             threshold_percentile=self.threshold_percentile,
+            calibration_packets=self.calibration_packets,
         )
         self.is_initialized = True
         logger.info("Kitsune: KitNET initialized, feature_dim=%d", feature_dim)
@@ -139,13 +144,16 @@ class Kitsune:
         is_anomaly = self.kitnet.is_anomaly(rmse) if not is_training else False
 
         if is_training and self.packet_count % _WARMUP_LOG_INTERVAL == 0:
+            calibrating = self.kitnet.calibration_packets if self.kitnet else 0
             total = self.fm_grace + self.ad_grace
             logger.warning(
                 "Kitsune still training: abstaining on every packet, so all "
                 "traffic is being allowed through (%d/%d packets, %.1f%%); "
-                "detection starts at packet %d",
+                "detection starts at packet %d%s",
                 self.packet_count, total,
-                self.packet_count * 100.0 / max(1, total), total + 1)
+                self.packet_count * 100.0 / max(1, total), total + 1,
+                f" (after a {calibrating}-packet threshold calibration)"
+                if calibrating else "")
 
         return KitsuneResult(
             rmse=rmse,
