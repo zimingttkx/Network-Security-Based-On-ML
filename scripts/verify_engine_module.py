@@ -441,7 +441,13 @@ async def main():
     # K8: after the grace periods the model used to freeze permanently, so it
     # could not track drift.  It must now keep adapting on normal-scoring
     # packets and must never train on a packet it scored as anomalous.
-    kd8 = KitsuneDetector()
+    # calibration_packets=0 puts the threshold back on the legacy source: this
+    # check is about the adaptation guard, and a 4-packet calibration window
+    # (10% of a 40-packet AD grace) cannot estimate a 99th percentile — it just
+    # reports the maximum, which would flag every later packet and make the
+    # normal branch unreachable for reasons unrelated to what is under test.
+    # K10/K11 grade the calibration itself, on a window big enough to mean it.
+    kd8 = KitsuneDetector(calibration_packets=0)
     kd8.set_grace_periods(fm_grace_period=20, ad_grace_period=40)
     t8 = 3000.0
     for i in range(80):
@@ -492,6 +498,93 @@ async def main():
     report("K9 backwards clock step rebases instead of freezing the window", not ok,
            f"last_timestamp={s.last_timestamp}, weight={s.weight:.4f}, "
            f"rebased={rebased}, decayed_after={decayed}")
+
+    # --- K10/K11: post-freeze calibration of the anomaly threshold ----------
+    # The threshold used to be the percentile of scores taken while the
+    # output-layer normalisation was still being updated, and it was then
+    # applied to scores taken after that normalisation froze.  K10 checks the
+    # calibration window fixes exactly that: the threshold is a percentile of
+    # frozen-regime scores, which therefore means what it says.  K11 checks the
+    # detector still flags a real shift — an operating point at ~1% must not
+    # turn into a detector that never fires.
+    #
+    # These drive KitNET directly on vectors: the pathology lives in the
+    # threshold's regime, and AfterImage's variety is what made the real capture
+    # fail, which a synthetic packet stream does not reproduce (measured: legacy
+    # flagged 0.0% of a stationary synthetic tail, so a synthetic A/B could not
+    # have shown the difference — the real capture is what shows it).
+    from networksecurity.engine.kitsune.kitnet import KitNET
+
+    rng = np.random.default_rng(3)
+    station = rng.normal(size=(8300, 30)) * 0.35
+    shifted = rng.normal(size=(800, 30)) * 0.35 + 2.6
+
+    # fm 300 + ad 4000 end at packet 4300; the calibration window is 4301-6300;
+    # 6301-8300 is scored traffic that must behave like the 1% the percentile
+    # claims.  The freeze is observable from packet 4301, so the mid-window
+    # probe lands there: threshold set, is_ad_done still False, weights frozen.
+    kn10 = KitNET(input_dim=30, fm_grace_period=300, ad_grace_period=4000,
+                  calibration_packets=2000, threshold_percentile=99.0)
+    for x in station[:4301]:
+        kn10.process(x)
+    mid = dict(is_ad_done=kn10.is_ad_done, threshold=kn10.threshold,
+               trained=kn10.n_trained)
+    pre = [ae.W_decode.copy() for ae in kn10.ensemble] + [kn10.output_ae.W_decode.copy()]
+    for x in station[4301:6300]:
+        kn10.process(x)
+    moved = max(float(np.abs(a - b).max())
+                for a, b in zip(pre, [ae.W_decode for ae in kn10.ensemble]
+                                + [kn10.output_ae.W_decode]))
+    scored = [kn10.process(x) for x in station[6300:]]
+    over = sum(1 for s in scored if kn10.is_anomaly(s)) / max(1, len(scored)) * 100
+    ok = (mid["is_ad_done"] is False and mid["threshold"] is None
+          and moved == 0.0 and kn10.is_ad_done and kn10.is_calibrated
+          and kn10.threshold_source == "calibration" and 0.2 <= over <= 8.0)
+    report("K10 threshold calibrated on the frozen regime, and it means ~1%", not ok,
+           f"at freeze: trained={mid['is_ad_done']} threshold={mid['threshold']}; "
+           f"weights moved during calibration={moved}; afterwards source="
+           f"{kn10.threshold_source}; {len(scored)} fresh stationary packets "
+           f"flagged {over:.2f}%")
+
+    flags = sum(1 for x in shifted if kn10.is_anomaly(kn10._execute(x)))
+    legacy = KitNET(input_dim=30, fm_grace_period=300, ad_grace_period=4000,
+                    calibration_packets=0, threshold_percentile=99.0)
+    for x in station[:6300]:
+        legacy.process(x)
+    legacy_flags = sum(1 for x in shifted if legacy.is_anomaly(legacy._execute(x)))
+    ok = flags >= 0.5 * len(shifted) and legacy_flags >= 0.5 * len(shifted)
+    report("K11 a real shift is still flagged after calibration", not ok,
+           f"calibrated {flags}/{len(shifted)}, legacy {legacy_flags}/{len(shifted)} "
+           f"(both must react: calibration must not become a detector that never fires)")
+
+    # K12: /api/v1/status carries threshold_source, so "which ruler is this
+    # operating point on" is an operator-visible claim — it must never name a
+    # regime that has not been scored yet.  The legacy mode used to answer
+    # "calibration" from the first second of warm-up, with no threshold at all.
+    def _source_trail(calibration_packets):
+        probe = KitNET(input_dim=30, fm_grace_period=300, ad_grace_period=4000,
+                       calibration_packets=calibration_packets,
+                       threshold_percentile=99.0)
+        trail = {0: (probe.threshold_source, probe.threshold)}
+        for i, x in enumerate(station[:6400], start=1):
+            probe.process(x)
+            if i in (4300, 4301, 5000, 6300):
+                trail[i] = (probe.threshold_source, probe.threshold)
+        return trail
+
+    cal_trail = _source_trail(2000)
+    legacy_trail = _source_trail(0)
+    ok = (cal_trail[0] == ("pending", None)
+          and cal_trail[4301] == ("pending", None)   # frozen, nothing scored yet
+          and cal_trail[5000] == ("pending", None)   # mid calibration window
+          and cal_trail[6300][0] == "calibration" and cal_trail[6300][1] is not None
+          and legacy_trail[0] == ("pending", None)
+          and legacy_trail[4300] == ("pending", None)
+          and legacy_trail[4301][0] == "training" and legacy_trail[4301][1] is not None
+          and all(src != "calibration" for src, _ in legacy_trail.values()))
+    report("K12 threshold_source never names a regime that has not been scored", not ok,
+           f"calibrated: " + ", ".join(f"{i}={s}" for i, (s, _) in cal_trail.items())
+           + "; legacy: " + ", ".join(f"{i}={s}" for i, (s, _) in legacy_trail.items()))
 
     # --- L1-L6: lucid adapter interface --------------------------------------
     from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter

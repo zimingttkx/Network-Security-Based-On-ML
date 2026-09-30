@@ -350,6 +350,72 @@ def check_buckets_are_portable() -> list[str]:
     return bad
 
 
+def check_bucket_shape_is_honest() -> list[str]:
+    """The drift profile has to account for every packet it scored.
+
+    Two ways this reading can lie without raising anything: a record whose
+    timestamp falls outside the (first, last) pair lands in no bucket at all,
+    and an out-of-range percentile is only refused by numpy after the capture
+    has been trained on.  Both are checked here instead of being watched for.
+    """
+    import contextlib
+    import io
+
+    from evaluate_pcap import _print_drift_buckets
+
+    def _bucketed(text: str) -> tuple[int, int]:
+        pairs = re.findall(r"bucket\s+\d+\s+t\+\s*[\d.]+s\s+(\d+)/(\d+)", text)
+        return sum(int(f) for f, _ in pairs), sum(int(t) for _, t in pairs)
+
+    bad: list[str] = []
+    # Non-monotonic, and wide enough that a first/last span still leaves the
+    # time branch: the two out-of-order records sit below samples[0] and above
+    # samples[-1], which is exactly what a (first, last) span drops.
+    shuffled = [(10.0, False), (20.0, True), (5.0, True), (40.0, False), (30.0, True)]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _print_drift_buckets(shuffled, 4)
+    flagged, counted = _bucketed(buf.getvalue())
+    text = buf.getvalue()
+    want_flagged = sum(1 for _, f in shuffled if f)
+    if counted != len(shuffled):
+        bad.append(f"the drift profile bucketed {counted} of {len(shuffled)} packets; "
+                   f"out-of-order records are silently dropped")
+    if "BUCKETING BUG" in text:
+        bad.append("the bucket reconciliation line fired on a 5-packet input: "
+                   + next(line for line in text.splitlines() if "BUCKETING BUG" in line))
+    if flagged != want_flagged:
+        bad.append(f"the drift profile reports {flagged} flagged of {counted}, the "
+                   f"input holds {want_flagged} — bucketing moved a verdict")
+
+    ordered = [(float(i), i % 7 == 0) for i in range(60)]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _print_drift_buckets(ordered, 5)
+    _, counted = _bucketed(buf.getvalue())
+    if counted != len(ordered):
+        bad.append(f"a monotonic stream bucketed {counted} of {len(ordered)} packets")
+
+    # The range is refused before the capture is opened, so a typo costs a
+    # message rather than half an hour of training.
+    for value in ("101", "-1", "nan"):
+        run = _run([sys.executable, str(EVAL), "--pcap", "no-such-capture.pcap",
+                    "--no-labels", "--threshold-percentile", value], timeout=300)
+        out = run.stdout + run.stderr
+        if run.returncode == 0:
+            bad.append(f"--threshold-percentile {value} was accepted")
+        elif "threshold-percentile" not in out:
+            bad.append(f"--threshold-percentile {value} was refused without naming "
+                       f"the flag: {_tail(run)}")
+        elif "no-such-capture" in out:
+            bad.append(f"--threshold-percentile {value} failed only after the "
+                       f"evaluator went looking for the capture")
+    if not bad:
+        print("bucket shape   : every scored packet lands in exactly one bucket, "
+              "bad percentiles refused up front")
+    return bad
+
+
 def run_truth_checks() -> list[str]:
     """Every cheap truth check, in one place.  Empty list means all passed."""
     bad = ensure_capture()
@@ -360,6 +426,7 @@ def run_truth_checks() -> list[str]:
     bad = check_answer_key(records, wire_flows())
     bad += check_evaluator_refuses()
     bad += check_buckets_are_portable()
+    bad += check_bucket_shape_is_honest()
     meta = json.loads(SIDECAR.read_text(encoding="utf-8"))
     print(f"capture        : {meta['capture']} (builder seed {meta['seed']}, "
           f"source {Path(meta['source']).name})")

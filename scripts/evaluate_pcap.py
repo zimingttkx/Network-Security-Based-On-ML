@@ -50,6 +50,7 @@ from capture_labels import flow_key, read_sidecar, sidecar_path
 from networksecurity.data.pcap_loader import PcapLoader
 from networksecurity.engine import DetectionPipeline
 from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
+from networksecurity.engine.kitsune.kitnet import KitNET
 from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
 from networksecurity.interception.packet_parser import PacketParser
 
@@ -68,7 +69,11 @@ def _print_drift_buckets(samples: list[tuple[float, bool]], buckets: int) -> Non
     """
     if not samples:
         return
-    first, last = samples[0][0], samples[-1][0]
+    # min/max, not first/last: pcap records are not guaranteed monotonic, and a
+    # record outside [samples[0], samples[-1]] would land in no bucket at all —
+    # a drift profile that quietly adds up to less than it scored.
+    times = [t for t, _ in samples]
+    first, last = min(times), max(times)
     span = last - first
     if span <= 0:  # a capture with one timestamp: bucket by arrival order
         edges = [len(samples) * i // buckets for i in range(buckets + 1)]
@@ -79,8 +84,12 @@ def _print_drift_buckets(samples: list[tuple[float, bool]], buckets: int) -> Non
             lo, hi = first + span * i / buckets, first + span * (i + 1) / buckets
             rows = [s for s in samples if lo <= s[0] < hi or (i == buckets - 1 and s[0] == last)]
             groups.append((rows, lo - first))
+    counted = sum(len(rows) for rows, _ in groups)
     print(f" drift profile          : {buckets} buckets over {span:.1f}s "
           f"of post-training traffic")
+    if counted != len(samples):
+        print(f"   BUCKETING BUG: buckets hold {counted} of {len(samples)} "
+              f"scored packets")
     shown = 0
     for (rows, offset), i in zip(groups, range(buckets)):
         if not rows:
@@ -115,6 +124,12 @@ def _parse_args() -> argparse.Namespace:
                     help="anomaly threshold percentile over the training RMSEs "
                          "(lower = more sensitive: higher detection rate and "
                          "higher false-positive rate)")
+    ap.add_argument("--calibration-packets", type=int, default=None,
+                    help="packets scored after the normalization freeze, whose "
+                         "percentile becomes the anomaly threshold (default: 10% "
+                         "of --ad-grace).  0 restores the legacy threshold taken "
+                         "from the training pass, which is what the calibration "
+                         "is compared against")
     ap.add_argument("--buckets", type=int, default=0,
                     help="split the post-training window into N time buckets and "
                          "report the flagged fraction per bucket (0 = off; the "
@@ -132,6 +147,11 @@ async def _evaluate(args: argparse.Namespace) -> int:
     if args.buckets < 0:
         print("ERROR: --buckets must be 0 (off) or a positive count", file=sys.stderr)
         return 2
+    # Out of range here, not as an np.percentile ValueError after the capture has
+    # been trained on: NaN fails the same comparison, so it is refused too.
+    if not 0.0 <= args.threshold_percentile <= 100.0:
+        print("ERROR: --threshold-percentile must be within [0, 100]", file=sys.stderr)
+        return 2
 
     labels_by_key = None
     labels_path = None
@@ -148,10 +168,18 @@ async def _evaluate(args: argparse.Namespace) -> int:
     if args.seed is not None:
         np.random.seed(args.seed)
     pipeline = DetectionPipeline()
-    kitsune = KitsuneDetector(threshold_percentile=args.threshold_percentile)
+    kitsune = KitsuneDetector(threshold_percentile=args.threshold_percentile,
+                              calibration_packets=args.calibration_packets)
     # Grace periods must be set before the first packet is processed.
     kitsune.set_grace_periods(fm_grace_period=args.fm_grace,
                               ad_grace_period=args.ad_grace)
+    # The calibration window is a third warm-up, not a scoring window: the
+    # detector abstains through it by design, so charging its packets as misses
+    # would grade the detector on traffic it was never asked to judge.
+    cal = (args.calibration_packets if args.calibration_packets is not None
+           else int(args.ad_grace * KitNET.CALIBRATION_FRACTION))
+    cal = max(0, cal)
+    train_end += cal
     pipeline.add_detector(kitsune)
     try:
         pipeline.add_detector(LucidDetectorAdapter(enabled=False))
@@ -216,6 +244,8 @@ async def _evaluate(args: argparse.Namespace) -> int:
     print("\n================ END-TO-END EVALUATION ================")
     print(f" pcap packets processed : {n} ({n/elapsed:.0f} pkt/s, {elapsed:.1f}s)")
     print(f" Kitsune trained        : {kitsune.is_ready}")
+    print(f" calibration window     : {cal} packets "
+          f"(threshold from {kitsune.status()['threshold_source']})")
 
     if labels_by_key is None:
         print(" ground truth           : none (--no-labels) — verdicts only, no rates")
@@ -231,8 +261,9 @@ async def _evaluate(args: argparse.Namespace) -> int:
             print(f"ERROR: no packet in the scoring window carries a label "
                   f"({counted} scored, {unmatched} unmatched against {labels_path}) — "
                   f"rates over an empty labelled set would be fiction.  Check "
-                  f"--labels, or raise --limit above the grace periods "
-                  f"({args.fm_grace} + {args.ad_grace}).", file=sys.stderr)
+                  f"--labels, or raise --limit above the warm-up "
+                  f"({args.fm_grace} + {args.ad_grace} + {cal} calibration).",
+                  file=sys.stderr)
             return 2
         tp, fn = post_block["attack"], post["attack"] - post_block["attack"]
         fp, tn = post_block["normal"], post["normal"] - post_block["normal"]
