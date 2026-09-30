@@ -69,7 +69,11 @@ def _print_drift_buckets(samples: list[tuple[float, bool]], buckets: int) -> Non
     """
     if not samples:
         return
-    first, last = samples[0][0], samples[-1][0]
+    # min/max, not first/last: pcap records are not guaranteed monotonic, and a
+    # record outside [samples[0], samples[-1]] would land in no bucket at all —
+    # a drift profile that quietly adds up to less than it scored.
+    times = [t for t, _ in samples]
+    first, last = min(times), max(times)
     span = last - first
     if span <= 0:  # a capture with one timestamp: bucket by arrival order
         edges = [len(samples) * i // buckets for i in range(buckets + 1)]
@@ -80,8 +84,12 @@ def _print_drift_buckets(samples: list[tuple[float, bool]], buckets: int) -> Non
             lo, hi = first + span * i / buckets, first + span * (i + 1) / buckets
             rows = [s for s in samples if lo <= s[0] < hi or (i == buckets - 1 and s[0] == last)]
             groups.append((rows, lo - first))
+    counted = sum(len(rows) for rows, _ in groups)
     print(f" drift profile          : {buckets} buckets over {span:.1f}s "
           f"of post-training traffic")
+    if counted != len(samples):
+        print(f"   BUCKETING BUG: buckets hold {counted} of {len(samples)} "
+              f"scored packets")
     shown = 0
     for (rows, offset), i in zip(groups, range(buckets)):
         if not rows:
@@ -138,6 +146,11 @@ async def _evaluate(args: argparse.Namespace) -> int:
         return 2
     if args.buckets < 0:
         print("ERROR: --buckets must be 0 (off) or a positive count", file=sys.stderr)
+        return 2
+    # Out of range here, not as an np.percentile ValueError after the capture has
+    # been trained on: NaN fails the same comparison, so it is refused too.
+    if not 0.0 <= args.threshold_percentile <= 100.0:
+        print("ERROR: --threshold-percentile must be within [0, 100]", file=sys.stderr)
         return 2
 
     labels_by_key = None
