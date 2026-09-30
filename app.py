@@ -619,13 +619,20 @@ async def engine_start(request: Request):
 
             started = threading.Event()
 
+            def _on_interceptor_verdict(pkt, v):
+                if v.action.value == "block":
+                    _record_alert(pkt.src_ip, v.reason, v.action.value, v.detector)
+                # Shadow verdicts never carry action=block; this is where an
+                # operator sees who a shadow detector *would* have blocked.
+                for sv in v.metadata.get("shadow", []):
+                    _record_alert(pkt.src_ip, "[shadow] " + str(sv.get("reason", "")),
+                                  "log", str(sv.get("detector", "unknown")))
+
             local_interceptor = Interceptor(
                 pipeline,
                 queue_num=inter_cfg.get("nfqueue_num", 0),
                 safe_ips=inter_cfg.get("safe_ips"),
-                on_verdict=lambda pkt, v: _record_alert(
-                    pkt.src_ip, v.reason, v.action.value, v.detector
-                ) if v.action.value == "block" else None,
+                on_verdict=_on_interceptor_verdict,
                 block_policy=policy,
                 reload_probe=reload_probe.probe,
                 intercept_icmp=inter_cfg.get("intercept_icmp", False),

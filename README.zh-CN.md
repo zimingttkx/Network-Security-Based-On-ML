@@ -41,6 +41,8 @@ engine:
     enabled: false        # 置 true 才对下面列出的检测器开启学习检测
     detectors:
       - uses: kitsune     # 也可以是 lucid，或 my_package.module:MyDetector
+      - uses: lucid
+        enforce: false    # shadow 模式：判决只记录，不执法
 ```
 
 `enabled: false` 时，ML 相关模块**既不导入也不构造**：把 `networksecurity/engine/kitsune/` 和 `networksecurity/engine/lucid/` 两个目录整个删掉，剩下的是一套能正常工作的、只依赖规则的部署。打开之后，某个检测器建不起来只会被记录并跳过，不会让进程起不来。第三方检测器要实现什么接口（`process_packet` / `configure` / `ready` / `status`），以及这个开关如何决定 fail-closed 的边界，见 [ARCHITECTURE.md 的检测器契约一节](ARCHITECTURE.md)；`networksecurity/engine/threshold_detector.py` 是一份可以直接抄的完整示例。
@@ -130,7 +132,7 @@ api:
 
 | 配置键 | 作用 |
 | --- | --- |
-| `engine.ml.enabled` / `engine.ml.detectors` | 是否启用学习检测，以及挂载哪些检测器（内建短名，或 `包.模块:类名` 加一个 `params:` 块）。默认关闭。 |
+| `engine.ml.enabled` / `engine.ml.detectors` | 是否启用学习检测，以及挂载哪些检测器（内建短名，或 `包.模块:类名` 加一个 `params:` 块）。默认关闭。检测器条目写 `enforce: false` 即 shadow 模式——BLOCK 判决照常计数、进告警、渲染到 `/metrics`，但不丢包、不升级封禁。 |
 | `engine.kitsune.*` | 宽限期、阈值百分位、learning_rate（传给 AfterImage） |
 | `engine.lucid.model_path` | 设置路径即启用 LUCID；空字符串表示禁用 |
 | `api.auth_token` | 设置后启用认证；空字符串表示关闭认证（仅开发环境） |

@@ -311,6 +311,73 @@ engine:
           and s["ml_consulted"] == ["BrokenStatus", "Abstainer"],
           f"detector_status={s['detector_status']} consulted={s['ml_consulted']}")
 
+    # C19 — `enforce: false` is a mount-level key: it must survive config
+    # parsing (which used to drop every key it did not know) and reach the
+    # pipeline as a shadow mount whose BLOCK never decides.
+    from networksecurity.engine.verdict import Verdict as _Verdict
+
+    class Blocker(BaseDetector):
+        async def process_packet(self, packet):
+            return _Verdict(Action.BLOCK, 1.0, reason="enforced",
+                            detector="Blocker")
+
+    cfg = """
+engine:
+  ml:
+    enabled: true
+    detectors:
+      - uses: networksecurity.engine.threshold_detector:ThresholdDetector
+        enforce: false
+        params: {window_seconds: 2, max_packets: 3}
+      - uses: kitsune
+        enforce: "yes"
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+        fh.write(cfg)
+        c19_path = fh.name
+    parsed = _lm(c19_path)
+    Path(c19_path).unlink(missing_ok=True)
+    check("C19a enforce survives parsing; a non-bool falls back to enforcing",
+          parsed["detectors"][0].get("enforce") is False
+          and parsed["detectors"][1].get("enforce") is True,
+          f"entries={parsed['detectors']}")
+
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    mounted = attach_detectors(p, parsed, {})
+    # Drive the shadow ThresholdDetector over its trip point: the 4th packet
+    # within the window makes it emit a BLOCK — which must be recorded, not
+    # enforced.  The chain then ends at the ALLOW fallback.
+    v = None
+    for _ in range(4):
+        v = await p.process_packet(pkt())
+    s19 = p.status()
+    check("C19b a shadow-mounted detector's BLOCK is visible but never decides",
+          mounted == ["ThresholdDetector"] and v.action == Action.ALLOW
+          and v.detector == "pipeline"
+          and len(v.metadata.get("shadow", [])) == 1
+          and s19["total_shadow_blocked"] == 1 and s19["total_blocked"] == 0
+          and s19["ml_shadow"] == ["ThresholdDetector"],
+          f"mounted={mounted} verdict={v.action} shadow={v.metadata.get('shadow')} "
+          f"shadow_blocked={s19['total_shadow_blocked']}")
+
+    # C20 — through the assembly layer, the trap the whole design exists for:
+    # a shadow detector in front of an enforcing one must not shield it.
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    mounted = attach_detectors(p, {"enabled": True, "detectors": [
+        {"uses": "networksecurity.engine.threshold_detector:ThresholdDetector",
+         "enforce": False, "params": {"window_seconds": 2, "max_packets": 3}}]}, {})
+    p.add_detector(Blocker())
+    v = None
+    for _ in range(4):
+        v = await p.process_packet(pkt())
+    check("C20 shadow in front of an enforcer: the enforcer's BLOCK wins",
+          mounted == ["ThresholdDetector"] and v.action == Action.BLOCK
+          and v.detector == "Blocker"
+          and len(v.metadata.get("shadow", [])) == 1
+          and p.status()["total_shadow_blocked"] == 1,
+          f"mounted={mounted} verdict={v.action}/{v.detector} "
+          f"shadow={len(v.metadata.get('shadow', []))}")
+
     failed = [n for n, st in results if st == "CONFIRMED-BUG"]
     print("=" * 60)
     print(f"{len(results) - len(failed)}/{len(results)} PASS, "

@@ -136,6 +136,11 @@ def cmd_start(args) -> None:
         if verdict.action.value == "block":
             event_store.record_alert(pkt.src_ip, verdict.reason,
                                      verdict.action.value, verdict.detector)
+        # Shadow verdicts never carry action=block; this is where an operator
+        # sees who a shadow detector *would* have blocked.
+        for sv in verdict.metadata.get("shadow", []):
+            event_store.record_alert(pkt.src_ip, "[shadow] " + str(sv.get("reason", "")),
+                                     "log", str(sv.get("detector", "unknown")))
 
     interceptor = Interceptor(
         pipeline,

@@ -34,7 +34,9 @@ def pkt(**kw) -> PacketInfo:
 # ---------------------------------------------------------------------------
 # Checklist — pipeline
 # P1 None -> continue; BLOCK -> short-circuit; ALLOW -> short-circuit
-# P2 short_circuit_on_block=False keeps strongest BLOCK
+# P2a-d shadow (enforce=False): consulted but never decides, never ends the
+#      chain, counted separately and carried in metadata["shadow"]; a healthy
+#      shadow detector counts as coverage for fail-closed
 # P3 fallback ALLOW verdict when chain abstains
 # P4 counters consistent (total_processed/blocked)
 # P5 reset() clears counters and detectors
@@ -120,18 +122,72 @@ async def main():
     v = await pl.process_packet(pkt())
     report("P1 BLOCK short-circuits", v.action != Action.BLOCK, f"verdict={v.action}")
 
-    pl2 = DetectionPipeline(short_circuit_on_block=False)
-    pl2.add_detector(AlwaysBlock())
-
+    # --- P2a-P2d: shadow detectors (enforce=False) ---------------------------
     class StrongBlock(BaseDetector):
         async def process_packet(self, packet):
             return Verdict(Action.BLOCK, 0.99, reason="strong", detector="StrongBlock")
 
+    # P2a — the trap this design exists for: a shadow BLOCK must not shield the
+    # enforcing detector mounted behind it.  The chain continues past the
+    # shadow verdict and the enforcer's BLOCK is what comes back, with the
+    # shadow verdict riding along in metadata.
+    pl2 = DetectionPipeline()
+    pl2.add_detector(AlwaysBlock(), enforce=False)
     pl2.add_detector(StrongBlock())
     v2 = await pl2.process_packet(pkt())
-    report("P2 non-short-circuit returns strongest BLOCK",
-           not (v2.action == Action.BLOCK and v2.confidence == 0.99),
-           f"verdict conf={v2.confidence} (expected 0.99 from StrongBlock)")
+    s2 = pl2.status()
+    ok = (v2.action == Action.BLOCK and v2.detector == "StrongBlock"
+          and len(v2.metadata.get("shadow", [])) == 1
+          and v2.metadata["shadow"][0]["detector"] == "AlwaysBlock"
+          and s2["total_blocked"] == 1 and s2["total_shadow_blocked"] == 1
+          and s2["ml_shadow"] == ["AlwaysBlock"])
+    report("P2a shadow BLOCK does not shield the enforcing detector", not ok,
+           f"verdict={v2.action}/{v2.detector}, metadata={sorted(v2.metadata)}, "
+           f"blocked={s2['total_blocked']}, shadow_blocked={s2['total_shadow_blocked']}")
+
+    # P2b — the same applies to an explicit ALLOW from a shadow detector: it
+    # must not end the chain any more than a BLOCK may.
+    pl2b = DetectionPipeline()
+    pl2b.add_detector(AlwaysAllow(), enforce=False)
+    pl2b.add_detector(StrongBlock())
+    v2b = await pl2b.process_packet(pkt())
+    report("P2b shadow ALLOW does not end the chain",
+           not (v2b.action == Action.BLOCK and v2b.detector == "StrongBlock"
+                and len(v2b.metadata.get("shadow", [])) == 1),
+           f"verdict={v2b.action}/{v2b.detector}")
+
+    # P2c — a shadow-only chain falls back to ALLOW with the shadow verdicts
+    # attached, blocks nothing, and is not an outage.
+    pl2c = DetectionPipeline()
+    pl2c.add_detector(AlwaysBlock(), enforce=False)
+    v2c = await pl2c.process_packet(pkt())
+    s2c = pl2c.status()
+    ok = (v2c.action == Action.ALLOW and v2c.detector == "pipeline"
+          and v2c.metadata.get("shadow", [{}])[0].get("reason") == "test"
+          and s2c["total_blocked"] == 0 and s2c["total_shadow_blocked"] == 1
+          and not s2c["degraded"] and not s2c["ml_unavailable"]
+          and s2c["ml_consulted"] == ["AlwaysBlock"]
+          and s2c["ml_shadow"] == ["AlwaysBlock"])
+    report("P2c shadow-only chain allows with the verdict visible", not ok,
+           f"verdict={v2c.action}, shadow={v2c.metadata.get('shadow')}, "
+           f"blocked={s2c['total_blocked']}, shadow_blocked={s2c['total_shadow_blocked']}")
+
+    # P2d — a healthy shadow detector is coverage: an enforcing detector that
+    # raises behind it must not turn the chain into a fail-closed outage.
+    class EnforcerRaises(BaseDetector):
+        async def process_packet(self, packet):
+            raise RuntimeError("enforcer blew up")
+
+    pl2d = DetectionPipeline()
+    pl2d.add_detector(AlwaysBlock(), enforce=False)
+    pl2d.add_detector(EnforcerRaises())
+    raised2d = ""
+    try:
+        v2d = await pl2d.process_packet(pkt())
+    except DetectionUnavailable as exc:
+        raised2d = str(exc)[:60]
+    report("P2d shadow coverage keeps the chain out of fail-closed", bool(raised2d),
+           f"raised={raised2d}, verdict={v2d.action if not raised2d else '-'}")
 
     pl3 = DetectionPipeline()
     v3 = await pl3.process_packet(pkt())

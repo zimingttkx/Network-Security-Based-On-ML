@@ -41,6 +41,8 @@ engine:
     enabled: false        # true turns detection on for whatever is listed below
     detectors:
       - uses: kitsune     # or `lucid`, or `my_package.module:MyDetector`
+      - uses: lucid
+        enforce: false    # shadow mode: verdicts recorded, never enforced
 ```
 
 With `enabled: false`, no ML module is imported or constructed: deleting `networksecurity/engine/kitsune/` and `networksecurity/engine/lucid/` leaves a working, rules-only deployment. With it on, a detector that cannot be built is logged and skipped rather than taking the process down. The interface a third-party detector implements (`process_packet` / `configure` / `ready` / `status`) and the fail-closed rules that follow from the switch are in [ARCHITECTURE.md — The Detector Contract](ARCHITECTURE.md); `networksecurity/engine/threshold_detector.py` is a complete example to copy.
@@ -131,7 +133,7 @@ api:
 
 | key | effect |
 | --- | --- |
-| `engine.ml.enabled` / `engine.ml.detectors` | whether learning detection runs at all, and which detectors to mount (built-in short names, or `package.module:ClassName` with a `params:` block). Off by default. |
+| `engine.ml.enabled` / `engine.ml.detectors` | whether learning detection runs at all, and which detectors to mount (built-in short names, or `package.module:ClassName` with a `params:` block). Off by default. A detector entry with `enforce: false` runs in shadow mode — its BLOCK verdicts are counted, alerted and rendered on `/metrics`, but no packet is dropped and no ban escalates. |
 | `engine.kitsune.*` | grace periods, threshold percentile, learning_rate (passed to AfterImage) |
 | `engine.lucid.model_path` | set a path to enable LUCID; empty string disables it |
 | `api.auth_token` | set to enable authentication; empty string disables auth (development mode) |

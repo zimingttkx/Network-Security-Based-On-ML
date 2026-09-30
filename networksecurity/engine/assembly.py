@@ -103,6 +103,9 @@ def attach_detectors(pipeline: DetectionPipeline, ml_cfg: dict,
             logger.info("detector %r is present in config but enabled=false — "
                         "not mounted", uses)
             continue
+        # Mount-level knob, consumed here like `enabled` — never handed to the
+        # detector, whose configure() would reject it as unknown.
+        enforce = entry.get("enforce", True)
         try:
             if uses in _BUILDS:
                 det = _BUILDS[uses](engine_cfg)
@@ -114,9 +117,13 @@ def attach_detectors(pipeline: DetectionPipeline, ml_cfg: dict,
         except Exception:
             logger.exception("detector %r could not be mounted — skipped", uses)
             continue
-        pipeline.add_detector(det)
+        pipeline.add_detector(det, enforce=enforce)
         mounted.append(det.name)
-        logger.info("mounted detector %r (params=%r)", det.name, params or {})
+        if enforce:
+            logger.info("mounted detector %r (params=%r)", det.name, params or {})
+        else:
+            logger.info("mounted detector %r in shadow mode (enforce=false) — "
+                        "its verdicts are recorded, never enforced", det.name)
 
     if not mounted:
         logger.warning("engine.ml.enabled=true but no detector mounted — this is "
