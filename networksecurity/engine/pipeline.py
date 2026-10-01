@@ -321,9 +321,10 @@ class DetectionPipeline:
             # would read as an outage and drop every packet during startup.
             # Whether it is producing verdicts yet is a per-detector fact, so
             # it lives in detector_status instead of narrowing this list.
-            consulted = [d.name for d in ml
-                         if self._ml_enabled and d.name not in down
-                         and self._can_score(d, count_failure=False)]
+            expected_ml = [d for d in ml
+                         if self._can_score(d, count_failure=False)]
+            consulted = [d.name for d in expected_ml
+                         if self._ml_enabled and d.name not in down]
             idle = [d.name for d in ml if d.name not in consulted]
             return {
                 "running": self._running,
@@ -338,15 +339,19 @@ class DetectionPipeline:
                               if id(d) in self._shadow],
                 "detector_status": detector_status,
                 "broken_detectors": broken,
-                # degraded: some ML coverage lost.  ml_unavailable: every
-                # registered ML detector is tripped, so any packet that the
-                # rule engine does not decide raises DetectionUnavailable and
-                # is dropped — a full outage, not a partial one.  Both describe
-                # unplanned loss, so neither fires while ML is switched off:
-                # that is a decision, and the status says so with ml_enabled.
+                # degraded: some ML coverage lost.  ml_unavailable answers one
+                # question: is fail-closed dropping undecided traffic right
+                # now?  Fail-closed is decided over the *expected* set (mounted
+                # and able to score), so that is what has to be measured here —
+                # counting every registered detector reports False while a
+                # tripped detector and a model-less one between them drop every
+                # packet the rule engine passes on.  Both describe unplanned
+                # loss, so neither fires while ML is switched off: that is a
+                # decision, and the status says so with ml_enabled.
                 "degraded": self._ml_enabled and bool(down),
-                "ml_unavailable": bool(self._ml_enabled and ml
-                                       and len(down) == len(ml)),
+                "ml_unavailable": bool(self._ml_enabled and expected_ml
+                                       and all(d.name in self._broken_detectors
+                                               for d in expected_ml)),
                 "rule_engine": self._rule_engine.stats(),
             }
 

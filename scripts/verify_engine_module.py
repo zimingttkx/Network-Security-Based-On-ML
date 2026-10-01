@@ -350,6 +350,52 @@ async def main():
     report("P11c status() survives a raising ready without counting it", not ok,
            f"raised={raised11}, failures before={before11}, after={after11}")
 
+    # P12: `ml_unavailable` is a machine-readable "fail-closed is dropping
+    # traffic right now".  It used to compare the count of tripped detectors
+    # against every *registered* detector, so a chain whose coverage is one
+    # tripped detector plus one mounted without its model — where nothing can
+    # score and every undecided packet is dropped — reported False, and
+    # `nips_ml_unavailable` stayed at 0 through a full outage.
+    class NoModel(BaseDetector):
+        @property
+        def ready(self):
+            return False
+
+        async def process_packet(self, packet):
+            return None
+
+    pl12 = DetectionPipeline()
+    pl12.add_detector(AlwaysRaises())
+    pl12.add_detector(NoModel())
+    dropped12 = 0
+    for i in range(8):
+        try:
+            await pl12.process_packet(pkt(src_ip=f"12.0.0.{i}"))
+        except DetectionUnavailable:
+            dropped12 += 1
+    s12 = pl12.status()
+    ok = (dropped12 == 8 and s12["ml_unavailable"] and s12["degraded"]
+          and s12["broken_detectors"] == ["AlwaysRaises"]
+          and s12["ml_consulted"] == []
+          and sorted(s12["ml_idle"]) == ["AlwaysRaises", "NoModel"])
+    report("P12a outage spread over tripped + model-less is unavailable", not ok,
+           f"dropped={dropped12}/8, ml_unavailable={s12['ml_unavailable']}, "
+           f"degraded={s12['degraded']}, consulted={s12['ml_consulted']}, "
+           f"idle={s12['ml_idle']}")
+
+    # Nothing expected to score is not an outage: a chain whose only ML member
+    # cannot score is rules-only operation, and undecided traffic must still be
+    # allowed rather than dropped by a flag that over-corrects the other way.
+    pl12b = DetectionPipeline()
+    pl12b.add_detector(NoModel())
+    v12b = await pl12b.process_packet(pkt(src_ip="12.0.1.1"))
+    s12b = pl12b.status()
+    ok = (v12b.action == Action.ALLOW and not s12b["ml_unavailable"]
+          and not s12b["degraded"])
+    report("P12b a model-less detector alone is not an outage", not ok,
+           f"verdict={v12b.action}, ml_unavailable={s12b['ml_unavailable']}, "
+           f"degraded={s12b['degraded']}")
+
     # --- R1-R4: rule engine ------------------------------------------------
     re = RuleEngine()
     re.add_whitelist("1.2.3.4")
