@@ -287,6 +287,69 @@ async def main():
            f"degraded={s10['degraded']}, ml_unavailable={s10['ml_unavailable']}, "
            f"broken={s10['broken_detectors']}, verdict={v10.action}")
 
+    # P11: `ready` is contract code as well, and a property may raise.  It used
+    # to be read bare in three places, so that exception escaped
+    # process_packet() without ever reaching the circuit breaker — the
+    # interceptor's catch-all then dropped every packet with an unthrottled
+    # traceback, and the broken detector never appeared in `broken_detectors`.
+    class ReadyRaises(BaseDetector):
+        @property
+        def ready(self):
+            raise RuntimeError("ready blew up")
+
+    class ReadyRaisesAndFails(ReadyRaises):
+        async def process_packet(self, packet):
+            raise RuntimeError("detector blew up")
+
+    class ReadyRaisesButScores(ReadyRaises):
+        async def process_packet(self, packet):
+            return None
+
+    pl11 = DetectionPipeline()
+    pl11.add_detector(ReadyRaisesAndFails())
+    escaped = 0
+    unavailable = 0
+    for i in range(8):
+        try:
+            await pl11.process_packet(pkt(src_ip=f"11.0.0.{i}"))
+        except DetectionUnavailable:
+            unavailable += 1
+        except Exception:
+            escaped += 1
+    s11 = pl11.status()
+    ok = (escaped == 0 and unavailable == 8
+          and s11["broken_detectors"] == ["ReadyRaisesAndFails"]
+          and s11["degraded"] and s11["ml_unavailable"])
+    report("P11a raising ready is counted by the breaker and fails closed", not ok,
+           f"escaped={escaped}, unavailable={unavailable}, "
+           f"broken={s11['broken_detectors']}, ml_unavailable={s11['ml_unavailable']}")
+
+    # A detector that only trips while *reading* ready may still be perfectly
+    # able to score.  It must be consulted, and the read failure must not
+    # accumulate into a breaker trip, since every successful packet resets it.
+    pl11b = DetectionPipeline()
+    pl11b.add_detector(ReadyRaisesButScores())
+    v11b = await pl11b.process_packet(pkt(src_ip="11.0.1.1"))
+    s11b = pl11b.status()
+    ok = (v11b.action == Action.ALLOW and v11b.detector == "pipeline"
+          and s11b["broken_detectors"] == [] and not s11b["ml_unavailable"])
+    report("P11b raising ready but scoring is not an outage", not ok,
+           f"verdict={v11b.action}/{v11b.detector}, broken={s11b['broken_detectors']}, "
+           f"ml_unavailable={s11b['ml_unavailable']}")
+
+    # status() reads ready for every detector, so a raising one must not take
+    # the endpoint down — and a status read must not move breaker state.
+    before11 = dict(pl11b._detector_failures)
+    try:
+        s11c = pl11b.status()
+        raised11 = None
+    except Exception as exc:
+        s11c, raised11 = None, type(exc).__name__
+    after11 = dict(pl11b._detector_failures)
+    ok = (raised11 is None and s11c is not None and after11 == before11)
+    report("P11c status() survives a raising ready without counting it", not ok,
+           f"raised={raised11}, failures before={before11}, after={after11}")
+
     # --- R1-R4: rule engine ------------------------------------------------
     re = RuleEngine()
     re.add_whitelist("1.2.3.4")
