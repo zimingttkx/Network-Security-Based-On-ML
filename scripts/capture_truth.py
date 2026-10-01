@@ -103,6 +103,34 @@ def wire_flows(capture: Path = PCAP) -> dict[str, dict]:
     return flows
 
 
+def window_keys(limit: int, start: int = 0, capture: Path = PCAP) -> set[str]:
+    """Flow keys present between packets ``start`` and ``limit``, read off the wire.
+
+    A refusal probe has to land inside the window the evaluator actually scores;
+    pick labels that never reach it and the "partial truth" case silently
+    degenerates into the empty-label case it exists to tell apart from.
+    """
+    from scapy.layers.inet import IP, TCP, UDP
+    from scapy.utils import PcapReader
+
+    keys: set[str] = set()
+    with PcapReader(str(capture)) as reader:
+        for i, pkt in enumerate(reader):
+            if i >= limit:
+                break
+            if i < start:
+                continue
+            ip = pkt.getlayer(IP)
+            if ip is None:
+                continue
+            l4 = ip.getlayer(TCP) or ip.getlayer(UDP)
+            if l4 is None:
+                continue
+            keys.add(flow_key(int(ip.proto), ip.src, int(l4.sport), ip.dst,
+                              int(l4.dport)))
+    return keys
+
+
 def check_alignment(records: list[dict], wire: dict[str, dict]) -> list[str]:
     """The answer key has to describe the capture it will be scored against."""
     sidecar_keys = {r["key"] for r in records}
@@ -214,6 +242,44 @@ def check_evaluator_refuses() -> list[str]:
         elif "detection rate" in out or "false positive rate" in out:
             bad.append("the evaluator printed rates over an empty labelled set")
         probes.append(f"drifted sidecar {'refused' if refused else 'SCORED'}")
+
+    # A *partially* matching sidecar is the same trap in disguise.  Five attack
+    # packets and no normal ones used to print "false positive rate 0.0%" over an
+    # empty class — a number no reader can tell from a clean run.  The refusal
+    # has to name the class that is missing, not just fail.
+    with tempfile.TemporaryDirectory() as tmp:
+        _, flows = read_sidecar(SIDECAR)
+        # Packets after the probe's warm-up (10 + 10 + 1) are the ones scored, so
+        # the labels have to be found there or the probe proves nothing.
+        in_window = window_keys(limit=PROBE_LIMIT, start=30)
+        attack_only = [f for f in flows.values()
+                       if f["label"] and f["key"] in in_window]
+        if not attack_only:
+            bad.append("the partial-truth probe found no attack flow inside its own "
+                       "scoring window — it would have degenerated into the "
+                       "empty-label case")
+        else:
+            partial = Path(tmp) / "attack-only.labels.json"
+            write_sidecar(partial, capture=PCAP, source="capture_truth probe", seed=0,
+                          flows=attack_only)
+            half = _run([sys.executable, str(EVAL), "--labels", str(partial),
+                         "--fm-grace", str(PROBE_FM_GRACE),
+                         "--ad-grace", str(PROBE_AD_GRACE),
+                         "--limit", str(PROBE_LIMIT)], timeout=900)
+            out = half.stdout + half.stderr
+            before = len(bad)
+            if half.returncode == 0:
+                bad.append("the evaluator scored a window that labels no normal "
+                           "traffic — one of the two rates had no denominator")
+            elif "normal" not in out:
+                bad.append("the partial-truth refusal did not name the missing class: "
+                           f"{_tail(half)}")
+            for field in ("detection rate", "false positive rate", "precision"):
+                if field in out:
+                    bad.append(f"the partial-truth run printed a {field} over a window "
+                               f"with no normal packets to measure it against")
+            probes.append(f"attack-only sidecar "
+                          f"{'refused' if len(bad) == before else 'SCORED'}")
 
     print(f"evaluator      : {', '.join(probes)}")
     return bad
