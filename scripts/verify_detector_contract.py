@@ -235,6 +235,43 @@ async def main():
     check("C14 example detector refuses unknown and out-of-range params",
           refused == [True, True], f"refused={refused}")
 
+    # C14b — fractional knobs keep their type.  window_seconds was classified by
+    # `default == int(default)`, which is also true for the float default 5.0,
+    # so 0.5 was truncated to 0 *after* clearing its own floor: the detector
+    # then counts packets inside a zero-length window, never trips, and is still
+    # counted as ML coverage.  This check feeds real packets, so it fails on the
+    # truncated value rather than on the stored attribute alone.
+    td = ThresholdDetector()
+    cfg_error = None
+    try:
+        td.configure({"window_seconds": 0.5, "max_packets": 1})
+    except ValueError as exc:
+        cfg_error = str(exc)
+    blocked = 0
+    for i in range(4):
+        v = await td.process_packet(PacketInfo(
+            src_ip="1.2.3.4", dst_ip="10.0.0.1", src_port=1234, dst_port=80,
+            protocol=6, packet_size=100, timestamp=1000.0 + i * 0.1))
+        if v is not None and v.action == Action.BLOCK:
+            blocked += 1
+    check("C14b a sub-second window_seconds is stored and actually trips",
+          cfg_error is None and td.window_seconds == 0.5 and blocked >= 1,
+          f"configure raised={cfg_error} window={td.window_seconds!r} "
+          f"blocked={blocked}/4 trips={td.trips}")
+
+    # C14c — integer knobs still narrow to integers, and a bool is refused
+    # instead of silently becoming 1 (bool is an int subclass).
+    td2 = ThresholdDetector()
+    td2.configure({"max_packets": 1.9})
+    bool_refused = False
+    try:
+        ThresholdDetector().configure({"max_packets": True})
+    except ValueError:
+        bool_refused = True
+    check("C14c integer knobs narrow and bool params are refused",
+          td2.max_packets == 1 and isinstance(td2.max_packets, int) and bool_refused,
+          f"max_packets={td2.max_packets!r} bool_refused={bool_refused}")
+
     # C15 — config parsing degrades loudly rather than silently
     import tempfile
 
