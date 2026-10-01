@@ -1113,18 +1113,43 @@ async def main():
         # config.yaml, ignored by the reload, and missing from the list — so an
         # operator who flipped the ML switch and called POST /rules/reload got a
         # 200 with no errors and an unchanged detection posture.  Derived from
-        # the config schema rather than typed twice, so adding a knob without
+        # the config file itself rather than typed twice, so adding a knob without
         # classifying it (apply live, or declare a restart) fails here.
-        from networksecurity.utils.config import load_engine_config, load_ml_config
+        import yaml
 
         summary = probe.probe(force=True)
         restart = set(summary["engine_knobs_requiring_restart"])
-        declared = {f"engine.kitsune.{k}" for k in load_engine_config()["kitsune"]}
-        declared |= {f"engine.ml.{k}" for k in load_ml_config()}
-        undeclared = sorted(declared - restart)
+
+        def undeclared(cfg_path):
+            """Keys present in the file, minus what the probe declares.
+
+            Read the raw YAML, not `load_engine_config()`/`load_ml_config()`:
+            those build a fixed dict of the knobs they already know, so a newly
+            written `engine.kitsune.*` key would be invisible to this check —
+            which is the very drift the check exists to catch.
+            """
+            engine = yaml.safe_load(Path(cfg_path).read_text(encoding="utf-8"))["engine"]
+            want = {f"engine.kitsune.{k}" for k in (engine.get("kitsune") or {})}
+            want |= {f"engine.ml.{k}" for k in (engine.get("ml") or {})}
+            return sorted(want - restart)
+
+        missing = undeclared("config/config.yaml")
         report("RL7 unapplied engine knobs are declared restart-required",
-               bool(undeclared), f"undeclared: {undeclared} "
+               bool(missing), f"undeclared: {missing} "
                f"(restart list: {sorted(restart)})")
+
+        # Canary for the check itself: a knob no loader has ever heard of has to
+        # be caught. Point this back at the normalised config objects and RL7
+        # stays green while losing the ability to see a new key at all.
+        with _tmp_dir("nips_rl7_") as cdir:
+            doc = yaml.safe_load(Path("config/config.yaml").read_text(encoding="utf-8"))
+            doc["engine"]["kitsune"]["future_grace_window"] = 7
+            knob = cdir / "config.yaml"
+            knob.write_text(yaml.safe_dump(doc), encoding="utf-8")
+            caught = undeclared(knob)
+        report("RL7b a knob the loader does not know is still reported",
+               caught != ["engine.kitsune.future_grace_window"],
+               f"caught={caught}")
 
     # -- group IC: ICMP per-type policy ------------------------------------
     def icmp(type_no: int, code: int = 0) -> PacketInfo:
