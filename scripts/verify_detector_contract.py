@@ -415,38 +415,77 @@ engine:
           f"mounted={mounted} verdict={v.action}/{v.detector} "
           f"shadow={len(v.metadata.get('shadow', []))}")
 
-    # C21 — a built-in named in engine.ml.detectors has to reach its builder.
-    # The nightly job's "App registers the detector from the saved model" step
+    # C21 — every built-in a config may name has to reach its builder.  The
+    # nightly job's "App registers the detector from the saved model" step
     # assumes exactly this, and it broke the moment mounting moved from app.py's
     # direct wiring to the config-driven assembler: the step still flipped
     # engine.ml.enabled and pointed model_path at the trained file, but the
     # shipped list never names lucid, so it asserted against a chain that was
     # never asked to contain LUCID.  Either the adapter mounts, or the builder
     # itself says why it did not — silence means the entry was decoration.
+    #
+    # Which names count as built-ins is derived, not typed: the reserved short
+    # names plus whatever the shipped config actually lists.  Hand-picking
+    # `lucid`, which is what this check did first, means deleting `kitsune` from
+    # the builder table leaves it green — the hole is the check's own.
     import logging
 
+    from networksecurity.engine import assembly as _assembly
+
+    declared = set(_assembly.BUILTIN_NAMES) | {
+        entry["uses"] for entry in _lm()["detectors"] if ":" not in entry["uses"]}
     assembly_log = logging.getLogger("networksecurity.engine.assembly")
-    seen: list[str] = []
+    engine_cfg21 = load_engine_config()
 
     class _Collect(logging.Handler):
-        def emit(self, record):
-            seen.append(record.getMessage())
+        def __init__(self, sink):
+            super().__init__()
+            self.sink = sink
 
-    handler = _Collect()
+        def emit(self, record):
+            self.sink.append(record.getMessage())
+
     previous_level = assembly_log.level
-    assembly_log.addHandler(handler)
     assembly_log.setLevel(logging.INFO)  # the builder declines at INFO
     try:
-        p21 = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
-        mounted21 = attach_detectors(p21, {"enabled": True,
-                                           "detectors": [{"uses": "lucid"}]}, {})
+        for built_in in sorted(declared):
+            seen: list[str] = []
+            outcome: list[str] = []
+            original = _assembly._BUILDS.get(built_in)
+
+            def _spy(engine_cfg, _orig=original, _out=outcome):
+                _out.append("entered")
+                try:
+                    det = _orig(engine_cfg)
+                except Exception:
+                    _out.append("raised")
+                    raise
+                _out.append("declined" if det is None else "mounted")
+                return det
+
+            if original is not None:
+                _assembly._BUILDS[built_in] = _spy
+            handler = _Collect(seen)
+            assembly_log.addHandler(handler)
+            try:
+                p21 = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+                mounted21 = attach_detectors(p21, {"enabled": True,
+                                                   "detectors": [{"uses": built_in}]},
+                                             engine_cfg21)
+            finally:
+                assembly_log.removeHandler(handler)
+                if original is not None:
+                    _assembly._BUILDS[built_in] = original
+            mounted_ok = outcome == ["entered", "mounted"] and len(mounted21) == 1
+            declined_ok = (outcome == ["entered", "declined"] and not mounted21
+                           and any(built_in in m.lower() for m in seen))
+            check(f"C21[{built_in}] a listed built-in reaches its builder, "
+                  "not decoration",
+                  mounted_ok or declined_ok,
+                  f"registered={original is not None} outcome={outcome} "
+                  f"mounted={mounted21} assembly log={seen}")
     finally:
-        assembly_log.removeHandler(handler)
         assembly_log.setLevel(previous_level)
-    reached = ("LucidDetectorAdapter" in mounted21
-               or any("LUCID" in m for m in seen))
-    check("C21 a listed built-in reaches its builder rather than decoration",
-          reached, f"mounted={mounted21} assembly log={seen}")
 
     failed = [n for n, st in results if st == "CONFIRMED-BUG"]
     print("=" * 60)
