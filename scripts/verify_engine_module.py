@@ -309,6 +309,7 @@ async def main():
     pl11.add_detector(ReadyRaisesAndFails())
     escaped = 0
     unavailable = 0
+    counted = []
     for i in range(8):
         try:
             await pl11.process_packet(pkt(src_ip=f"11.0.0.{i}"))
@@ -316,12 +317,18 @@ async def main():
             unavailable += 1
         except Exception:
             escaped += 1
+        counted.append(pl11._detector_failures.get("ReadyRaisesAndFails", 0))
     s11 = pl11.status()
+    # One packet, one count: `ready` raising and then the detector raising on the
+    # same packet is one failed packet.  Counting both reads made the breaker trip
+    # on packet 2 of a threshold documented as 5 consecutive failures, and the
+    # fail-closed `expected` read added a third count per packet.
     ok = (escaped == 0 and unavailable == 8
+          and counted == [1, 2, 3, 4, 5, 5, 5, 5]
           and s11["broken_detectors"] == ["ReadyRaisesAndFails"]
           and s11["degraded"] and s11["ml_unavailable"])
     report("P11a raising ready is counted by the breaker and fails closed", not ok,
-           f"escaped={escaped}, unavailable={unavailable}, "
+           f"escaped={escaped}, unavailable={unavailable}, counts/packet={counted}, "
            f"broken={s11['broken_detectors']}, ml_unavailable={s11['ml_unavailable']}")
 
     # A detector that only trips while *reading* ready may still be perfectly
