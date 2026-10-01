@@ -1100,6 +1100,25 @@ async def main():
         report("RL6 probe skips unchanged files", same is not None,
                f"unexpected summary={same}")
 
+        # RL7: every engine knob the reload cannot apply has to be declared
+        # restart-required.  The list was hand-copied and had drifted:
+        # engine.ml.enabled and engine.ml.detectors were editable in
+        # config.yaml, ignored by the reload, and missing from the list — so an
+        # operator who flipped the ML switch and called POST /rules/reload got a
+        # 200 with no errors and an unchanged detection posture.  Derived from
+        # the config schema rather than typed twice, so adding a knob without
+        # classifying it (apply live, or declare a restart) fails here.
+        from networksecurity.utils.config import load_engine_config, load_ml_config
+
+        summary = probe.probe(force=True)
+        restart = set(summary["engine_knobs_requiring_restart"])
+        declared = {f"engine.kitsune.{k}" for k in load_engine_config()["kitsune"]}
+        declared |= {f"engine.ml.{k}" for k in load_ml_config()}
+        undeclared = sorted(declared - restart)
+        report("RL7 unapplied engine knobs are declared restart-required",
+               bool(undeclared), f"undeclared: {undeclared} "
+               f"(restart list: {sorted(restart)})")
+
     # -- group IC: ICMP per-type policy ------------------------------------
     def icmp(type_no: int, code: int = 0) -> PacketInfo:
         return PacketInfo("198.51.100.5", "10.0.0.1", 0, 0, 1, 84, 100.0,

@@ -244,13 +244,13 @@ python cli.py signature delete ssh-brute
 
 ### 热加载
 
-`rules.json` 与 `config/config.yaml` 按 mtime 被监视，运行中的引擎最多 30 秒内拾取修改；`POST /api/v1/rules/reload`（或 `cli.py reload`）立即应用。无需重启——重启代价很高，因为 Kitsune 要从零重新训练。
+`rules.json` 与 `config/config.yaml` 按 mtime 被监视，运行中的引擎最多 30 秒内拾取修改；`POST /api/v1/rules/reload`（或 `cli.py reload`）立即应用。规则与限速的修改无需重启——重启代价很高，因为 Kitsune 要从零重新训练。需要重启的那些，下面列了，重载自己也会列出来。
 
 - `rules.json` 按**替换**语义应用，删掉的条目会真正停止生效（启动时是合并语义，只会新增）。
 - `engine.rule_engine.rate_limit.*`、`allowed_protocols` 与 `allowed_icmp_types` 在下一个包即生效。
 - 文件损坏时整体拒绝：在线规则保持原样，`/api/v1/status` 的 `reload.failures` 上升，该次尝试以 `reload_failed` 记入审计。
 - 内核本来就不会执行的条目（回环 / `safe_ips`）与启动时一样被清理，并在 `dropped_unenforceable` 中报告。
-- Kitsune 的 `fm_grace_period`、`ad_grace_period`、`threshold_percentile`、`learning_rate` **不会**热应用——它们描述的是检测器如何训练，改动必须重启；重载摘要会列出这几项。
+- Kitsune 的 `fm_grace_period`、`ad_grace_period`、`threshold_percentile`、`learning_rate`、`max_autoencoder_size` **不会**热应用——它们描述检测器是怎么训练、怎么成形的，改动必须重启。`engine.ml.enabled` 与 `engine.ml.detectors` 同理：挂载链在第一个包之前就被 import 并构造出来，ML 关着时什么都不会 import，所以在线翻开关只会在一条从未挂载的链上报告"ML 已启用"。重载摘要会把这几项逐个列出，`verify_engine_module.py` 的 RL7 再用配置结构核对这份清单——新增的旋钮不可能被静默忽略。
 
 ---
 

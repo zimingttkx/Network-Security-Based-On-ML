@@ -81,9 +81,22 @@ class ReloadProbe:
         else:
             self.reloads += 1
             self.last_error = ""
+        # Anything not declared here is either applied live by
+        # _apply_engine_knobs below or silently ignored — and silently ignored
+        # is what verify_engine_module's RL7 now refuses to let happen: the list
+        # is checked against the config schema, so a new knob has to be
+        # classified (applied live, or restart-required) before the suite passes.
         summary["engine_knobs_requiring_restart"] = [
             "engine.kitsune.fm_grace_period", "engine.kitsune.ad_grace_period",
-            "engine.kitsune.threshold_percentile", "engine.kitsune.learning_rate"]
+            "engine.kitsune.threshold_percentile", "engine.kitsune.learning_rate",
+            "engine.kitsune.max_autoencoder_size",
+            # The ML switch and the mounted chain are decided before the first
+            # packet: `attach_detectors` imports and constructs exactly what the
+            # list names, and with ML off nothing is imported at all.  Flipping
+            # the switch live would report "ML enabled" over a chain that was
+            # never mounted, so an edit here means a restart — and says so.
+            "engine.ml.enabled", "engine.ml.detectors",
+        ]
         self.last_summary = summary
         return summary
 

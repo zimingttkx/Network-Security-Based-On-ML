@@ -245,13 +245,13 @@ python cli.py signature delete ssh-brute
 
 ### Hot reload
 
-`rules.json` and `config/config.yaml` are watched by mtime, so a running engine picks up edits within 30 s; `POST /api/v1/rules/reload` (or `cli.py reload`) applies them immediately. Restarting is not required — and would be costly, since Kitsune re-trains from zero.
+`rules.json` and `config/config.yaml` are watched by mtime, so a running engine picks up edits within 30 s; `POST /api/v1/rules/reload` (or `cli.py reload`) applies them immediately. Rule and rate-limit edits need no restart — and restarting would be costly, since Kitsune re-trains from zero. What does need one is named below, and named by the reload itself.
 
 - `rules.json` is applied with **replace** semantics, so deleting an entry really stops enforcing it (startup uses merge, which only adds).
 - `engine.rule_engine.rate_limit.*`, `allowed_protocols` and `allowed_icmp_types` take effect on the next packet.
 - A malformed file is rejected wholesale: the live rules stay exactly as they were, `/api/v1/status` raises `reload.failures`, and the attempt is audited as `reload_failed`.
 - Entries the kernel would refuse anyway (loopback / `safe_ips`) are swept as at startup and reported as `dropped_unenforceable`.
-- Kitsune's `fm_grace_period`, `ad_grace_period`, `threshold_percentile` and `learning_rate` are **not** re-applied — they describe how the detector was trained, so they need a restart. The reload summary names them.
+- Kitsune's `fm_grace_period`, `ad_grace_period`, `threshold_percentile`, `learning_rate` and `max_autoencoder_size` are **not** re-applied — they describe how the detector was trained and shaped, so they need a restart. So do `engine.ml.enabled` and `engine.ml.detectors`: the chain is imported and constructed before the first packet, and with ML off nothing is imported at all, so applying the switch live would report *ML enabled* over a chain that was never mounted. The reload summary names every one of them, and `verify_engine_module.py` RL7 checks that list against the config schema — a knob cannot be added and silently ignored.
 
 ---
 
