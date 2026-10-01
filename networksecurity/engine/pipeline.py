@@ -149,28 +149,29 @@ class DetectionPipeline:
                 name, fails, self.FAILURE_THRESHOLD,
             )
 
-    def _can_score(self, detector: BaseDetector, *, count_failure: bool = True) -> bool:
-        """Read ``ready`` without letting third-party code escape the pipeline.
+    def _ready_state(self, detector: BaseDetector) -> tuple[bool, bool]:
+        """Read ``ready``, returning (supposed to cover, the read failed).
 
         ``ready`` is a contract member, and a property can raise.  Read bare,
         that exception bypasses the circuit breaker entirely — the packet never
         reaches the detector, so nothing is counted, and the interceptor's
         catch-all then drops every packet with an unthrottled traceback.
 
-        A raising ``ready`` is therefore counted as a detector failure and
-        answered True: "supposed to cover this traffic".  Answering False would
-        take the detector out of the fail-closed set and wave packets through
-        precisely when we cannot tell whether it can score.
+        A failed read answers True: "supposed to cover this traffic".  Answering
+        False would take the detector out of the fail-closed set and wave
+        packets through precisely when we cannot tell whether it can score.
+        Whether the failure is *counted* is the caller's decision, because the
+        same read serves two purposes here: the per-packet loop counts one
+        failure per detector per packet, while the fail-closed decision and
+        `status()` only look — a read that also moved the breaker would count a
+        packet twice or turn a status request into detector failures.
         """
         try:
-            return bool(getattr(detector, "ready", True))
+            return bool(getattr(detector, "ready", True)), False
         except Exception:
-            if count_failure:
-                self._record_failure(detector.name)
-            else:
-                logger.exception("detector %s raised while reading ready",
-                                 detector.name)
-            return True
+            logger.exception("detector %s raised while reading ready",
+                             detector.name)
+            return True, True
 
     def _ml_detectors(self) -> list[BaseDetector]:
         """Registered detectors other than the rule engine.
@@ -208,18 +209,28 @@ class DetectionPipeline:
         for detector in self._detectors:
             if detector.name in self._broken_detectors:
                 continue
-            if detector is not self._rule_engine and (
-                    not self._ml_enabled or not self._can_score(detector)):
-                # Turned off by config, or registered with nothing to score with
-                # (no model loaded).  Such a detector neither decides nor counts
-                # as coverage.  A tripped detector is the opposite case: it was
-                # supposed to cover this packet, so its absence still fails
-                # closed — handled by `expected` below.
-                continue
+            ready_failed = False
+            if detector is not self._rule_engine:
+                if not self._ml_enabled:
+                    continue
+                able, ready_failed = self._ready_state(detector)
+                if ready_failed:
+                    # Counted here, and the exception path below must not count
+                    # the same packet a second time: FAILURE_THRESHOLD means
+                    # consecutive failed *packets*, not failed read attempts.
+                    self._record_failure(detector.name)
+                if not able:
+                    # Registered with nothing to score with (no model loaded).
+                    # Such a detector neither decides nor counts as coverage.
+                    # A tripped detector is the opposite case: it was supposed
+                    # to cover this packet, so its absence still fails closed —
+                    # handled by `expected` below.
+                    continue
             try:
                 verdict = await detector.process_packet(packet)
             except Exception:
-                self._record_failure(detector.name)
+                if not ready_failed:
+                    self._record_failure(detector.name)
                 continue
             self._detector_failures.pop(detector.name, None)
             if detector is not self._rule_engine:
@@ -253,7 +264,7 @@ class DetectionPipeline:
         # tripped earlier.  A chain whose only ML members are switched off by
         # configuration is not an outage — it is rules-only operation, which is
         # a decision, and undecided traffic falls through to ALLOW.
-        expected = [d for d in self._ml_detectors() if self._can_score(d)]
+        expected = [d for d in self._ml_detectors() if self._ready_state(d)[0]]
         if self._ml_enabled and expected and not ml_executed:
             raise DetectionUnavailable(
                 "no ML detector could run on this packet "
@@ -321,8 +332,7 @@ class DetectionPipeline:
             # would read as an outage and drop every packet during startup.
             # Whether it is producing verdicts yet is a per-detector fact, so
             # it lives in detector_status instead of narrowing this list.
-            expected_ml = [d for d in ml
-                         if self._can_score(d, count_failure=False)]
+            expected_ml = [d for d in ml if self._ready_state(d)[0]]
             consulted = [d.name for d in expected_ml
                          if self._ml_enabled and d.name not in down]
             idle = [d.name for d in ml if d.name not in consulted]
