@@ -65,10 +65,10 @@ PROBE_FM_GRACE = 10
 PROBE_AD_GRACE = 10
 # KitNET draws its autoencoder weights from the global RNG, so an unpinned
 # probe's operating point is a property of the draw: over twelve seeds the
-# high-percentile bucket run flags 0, 2 or 29 of the same 140 scored packets.
-# Seed 0 is the point documented in check_buckets_are_portable; pinning it is
-# what makes "the two operating points are distinguishable" a claim about the
-# code rather than about this run's luck.
+# high-percentile bucket run flags 0, 2, 28 or 29 of the same 140 scored
+# packets.  Seed 0 is the point documented in check_buckets_are_portable;
+# pinning it is what makes "the two operating points are distinguishable" a
+# claim about the code rather than about this run's luck.
 PROBE_SEED = 0
 
 
