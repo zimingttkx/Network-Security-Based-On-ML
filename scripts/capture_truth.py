@@ -411,18 +411,66 @@ def check_buckets_are_portable() -> list[str]:
         bad.append("--buckets printed no drift profile")
     if "drift profile" in plain.stdout:
         bad.append("the default summary grew a drift profile nobody asked for")
+    # End-to-end, not just the printer: the profile the run actually printed has
+    # to account for every packet that run scored.  Otherwise a series collected
+    # from part of the window still reads as a clean drift profile, and this is
+    # the reading a calibration decision gets made on.
+    recon = re.search(r"\((\d+)/(\d+) scored packets accounted for\)", bucketed.stdout)
+    if not recon:
+        bad.append("--buckets printed no reconciliation counts in its drift profile "
+                   f"header: {_tail(bucketed)}")
+    elif int(recon.group(2)) == 0 or int(recon.group(1)) != int(recon.group(2)):
+        bad.append(f"the drift profile accounts for {recon.group(1)} of "
+                   f"{recon.group(2)} scored packets")
+
+    # The same reading at the other end of the operating point.  At the probe's
+    # default threshold every scored packet is flagged, so a series filtered down
+    # to the blocked ones would still reconcile 179/179 — a coincidence that
+    # hides the defect.  A wider calibration window at the top percentile flags
+    # 29 of 140 here, and there the same two numbers become a real test.
+    def _totals(text: str) -> tuple[int, int]:
+        pairs = re.findall(r"bucket\s+\d+\s+t\+\s*[\d.]+s\s+(\d+)/(\d+)", text)
+        return sum(int(f) for f, _ in pairs), sum(int(t) for _, t in pairs)
+
+    sparse = _run(base + ["--buckets", "7", "--calibration-packets", "40",
+                          "--threshold-percentile", "100"], timeout=900)
+    if sparse.returncode:
+        bad.append(f"the high-percentile --buckets run exited {sparse.returncode}: "
+                   f"{_tail(sparse)}")
+    recon2 = re.search(r"\((\d+)/(\d+) scored packets accounted for\)", sparse.stdout)
+    if not recon2:
+        bad.append("the high-percentile run printed no reconciliation counts in its "
+                   f"drift profile header: {_tail(sparse)}")
+    else:
+        counted2 = int(recon2.group(2))
+        flagged2, bucketed2 = _totals(sparse.stdout)
+        if counted2 == 0 or int(recon2.group(1)) != counted2:
+            bad.append(f"the high-percentile drift profile accounts for "
+                       f"{recon2.group(1)} of {counted2} scored packets")
+        if bucketed2 != counted2:
+            bad.append(f"the high-percentile buckets hold {bucketed2} of {counted2} "
+                       f"scored packets")
+        # If both runs flag everything, the reconciliation cannot tell a
+        # filtered series from a complete one and this check is decoration.
+        if flagged2 >= counted2:
+            bad.append(f"the high-percentile run still flagged every packet "
+                       f"({flagged2}/{counted2}) — the two probe operating points "
+                       f"are indistinguishable, so a series filtered to blocked "
+                       f"packets would reconcile by coincidence")
     if not bad:
         print("buckets        : --buckets leaves every gated field unambiguous")
     return bad
 
 
 def check_bucket_shape_is_honest() -> list[str]:
-    """The drift profile has to account for every packet it scored.
+    """The drift profile has to account for every packet the run scored.
 
-    Two ways this reading can lie without raising anything: a record whose
-    timestamp falls outside the (first, last) pair lands in no bucket at all,
-    and an out-of-range percentile is only refused by numpy after the capture
-    has been trained on.  Both are checked here instead of being watched for.
+    Three ways this reading can lie without raising anything: a record whose
+    timestamp falls outside the (first, last) pair lands in no bucket at all; a
+    series collected from only part of the window (blocked packets, say) prints
+    a self-consistent profile of a different run; and an out-of-range percentile
+    is only refused by numpy after the capture has been trained on.  All three
+    are checked here instead of being watched for.
     """
     import contextlib
     import io
@@ -440,15 +488,18 @@ def check_bucket_shape_is_honest() -> list[str]:
     shuffled = [(10.0, False), (20.0, True), (5.0, True), (40.0, False), (30.0, True)]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        _print_drift_buckets(shuffled, 4)
-    flagged, counted = _bucketed(buf.getvalue())
+        ok_shuffled = _print_drift_buckets(shuffled, 4, len(shuffled))
     text = buf.getvalue()
+    flagged, counted = _bucketed(text)
     want_flagged = sum(1 for _, f in shuffled if f)
+    if not ok_shuffled:
+        bad.append("a complete drift series was reported as not accounting for "
+                   f"its packets: {text.strip().splitlines()[1] if len(text.splitlines()) > 1 else text}")
     if counted != len(shuffled):
         bad.append(f"the drift profile bucketed {counted} of {len(shuffled)} packets; "
                    f"out-of-order records are silently dropped")
     if "BUCKETING BUG" in text:
-        bad.append("the bucket reconciliation line fired on a 5-packet input: "
+        bad.append("the bucket reconciliation line fired on a complete input: "
                    + next(line for line in text.splitlines() if "BUCKETING BUG" in line))
     if flagged != want_flagged:
         bad.append(f"the drift profile reports {flagged} flagged of {counted}, the "
@@ -457,10 +508,29 @@ def check_bucket_shape_is_honest() -> list[str]:
     ordered = [(float(i), i % 7 == 0) for i in range(60)]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        _print_drift_buckets(ordered, 5)
+        ok_ordered = _print_drift_buckets(ordered, 5, len(ordered))
     _, counted = _bucketed(buf.getvalue())
-    if counted != len(ordered):
+    if not ok_ordered or counted != len(ordered):
         bad.append(f"a monotonic stream bucketed {counted} of {len(ordered)} packets")
+
+    # The reconciliation has to be against the run's own scored count, not
+    # against the list handed to the printer: a series that quietly kept only
+    # blocked packets is self-consistent and describes a different run.
+    partial = [(float(i), True) for i in range(20)]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ok_partial = _print_drift_buckets(partial, 4, 50)
+    text = buf.getvalue()
+    _, counted = _bucketed(text)
+    if ok_partial:
+        bad.append("a drift series holding 20 of 50 scored packets was reported as "
+                   "complete — the printer reconciles against its own list, not the run")
+    if counted != len(partial):
+        bad.append(f"the truncated series bucketed {counted} of {len(partial)}")
+    if "BUCKETING BUG" not in text:
+        bad.append("the truncated series printed no reconciliation line")
+    if "20/50 scored packets accounted for" not in text:
+        bad.append("the truncated series did not name both counts in its header")
 
     # The range is refused before the capture is opened, so a typo costs a
     # message rather than half an hour of training.
@@ -477,8 +547,8 @@ def check_bucket_shape_is_honest() -> list[str]:
             bad.append(f"--threshold-percentile {value} failed only after the "
                        f"evaluator went looking for the capture")
     if not bad:
-        print("bucket shape   : every scored packet lands in exactly one bucket, "
-              "bad percentiles refused up front")
+        print("bucket shape   : every scored packet lands in exactly one bucket, and "
+              "a short series is refused; bad percentiles refused up front")
     return bad
 
 
