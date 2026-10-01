@@ -63,6 +63,13 @@ SHUFFLES = 1000
 PROBE_LIMIT = 200
 PROBE_FM_GRACE = 10
 PROBE_AD_GRACE = 10
+# KitNET draws its autoencoder weights from the global RNG, so an unpinned
+# probe's operating point is a property of the draw: over twelve seeds the
+# high-percentile bucket run flags 0, 2 or 29 of the same 140 scored packets.
+# Seed 0 is the point documented in check_buckets_are_portable; pinning it is
+# what makes "the two operating points are distinguishable" a claim about the
+# code rather than about this run's luck.
+PROBE_SEED = 0
 
 
 def _run(args: list[str], timeout: float) -> subprocess.CompletedProcess:
@@ -406,7 +413,8 @@ def check_buckets_are_portable() -> list[str]:
     stays exactly as silent about buckets as it always was.
     """
     base = [sys.executable, str(EVAL), "--fm-grace", str(PROBE_FM_GRACE),
-            "--ad-grace", str(PROBE_AD_GRACE), "--limit", str(PROBE_LIMIT)]
+            "--ad-grace", str(PROBE_AD_GRACE), "--limit", str(PROBE_LIMIT),
+            "--seed", str(PROBE_SEED)]
     plain = _run(base, timeout=900)
     bucketed = _run(base + ["--buckets", "7"], timeout=900)
     if plain.returncode or bucketed.returncode:
@@ -441,7 +449,8 @@ def check_buckets_are_portable() -> list[str]:
     # default threshold every scored packet is flagged, so a series filtered down
     # to the blocked ones would still reconcile 179/179 — a coincidence that
     # hides the defect.  A wider calibration window at the top percentile flags
-    # 29 of 140 here, and there the same two numbers become a real test.
+    # 29 of 140 at the pinned seed, and there the same two numbers become a real
+    # test.
     def _totals(text: str) -> tuple[int, int]:
         pairs = re.findall(r"bucket\s+\d+\s+t\+\s*[\d.]+s\s+(\d+)/(\d+)", text)
         return sum(int(f) for f, _ in pairs), sum(int(t) for _, t in pairs)
