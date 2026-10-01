@@ -13,7 +13,9 @@ which is what can honestly be measured on a capture you have no truth for.
 A sidecar that describes none of the capture is refused for the same reason: an
 empty labelled set scores 0.0% false positives and 0.0% detection, which is what
 a perfect detector scores, so printing rates over it would be a report no one
-can tell apart from success.
+can tell apart from success.  A sidecar covering only one class is refused too:
+the rate whose denominator is empty is fiction either way, and a window of five
+attack packets with no normal ones used to print "false positive rate 0.0%".
 
 Both directions of a flow inherit that flow's label: a labelled attack's server
 responses are attack packets too.  They used to be scored as normal traffic
@@ -253,15 +255,24 @@ async def _evaluate(args: argparse.Namespace) -> int:
         print(f" post-training blocks   : {blocked_total}")
         print(f" block reasons          : {dict(reasons)}")
     else:
-        if post["attack"] + post["normal"] == 0:
+        missing = [cls for cls, total in (("attack", post["attack"]),
+                                          ("normal", post["normal"])) if total == 0]
+        if missing:
             # An empty labelled set scores 0.0% false positives and 0.0%
-            # detection — the same numbers a perfect detector produces.  A
-            # sidecar that drifted off this capture (or a --limit inside the
-            # grace periods) must end here rather than print those.
-            print(f"ERROR: no packet in the scoring window carries a label "
-                  f"({counted} scored, {unmatched} unmatched against {labels_path}) — "
-                  f"rates over an empty labelled set would be fiction.  Check "
-                  f"--labels, or raise --limit above the warm-up "
+            # detection — the numbers a perfect detector produces.  A *partial*
+            # one is the same trap in disguise: a sidecar matching five attack
+            # packets and no normal ones prints "false positive rate 0.0%" over
+            # an empty class, and nothing on the page tells a reader that half
+            # the ratio had no denominator.  Truth is an input, so a class nobody
+            # labelled ends the run instead of feeding one of the two rates.
+            # (`verify_real_capture_quality.py` already treats both halves of
+            # this as a failure for the bundled capture; this moves the
+            # invariant to the program that prints the number.)
+            print(f"ERROR: the scoring window carries no {' and no '.join(missing)} "
+                  f"labels ({counted} packets scored, {post['attack']} attack + "
+                  f"{post['normal']} normal labelled, {unmatched} unmatched against "
+                  f"{labels_path}) — rates over a partially labelled window would be "
+                  f"fiction.  Check --labels, or raise --limit above the warm-up "
                   f"({args.fm_grace} + {args.ad_grace} + {cal} calibration).",
                   file=sys.stderr)
             return 2
@@ -272,7 +283,9 @@ async def _evaluate(args: argparse.Namespace) -> int:
         precision = tp / max(1, tp + fp) * 100
         print(f" labels                 : {labels_path} "
               f"({len(labels_by_key)} flows)")
-        print(f" evaluation window      : {sum(post.values())} packets (post-training)")
+        print(f" evaluation window      : {counted} packets scored (post-training), "
+              f"{sum(post.values())} labelled "
+              f"({sum(post.values()) / max(1, counted) * 100:.1f}% coverage)")
         print(f"   attack packets       : {post['attack']}")
         print(f"   normal packets       : {post['normal']}")
         print(f" unmatched packets      : {unmatched}")
