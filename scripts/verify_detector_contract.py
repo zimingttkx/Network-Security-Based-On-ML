@@ -415,6 +415,39 @@ engine:
           f"mounted={mounted} verdict={v.action}/{v.detector} "
           f"shadow={len(v.metadata.get('shadow', []))}")
 
+    # C21 — a built-in named in engine.ml.detectors has to reach its builder.
+    # The nightly job's "App registers the detector from the saved model" step
+    # assumes exactly this, and it broke the moment mounting moved from app.py's
+    # direct wiring to the config-driven assembler: the step still flipped
+    # engine.ml.enabled and pointed model_path at the trained file, but the
+    # shipped list never names lucid, so it asserted against a chain that was
+    # never asked to contain LUCID.  Either the adapter mounts, or the builder
+    # itself says why it did not — silence means the entry was decoration.
+    import logging
+
+    assembly_log = logging.getLogger("networksecurity.engine.assembly")
+    seen: list[str] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+
+    handler = _Collect()
+    previous_level = assembly_log.level
+    assembly_log.addHandler(handler)
+    assembly_log.setLevel(logging.INFO)  # the builder declines at INFO
+    try:
+        p21 = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+        mounted21 = attach_detectors(p21, {"enabled": True,
+                                           "detectors": [{"uses": "lucid"}]}, {})
+    finally:
+        assembly_log.removeHandler(handler)
+        assembly_log.setLevel(previous_level)
+    reached = ("LucidDetectorAdapter" in mounted21
+               or any("LUCID" in m for m in seen))
+    check("C21 a listed built-in reaches its builder rather than decoration",
+          reached, f"mounted={mounted21} assembly log={seen}")
+
     failed = [n for n, st in results if st == "CONFIRMED-BUG"]
     print("=" * 60)
     print(f"{len(results) - len(failed)}/{len(results)} PASS, "
