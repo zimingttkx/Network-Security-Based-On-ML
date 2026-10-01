@@ -60,7 +60,8 @@ DEFAULT_PCAP = "datasets/unsw-nb15/unsw_reconstructed.pcap"
 FM_GRACE, AD_GRACE = 5_000, 50_000  # config/config.yaml defaults
 
 
-def _print_drift_buckets(samples: list[tuple[float, bool]], buckets: int) -> None:
+def _print_drift_buckets(samples: list[tuple[float, bool]], buckets: int,
+                         scored: int) -> bool:
     """Report the flagged fraction per equal-width time bucket.
 
     Aggregate flag rate cannot tell the two failure shapes apart: a threshold
@@ -68,9 +69,19 @@ def _print_drift_buckets(samples: list[tuple[float, bool]], buckets: int) -> Non
     packet, while drift after the freeze starts low and climbs.  Printed after
     every field the nightly gate parses, and deliberately carrying none of
     those labels, so adding it changes no existing reading.
+
+    ``scored`` is the caller's authoritative count of post-training packets it
+    judged.  The shape of this series is the evidence for a calibration
+    decision, so it has to reconcile against that number rather than against
+    the list it was handed: a list that quietly lost packets — or kept only the
+    blocked ones — would otherwise print a perfectly self-consistent profile
+    describing a different run.  False means the profile is not to be trusted.
     """
     if not samples:
-        return
+        if scored:
+            print(f"   BUCKETING BUG: buckets hold 0 of {scored} scored packets")
+            return False
+        return True
     # min/max, not first/last: pcap records are not guaranteed monotonic, and a
     # record outside [samples[0], samples[-1]] would land in no bucket at all —
     # a drift profile that quietly adds up to less than it scored.
@@ -87,11 +98,13 @@ def _print_drift_buckets(samples: list[tuple[float, bool]], buckets: int) -> Non
             rows = [s for s in samples if lo <= s[0] < hi or (i == buckets - 1 and s[0] == last)]
             groups.append((rows, lo - first))
     counted = sum(len(rows) for rows, _ in groups)
+    ok = counted == scored and len(samples) == scored
     print(f" drift profile          : {buckets} buckets over {span:.1f}s "
-          f"of post-training traffic")
-    if counted != len(samples):
-        print(f"   BUCKETING BUG: buckets hold {counted} of {len(samples)} "
-              f"scored packets")
+          f"of post-training traffic "
+          f"({counted}/{scored} scored packets accounted for)")
+    if not ok:
+        print(f"   BUCKETING BUG: buckets hold {counted} of {scored} scored "
+              f"packets ({len(samples)} collected into the series)")
     shown = 0
     for (rows, offset), i in zip(groups, range(buckets)):
         if not rows:
@@ -102,6 +115,7 @@ def _print_drift_buckets(samples: list[tuple[float, bool]], buckets: int) -> Non
         shown += 1
     if shown < 2:
         print("   (fewer than two populated buckets — no shape to read)")
+    return ok
 
 
 def _parse_args() -> argparse.Namespace:
@@ -300,7 +314,10 @@ async def _evaluate(args: argparse.Namespace) -> int:
                       f"({blocked / max(1, total) * 100:.1f}%)")
         print(f" block reasons          : {dict(reasons)}")
     if args.buckets:
-        _print_drift_buckets(samples, args.buckets)
+        if not _print_drift_buckets(samples, args.buckets, counted):
+            print("ERROR: the drift profile does not account for every scored "
+                  "packet — its shape cannot be read as evidence.", file=sys.stderr)
+            return 3
     print(f" pipeline counters      : processed={pipeline.total_processed} "
           f"blocked={pipeline.total_blocked}")
     print("=======================================================")
