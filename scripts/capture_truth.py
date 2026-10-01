@@ -278,6 +278,20 @@ def check_evaluator_refuses() -> list[str]:
                 if field in out:
                     bad.append(f"the partial-truth run printed a {field} over a window "
                                f"with no normal packets to measure it against")
+            # The refusal is the last word an operator gets, so its own numbers
+            # have to add up: labelled + unmatched must equal what was scored.
+            # Run-wide `unmatched` used to be quoted here, mixing in warm-up
+            # packets and printing "5 + 178" for a window of 179.
+            sums = re.search(r"\((\d+) packets scored, (\d+) attack \+ (\d+) normal "
+                             r"labelled, (\d+) unmatched in the window", out)
+            if not sums:
+                bad.append("the partial-truth refusal no longer quotes numbers that "
+                           f"can be checked: {_tail(half)}")
+            elif int(sums.group(2)) + int(sums.group(3)) + int(sums.group(4)) \
+                    != int(sums.group(1)):
+                bad.append("the refusal's own numbers do not add up: "
+                           f"scored={sums.group(1)} attack={sums.group(2)} "
+                           f"normal={sums.group(3)} unmatched={sums.group(4)}")
             probes.append(f"attack-only sidecar "
                           f"{'refused' if len(bad) == before else 'SCORED'}")
 

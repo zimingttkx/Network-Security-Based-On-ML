@@ -206,6 +206,7 @@ async def _evaluate(args: argparse.Namespace) -> int:
     n = 0
     counted = 0
     unmatched = 0
+    unmatched_window = 0
     blocked_total = 0
     post = {"attack": 0, "normal": 0}
     post_block = {"attack": 0, "normal": 0}
@@ -234,6 +235,13 @@ async def _evaluate(args: argparse.Namespace) -> int:
 
         if n > train_end:
             counted += 1
+            if labels_by_key is not None and record is None:
+                # The partial-truth refusal below quotes this window, so its
+                # numbers have to add up inside it.  Run-wide `unmatched` also
+                # counts warm-up packets, which are never scored and never
+                # labelled, so mixing the two made a refusal print 5 + 178 for a
+                # window of 179.
+                unmatched_window += 1
             blocked = verdict.action.value == "block"
             if args.buckets:
                 samples.append((packet.timestamp, blocked))
@@ -284,8 +292,9 @@ async def _evaluate(args: argparse.Namespace) -> int:
             # invariant to the program that prints the number.)
             print(f"ERROR: the scoring window carries no {' and no '.join(missing)} "
                   f"labels ({counted} packets scored, {post['attack']} attack + "
-                  f"{post['normal']} normal labelled, {unmatched} unmatched against "
-                  f"{labels_path}) — rates over a partially labelled window would be "
+                  f"{post['normal']} normal labelled, {unmatched_window} unmatched in "
+                  f"the window, {unmatched} across the run, against {labels_path}) — "
+                  f"rates over a partially labelled window would be "
                   f"fiction.  Check --labels, or raise --limit above the warm-up "
                   f"({args.fm_grace} + {args.ad_grace} + {cal} calibration).",
                   file=sys.stderr)
