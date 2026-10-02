@@ -4,6 +4,8 @@
 
 一个运行在服务器侧的 IPS：在 Linux 上拦截流量，先用规则引擎再用异常检测器对每个数据包打分，最后通过 iptables 丢弃恶意包。
 
+**为什么叫 NIPS？** 这个短名不只是文档叫法：iptables 链名（`NIPS`）、API 令牌环境变量（`NIPS_API_TOKEN`）、systemd 单元前缀（`nips-*`）与 Prometheus 指标前缀（`nips_*`）都用它。仓库名 `Network-Security-Based-On-ML` 描述的是项目内容；NIPS 是代码里真正的名字。
+
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.104+-green.svg" alt="FastAPI">
@@ -20,25 +22,45 @@
 流入流量
       |
       v
-[规则引擎 Rule Engine] ------> 阻断（黑名单、限速、协议过滤）
-      | 通过
+[规则引擎 Rule Engine] ------> 判决：黑名单、白名单、协议过滤、限速、签名
+      | 弃权                （始终在场）
       v
-[Kitsune] ----------> 阻断（AfterImage + KitNET 异常检测）
-      | 通过
+[挂载的学习检测器] ----------> 异常则阻断
+      |
       v
 [放行 ALLOW]
 ```
 
-规则引擎确定性地处理已知恶意流量（黑名单、白名单、限速、协议白名单）。通过的数据包交给 Kitsune——一个无监督的包级异常检测器，先在正常流量上训练，再用重建误差（RMSE）偏离程度来标记异常。
+规则引擎是链路上永久的部分：确定性，也是默认配置下唯一在跑的环节。它不判决的流量，落到你挂载了什么检测器上。
 
-LUCID（基于 CNN 的 DDoS 检测器）是**可选**的。它默认不接入流水线，需要 TensorFlow（`pip install -e ".[lucid]"` 或 `pip install tensorflow`）和训练好的模型，并显式启用。见 `networksecurity/engine/lucid/`。
+学习检测器是一个**可插拔组件**，而且**默认关闭**：
+
+```yaml
+engine:
+  ml:
+    enabled: false        # 置 true 才对下面列出的检测器开启学习检测
+    detectors:
+      - uses: kitsune     # 也可以是 lucid，或 my_package.module:MyDetector
+      - uses: lucid
+        enforce: false    # shadow 模式：判决只记录，不执法
+```
+
+`enabled: false` 时，ML 相关模块**既不导入也不构造**：把 `networksecurity/engine/kitsune/` 和 `networksecurity/engine/lucid/` 两个目录整个删掉，剩下的是一套能正常工作的、只依赖规则的部署。打开之后，某个检测器建不起来只会被记录并跳过，不会让进程起不来。第三方检测器要实现什么接口（`process_packet` / `configure` / `ready` / `status`），以及这个开关如何决定 fail-closed 的边界，见 [ARCHITECTURE.md 的检测器契约一节](ARCHITECTURE.md)；`networksecurity/engine/threshold_detector.py` 是一份可以直接抄的完整示例。
+
+这里检测能力的边界是量出来的，不是说出来的：见[实测结果与边界](#实测结果与边界)。
+
+LUCID（基于 CNN 的 DDoS 检测器）另外还有它自己的可选条件：需要 TensorFlow（`pip install -e ".[lucid]"` 或 `pip install tensorflow`）**并且**在 `engine.lucid.model_path` 给出一个训练好的模型。模型加载不出来就完全不挂载——它不再以"未启用的检测器"身份留在链路里、却被状态页列为在跑。
 
 ### 算法
 
-- **Kitsune (NDSS'18)** — AfterImage 增量统计（90 维特征）+ KitNET 自编码器集成。在线训练，无需标签。当链路层头部缺失（实时 NFQUEUE 场景）时，MAC 通道使用 `(protocol, ttl)` 代理键，避免方差退化为零。宽限期（`fm_grace_period`、`ad_grace_period`）允许在检测开始前先预热；此期间数据包只记录不拦截。
+- **Kitsune (NDSS'18)** — AfterImage 增量统计（90 维特征）+ KitNET 自编码器集成。在线训练，无需标签。当链路层头部缺失（实时 NFQUEUE 场景）时，MAC 通道使用 `(protocol, ttl)` 代理键，避免方差退化为零。宽限期（`fm_grace_period`、`ad_grace_period`）允许在检测开始前先预热，AD 宽限结束后头 10% 的包用来在冻结的模型上校准异常阈值；这些阶段里数据包只记录不拦截。
 - **LUCID (IEEE TNSM 2020)** — 在 10 包流窗口（每包 11 维特征）上跑的 1D CNN。默认关闭，需要训练好的模型，且在配置中设置 `engine.lucid.model_path`；权重用 `scripts/train_lucid.py` 生成（见下文"训练 LUCID"）。
 
-> **关于协议过滤：** 规则引擎的协议白名单只包含 TCP(6) 与 UDP(17)，凡是被它检查到的其他协议——包括 **ICMP(1)**——都会拦截。但在实时拦截中，只有 TCP 与 UDP 会被导入 NFQUEUE（`interception.intercept_icmp` 默认关闭），因此 ICMP 在那里**既不被检查、也不被拦截**：由主机自身的防火墙决定。把 `interception.intercept_icmp` 设为 true 才能让 ICMP 进入流水线，然后用 `engine.rule_engine.allowed_icmp_types` 按类型放行——整协议封禁会一并打断 Path MTU Discovery（type 3 "frag needed"），导致大连接被黑洞，所以有用的配置是"按类型放行"而不是一刀切封禁。**ICMPv6(58)** 在这份名单之外还有一个例外：维持链路本身的类型——邻居/路由器请求与通告（135/136/133/134）以及 "packet too big"（2）——永远放行。因为把邻居发现丢进队列再丢掉的主机，并没有拦住攻击者，只是把自己踢出了网络。ICMPv6 echo 不在此列，仍受协议过滤拦截（上面说的按类型放行只覆盖 ICMPv4）。离线 pcap 测试（`cli.py test --pcap`）确实会走到协议过滤，因为不论何种协议，包都会进入引擎。
+> **关于协议过滤：** 规则引擎的协议白名单只包含 TCP(6) 与 UDP(17)，凡是被它检查到的其他协议——包括 **ICMP(1)**——都会拦截。但在实时拦截中，只有 TCP 与 UDP 会被导入 NFQUEUE（`interception.intercept_icmp` 默认关闭），因此 ICMP 在那里**既不被检查、也不被拦截**：由主机自身的防火墙决定。
+>
+> 把 `interception.intercept_icmp` 设为 true 才能让 ICMP 进入流水线，然后用 `engine.rule_engine.allowed_icmp_types` 按类型放行。整协议封禁会一并打断 Path MTU Discovery（type 3 "frag needed"），导致大连接被黑洞——有用的配置是"按类型放行"，不是一刀切封禁。
+>
+> **ICMPv6(58)** 在这份名单之外还有一个例外：维持链路本身的类型——邻居/路由器请求与通告（135/136/133/134）以及 "packet too big"（2）——永远放行。因为把邻居发现丢进队列再丢掉的主机，并没有拦住攻击者，只是把自己踢出了网络。ICMPv6 echo 不在此列，仍受协议过滤拦截（上面说的按类型放行只覆盖 ICMPv4）。离线 pcap 测试（`cli.py test --pcap`）确实会走到协议过滤，因为不论何种协议，包都会进入引擎。
 
 ---
 
@@ -75,45 +97,7 @@ pip install -e ".[lucid]"     # 或：pip install tensorflow
 
 ### 3. 配置
 
-`config/config.yaml` 同时驱动引擎和实时拦截：
-
-- `engine.kitsune.*`：宽限期、阈值百分位、learning_rate（传给 AfterImage）
-- `engine.lucid.model_path`：设置路径即启用 LUCID；空字符串表示禁用
-- `api.auth_token`：设置后启用认证；空字符串表示关闭认证（仅开发环境）
-- `api.host` / `api.port`：`python app.py` 的监听地址与端口
-- `interception.safe_ips`：添加永远不会被封禁的 IP（回环默认包含）
-- `interception.intercept_icmp` / `engine.rule_engine.allowed_icmp_types`：ICMP 策略（见上文协议过滤说明）
-- `storage.*`：事件库路径、行数上限与保留窗口（见"告警、审计与指标"）
-- `logging.*`：日志级别、轮转文件与 syslog 转发
-
-### 4. 运行 API
-
-```bash
-python app.py
-# /docs、/redoc 和 OpenAPI schema 在生产环境中全部关闭。
-```
-
-### 5. CLI
-
-```bash
-python cli.py start                  # 启动实时拦截（Linux，需 root）
-python cli.py stop                   # 停止实时拦截（通过 API）
-python cli.py status                 # 引擎状态
-python cli.py block 1.2.3.4          # 封禁某个 IP（POST /api/v1/rules/blacklist）
-python cli.py unblock 1.2.3.4        # 解封某个 IP（DELETE /api/v1/rules/blacklist/{ip}）
-python cli.py whitelist --ip 10.0.0.0/8   # 将某个子网加入白名单（拒绝 /0 默认路由）
-python cli.py unwhitelist --ip 10.0.0.0/8 # 从白名单移除
-python cli.py rules                  # 列出黑名单/白名单条目
-python cli.py reload                 # 把改过的 rules.json / 配置应用到运行中的引擎
-python cli.py alerts --last 20       # 查看已存储告警（最新在前，走 API）
-python cli.py alerts --source-ip 203.0.113.7 --action block
-python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
-python cli.py audit --last 20        # 谁改了哪条规则，结果如何
-python cli.py audit --result 401     # 被拒绝的管理请求
-python cli.py test --pcap sample.pcap  # 离线检测测试（无需 root）
-```
-
-#### 配置示例
+`config/config.yaml` 同时驱动引擎和实时拦截，运维真正会碰的几块：
 
 ```yaml
 interception:
@@ -143,9 +127,49 @@ api:
   auth_token: ""             # 空 = 关闭认证（仅开发）；NIPS_API_TOKEN 环境变量优先
   cors_origins:              # 显式白名单——不支持 "*"
     - "http://localhost:8000"
+    - "http://127.0.0.1:8000"
 ```
 
+| 配置键 | 作用 |
+| --- | --- |
+| `engine.ml.enabled` / `engine.ml.detectors` | 是否启用学习检测，以及挂载哪些检测器（内建短名，或 `包.模块:类名` 加一个 `params:` 块）。默认关闭。检测器条目写 `enforce: false` 即 shadow 模式——BLOCK 判决照常计数、进告警、渲染到 `/metrics`，但不丢包、不升级封禁。 |
+| `engine.kitsune.*` | 宽限期、阈值百分位、learning_rate（传给 AfterImage） |
+| `engine.lucid.model_path` | 设置路径即启用 LUCID；空字符串表示禁用 |
+| `api.auth_token` | 设置后启用认证；空字符串表示关闭认证（仅开发环境） |
+| `api.host` / `api.port` | `python app.py` 的监听地址与端口 |
+| `interception.safe_ips` | 添加永远不会被封禁的 IP（回环默认包含） |
+| `interception.intercept_icmp` / `engine.rule_engine.allowed_icmp_types` | ICMP 策略（见上文协议过滤说明） |
+| `storage.*` | 事件库路径、行数上限与保留窗口（见"告警、审计与指标"） |
+| `logging.*` | 日志级别、轮转文件与 syslog 转发 |
+
 `engine/start` 时 API/CLI 从该文件读取 `interception`、`engine`、`blocking`、`api` 各块并在运行时应用。文件缺失或格式错误时，各加载器回退到安全默认值（包含回环保护），不会崩溃。
+
+### 4. 运行 API
+
+```bash
+python app.py
+# /docs、/redoc 和 OpenAPI schema 在生产环境中全部关闭。
+```
+
+### 5. CLI
+
+```bash
+python cli.py start                  # 启动实时拦截（Linux，需 root）
+python cli.py stop                   # 停止实时拦截（通过 API）
+python cli.py status                 # 引擎状态
+python cli.py block 1.2.3.4          # 封禁某个 IP（POST /api/v1/rules/blacklist）
+python cli.py unblock 1.2.3.4        # 解封某个 IP（DELETE /api/v1/rules/blacklist/{ip}）
+python cli.py whitelist --ip 10.0.0.0/8   # 将某个子网加入白名单（拒绝 /0 默认路由）
+python cli.py unwhitelist --ip 10.0.0.0/8 # 从白名单移除
+python cli.py rules                  # 列出黑名单/白名单条目
+python cli.py reload                 # 把改过的 rules.json / 配置应用到运行中的引擎
+python cli.py alerts --last 20       # 查看已存储告警（最新在前，走 API）
+python cli.py alerts --source-ip 203.0.113.7 --action block
+python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
+python cli.py audit --last 20        # 谁改了哪条规则，结果如何
+python cli.py audit --result 401     # 被拒绝的管理请求
+python cli.py test --pcap sample.pcap  # 离线检测测试（无需 root）
+```
 
 ---
 
@@ -220,13 +244,13 @@ python cli.py signature delete ssh-brute
 
 ### 热加载
 
-`rules.json` 与 `config/config.yaml` 按 mtime 被监视，运行中的引擎最多 30 秒内拾取修改；`POST /api/v1/rules/reload`（或 `cli.py reload`）立即应用。无需重启——重启代价很高，因为 Kitsune 要从零重新训练。
+`rules.json` 与 `config/config.yaml` 按 mtime 被监视，运行中的引擎最多 30 秒内拾取修改；`POST /api/v1/rules/reload`（或 `cli.py reload`）立即应用。规则与限速的修改无需重启——重启代价很高，因为 Kitsune 要从零重新训练。需要重启的那些，下面列了，重载自己也会列出来。
 
 - `rules.json` 按**替换**语义应用，删掉的条目会真正停止生效（启动时是合并语义，只会新增）。
-- `engine.rule_engine.rate_limit.*` 与 `allowed_protocols` 在下一个包即生效。
+- `engine.rule_engine.rate_limit.*`、`allowed_protocols` 与 `allowed_icmp_types` 在下一个包即生效。
 - 文件损坏时整体拒绝：在线规则保持原样，`/api/v1/status` 的 `reload.failures` 上升，该次尝试以 `reload_failed` 记入审计。
 - 内核本来就不会执行的条目（回环 / `safe_ips`）与启动时一样被清理，并在 `dropped_unenforceable` 中报告。
-- Kitsune 的 `fm_grace_period`、`ad_grace_period`、`threshold_percentile`、`learning_rate` **不会**热应用——它们描述的是检测器如何训练，改动必须重启；重载摘要会列出这几项。
+- Kitsune 的 `fm_grace_period`、`ad_grace_period`、`threshold_percentile`、`learning_rate`、`max_autoencoder_size` **不会**热应用——它们描述检测器是怎么训练、怎么成形的，改动必须重启。`engine.ml.enabled` 与 `engine.ml.detectors` 同理：挂载链在第一个包之前就被 import 并构造出来，ML 关着时什么都不会 import，所以在线翻开关只会在一条从未挂载的链上报告"ML 已启用"。重载摘要会把这几项逐个列出，`verify_engine_module.py` 的 RL7 再用配置结构核对这份清单——新增的旋钮不可能被静默忽略。
 
 ---
 
@@ -240,9 +264,12 @@ config/
 networksecurity/
   engine/                      # 检测引擎
     detector.py                # BaseDetector 接口 + PacketInfo
+    assembly.py                # 按 config 的 engine.ml 挂载检测器
+    threshold_detector.py      # 契约的完整示例实现
     verdict.py                 # Verdict、Action、ThreatLevel 类型
     pipeline.py                # DetectionPipeline（多阶段链）
     rule_engine.py             # IP 黑名单/白名单、限速
+    signature_engine.py        # 声明式匹配规则：CIDR/协议/端口/TCP 标志 + 速率阈值
     block_policy.py            # BLOCK 判决升级：strike 累计 → 临时封禁 → 永久封禁
     kitsune/                   # Kitsune 异常检测器（NDSS'18）
       afterimage.py            # 90 维增量统计
@@ -272,11 +299,15 @@ networksecurity/
   utils/                       # 共享工具
     config.py                  # config.yaml 读取（engine / api / blocking / storage / logging 块）
     validation.py              # IP/CIDR 校验与黑名单拒绝规则
+    reload.py                  # ReloadProbe：对 rules.json + config.yaml 的 mtime 监视
 scripts/                       # 基准测试、评估与回归检查
   benchmark.py                 # 吞吐量 + 规则引擎准确率
   benchmark_nslkdd.py          # NSL-KDD 检测基准
   attack_simulation.py         # 大规模攻击模拟
   build_unsw_pcap.py           # 用内置 UNSW-NB15 流记录重建真实流量 pcap
+  capture_labels.py            # 标签 sidecar 格式：真值放在抓包旁边，不放在抓包里
+  capture_truth.py             # 真值链共用检查：独立性、对齐、评测器拒绝
+  live_nfqueue_topology.sh     # live NFQUEUE CI 任务用的无 root netns 拓扑
   train_lucid.py               # 训练 LUCID CNN 并产出 engine.lucid.model_path 指向的权重
   evaluate_pcap.py             # 端到端 pcap 评估（按攻击类别报告）
   verify_*.py                  # 模块回归检查，含 CI 的 FPR 守卫
@@ -310,7 +341,10 @@ interceptor.start()  # 阻塞运行。Ctrl+C 停止。
 - 回环流量完全不进检测流水线——`lo` 接口到达的包在 NFQUEUE 规则之前就被 ACCEPT；回环源地址（`127.0.0.0/8`、`::1`）永远不会被永久封禁（本机流量不可能是攻击者；封掉 DNS stub `127.0.0.53` 会静默瘫痪本机域名解析）
 - 不动 SSH（22 端口）
 - 除非开启 `interception.intercept_icmp`，只把 TCP 与 UDP 导入 NFQUEUE；开启后由 `allowed_icmp_types` 决定引擎接受哪些 ICMP 类型（ICMPv6 链路维护类型始终放行）
-- 通过升级策略（`config.yaml` 的 `blocking:`）执行 BLOCK 判决，且**仅对 ML 检测器的 BLOCK 生效**。规则引擎的判决（黑名单命中、限速、协议过滤）是确定性的、已经逐包内联执行，因此不计 strike、不参与升级——这同时保证了操作员的黑名单条目永远不会被封禁生命周期改动。单次 ML BLOCK 只内联丢弃当前包，并给源 IP 计一次 strike。滚动窗口内累计达到 `strikes_threshold` 触发**临时封禁**——内核 DROP 加规则引擎黑名单*镜像*（带 TTL，到期自动解除；解除时只删除镜像，绝不触碰操作员自己的条目）；反复触发临时封禁会升级为**永久封禁**，写入 `rules.json`，下次启动时加载回规则引擎、在用户态逐包拦截——内核 DROP 本身**不会**被重新安装
+- 通过升级策略（`config.yaml` 的 `blocking:`）执行 BLOCK 判决，且**仅对 ML 检测器的 BLOCK 生效**。规则引擎的判决（黑名单命中、限速、协议过滤）是确定性的、已经逐包内联执行，因此不计 strike、不参与升级——这同时保证了操作员的黑名单条目永远不会被封禁生命周期改动。
+  - 单次 ML BLOCK 只内联丢弃当前包，并给源 IP 计一次 strike。
+  - 滚动窗口内累计达到 `strikes_threshold` 触发**临时封禁**——内核 DROP 加规则引擎黑名单*镜像*（带 TTL，到期自动解除；解除时只删除镜像，绝不触碰操作员自己的条目）。
+  - 反复触发临时封禁会升级为**永久封禁**，写入 `rules.json`，下次启动时加载回规则引擎、在用户态逐包拦截——内核 DROP 本身**不会**被重新安装。
 - 关闭时清除自己添加的所有 iptables 规则
 
 **双栈，且退化时如实报告。** IPv4 与 IPv6 的 TCP/UDP 都会被重定向进 NFQUEUE、解析（含 IPv6 扩展头链）并通过 `ip6tables` 拦截。若 `ip6tables` 不可用，拦截器照常启动，但会**拒绝**所有 IPv6 封禁而不是假装成功，并把这个缺口报出来：`/api/v1/status` 的 `ipv6_intercepted: false`、`/metrics` 的 `nips_ipv6_intercepted 0`。双栈主机上请确认这个指标——被静默跳过的第二个地址族，正是出事之前没人会注意到的那种缺口。
@@ -359,9 +393,33 @@ python scripts/train_lucid.py --pcap capture.pcap \
 
 ---
 
-## 基准测试
+## 实测结果与边界
 
-两个脚本用于在你自己的机器上跑出数据——下面的数字未在各环境验证，实际结果会有差异：
+下面都是本仓库真能跑出来的数字，每条都附了复现命令。它们不稳定——Kitsune 的自编码器初始化用的是无种子随机数（评测脚本提供 `--seed` 可以固定一个）——所以请按区间看待。
+
+| 场景 | 结果 | 复现命令 |
+|---|---|---|
+| 规则引擎单独 vs 单源 SYN flood | 500 个 1 ms 间隔的 SYN 包拦下 **80.0%**（头 100 个还在出厂的 100 连接/秒额度内），2 000 个普通包一个没拦——同样这 2 000 个包，把异常检测器接进链路后被拦 **1.80%** | `python scripts/verify_fpr_regression.py` |
+| 同一种攻击摊到 2 000 个伪造源、按 10 000 pkt/s 打 | **0.0%**（60 000 个包检出 17 个）—— 每源速率始终碰不到限速，而按主机建模看不见它 | `python scripts/attack_simulation.py --full` |
+| 合成流量里的大流量攻击（UDP、ICMP） | 100%（ICMP 由协议规则，UDP 由异常检测阶段） | 同上 |
+| 整轮合成仿真，把所有阶段都计入 | 攻击包检出 58.5%，普通包被拦 **26.72%**——这 36 408 次拦截里有 36 239 次落在最后一个阶段：那个阶段四成流量是攻击时，剩下的正常包全被拦了 | 同上 |
+| 真实 UNSW-NB15 还原抓包，Kitsune 训练完成后 | 误报率 **0.4–1.4%**（中位 0.9%），检出率 **0.3–0.8%**（十二个自编码器随机种子）；十二次里仍有一次落在 20.9% / 13.6%（`--seed 2`） | `python scripts/verify_real_capture_quality.py`，或按单次抽取：`python scripts/evaluate_pcap.py --seed N` |
+| 从本机抓的真实流量：107,115 个入站包、抓了数分钟、**没有攻击标签** | 规则引擎拦下正常流量的 **1.5%**；Kitsune 在阈值按冻结态校准之前拦下 **98.4%**，校准之后 **0/47,115** | `python scripts/evaluate_pcap.py --pcap cap.pcap --no-labels --buckets 10`（要看旧工作点就加 `--calibration-packets 0`） |
+| 离线流水线吞吐 | 约 660–870 pkt/s，单进程 | 上面任一 |
+
+**自带的"真实抓包"基准曾经会泄漏自己的标签，这是它现在的说法。** `scripts/build_unsw_pcap.py` 把攻击流的源地址画进一个文档化的网段、正常流画进另一个，`scripts/evaluate_pcap.py` 再把这些地址读回来当真值——答案就摆在报文里，任何按源地址写的规则都能白拿 100% 检出，那个"检出率"测的是还原脚本而不是检测器。现在地址与标签无关地抽取，标签放在 sidecar（`unsw_reconstructed.labels.json`，由 `scripts/capture_labels.py` 写入）里，由评测器显式读入；没有 sidecar 的抓包会被拒绝评测，而不是被评出一个分数（`--no-labels` 只报告判决与拦截原因）。`scripts/capture_truth.py` 守住这条线，`scripts/verify_capture_truth.py` 在每个 pull request 上跑它：把标签在**从抓包里读回来**的地址划分上做置换检验，确认源地址预测不了标签（并用一份故意泄漏的划分做自检——不会失败的检查等于没有检查）；确认已退休的 `175.45.176.*` 即攻击这条规则不再分得开两个类别；把带标签的流与抓包对起来（同一批流、同一对端点、同样的包数）；再用缺失标签文件、`--no-labels`、一份描述不了这份抓包的 sidecar、以及一份只含攻击流的 sidecar 各跑一次评测器——四次都必须以"不出比率"收场，而不是给出空标签集或单类标签集才会产出的那组数字：窗口里 5 个攻击包、0 个正常包，过去会印出 `false positive rate 0.0%`，而那个分母是空的，读者无从把它和一次干净的运行区分开。`verify_real_capture_quality.py` 导入同一套检查，真值不可信的抓包它拒绝花半小时去测。
+
+**还原抓包把检测器美化了；本机真实流量给出了不同说法。** 把这台机器自己承载的数分钟入站流量（107,115 个包、没有标签，因此凡是被拦的都按定义算误报）按出厂配置跑一遍：规则引擎拦了 1.5%——而同一个平面在 2 000 个合成普通包上一个都没拦，因为合成流量生成器按构造就不会把真实主机那种每源负载放到线路上；Kitsune 拦了 **98.4%**。`--buckets` 说明了原因，而且答案不是漂移：训练结束后的第一个时间桶就已经判异 89%，也就是说它作出第一个判决时工作点就是错的。阈值取自输出层归一化仍在更新时的那批分数，却要用在归一化冻结之后的分数上——两把尺子。平稳的合成流复现不出这个现象（旧阈值在它上面判异 0.0%），所以这是真实流量多样性带来的发现，修复也在检测器里：阈值改成用**冻结之后**打分的头一批包来校准。同一份抓包上，判异数从 51,285/52,115 降到 **0/47,115**，同时 K11 继续断言真正的分布移动仍然要报。这份抓包说不出来的是检出率——里面没有攻击，而 `--no-labels` 正因如此拒绝出任何比率。Kitsune 到底值不值得武装，在真实流量上仍是未测的，这也正是 `enforce: false` 存在的理由。
+
+**数字为什么会动，以及为什么现在用的是出厂配置。** KitNET 用前 `fm_grace` 个包拟合特征映射，再用接下来的 `ad_grace` 个包冻住输出归一化和阈值——这两段窗口决定了之后的一切。这份抓包还原的是 1 680 条流记录，包量高度集中（最大的一条流占了 82 523 个包里的 8 398 个，前 1% 的流占 35%），而评测器过去把宽限期缩短成 2 000 + 30 000，好让训练和检测窗口塞进同一份抓包。在 2 000 个包上，拟合窗口就是"先到的流说了算"——43 条流，其中一条占了窗口的三分之一——所以把这些流重抽一遍、只换了到达顺序，拟合出来的模型就落到另一个区间：自编码器分组从 10 个变成 9 个，阈值从 1.18 变成 0.65，拦截率从 1.3% 变成 52%，而流的组成没变、代码一行没动。这是抽签的性质，不是检测器的性质。评测器现在按 `config/config.yaml` 出厂值训练（5 000 + 50 000，此时拟合窗口覆盖 112 条流、最大的一条占 13%），两次抽取都不会再落进那个区间。剩下的变量是初始化：KitNET 的自编码器权重取自全局随机数，阈值还取自训练期时，十二个种子下这份抓包的误报率横跨 2.1–10.5%、检出率 0.9–2.9%。改成在冻结态上校准阈值后，十二次里有十一次落到误报 0.4–1.4%、检出 0.3–0.8%（中位 0.9%）；剩下那次是 `--seed 2`，仍然是 20.9% 和 13.6%。所以每次抽取的不稳定是被收窄了，不是根治了——这也是 `verify_real_capture_quality.py` 固定跑三个种子、只对中位数设边界的原因：把边界压在单次无种子运行上就落在分布内部，会在大约每五次里红一次而代码没有任何改动。任何一次抽取都可以用 `python scripts/evaluate_pcap.py --seed N` 复现。还原抓包的比率之所以温和，还有一层原因：它由流记录还原——地址、包长、时序是真的，但逐包结构不是真的，模型没有可分的结构可用。同一套代码在校准出现之前，在本机真实流量上判异 98.4%，就是上面那一行。
+
+**同一种洪水的检出率为什么取决于它是怎么摊开的**：合成流量那几行是同名但不同的攻击。集中式洪水会撞上限速；分布式洪水按构造就绕开了它，而 Kitsune 按主机打分，每个伪造源看起来都像一个守规矩的客户端。这是方法的边界，不是调参没调好——上面还原抓包的检出率偏低，也是同一个原因。
+
+**合成仿真那 26.72% 的误报是从哪儿来的**：它不是平摊在整个流程上的。36 408 个被拦的正常包里，169 个在十万包的训练阶段，其余 36 239 个全在最后的混合阶段——那个阶段四成流量是攻击，于是剩下的正常包无一幸免。按主机建模学的是"一台主机长什么样"，而攻击流量恰恰会改变这个，所以检测器自己的"正常"是被它要抓的那部分流量污染掉的。这是设计的性质，不是阈值的性质，也是学习类检测器出厂关闭的第二条理由。
+
+**先校准 `blocking:`，再相信上面任何数字。** strike 按 BLOCK 判决计数，也就是**按包计**。在这份抓包十一次抽取量到的 0.4–1.4% 包级误报下——以及校准出现之前真实流量上量到的 98.4%——一个合法源只要在 `strikes_window` 内发出几百个包，就会达到出厂的 `strikes_threshold: 5`，吃到 10 分钟内核封禁；反复几轮还会持久化成永久封禁。先在你自己的流量上量一遍（`cli.py test --pcap`，并对照真实流量规模看 `nips_alert_events_written_total`），再把阈值设成你流量产出的若干倍。
+
+### 在你自己的机器上复现
 
 - `scripts/benchmark.py` — 用合成的普通流量训练 Kitsune，再报告规则引擎准确率、训练/检测吞吐量和攻击检出率。
 - `scripts/benchmark_nslkdd.py` — 下载 NSL-KDD，把流记录映射成合成数据包，用普通流训练 Kitsune，报告精确率/召回率/误报率。
@@ -370,25 +428,28 @@ python scripts/train_lucid.py --pcap capture.pcap \
 
 规则引擎本身是精确的：黑名单/白名单、协议过滤、限速都是确定性的，且始终在 ML 阶段之前执行。限速只统计 TCP SYN（ACK 未置位）和 UDP 数据报；已建立的 TCP 会话（ACK/数据/FIN）不消耗限速额度。
 
-### 用真实流量做离线测试
+### 用自己的流量做离线测试
 
-有两条路径可以在**不需要** root 和 iptables 的情况下验证检测流水线的行为——适合在真实抓包上确认效果：
+检测流水线可以在**不需要** root 和 iptables 的情况下跑，这也是量出"它在我真实承载的流量上会做什么"最实用的办法：
 
-- **真实 pcap（验证真实性能的首选）：** 抓包后离线跑过流水线。
+- **真实 pcap（唯一能说明问题的路径）：** 抓包后离线跑过流水线。
   ```bash
-  # 抓取 30 秒实时流量（抓包本身需要 root）
-  sudo python -c "from scapy.all import sniff, wrpcap; wrpcap('cap.pcap', sniff(iface='en0', timeout=30))"
+  # 抓取数分钟实时流量（抓包本身需要 root）
+  sudo python -c "from scapy.all import sniff, wrpcap; wrpcap('cap.pcap', sniff(iface='en0', timeout=300))"
   # 离线检测——无需 root
   python cli.py test --pcap cap.pcap
+  # 没有真值时，评测器只报判决，绝不出比率
+  python scripts/evaluate_pcap.py --pcap cap.pcap --no-labels --buckets 10
   ```
-  这样能暴露**真实**的误报率（例如合法 ICMP 被协议过滤拦截——离线路径中 ICMP 确实会进入引擎，而实时链路在 `intercept_icmp: false` 下不会）。注意 Kitsune 大约需要 55k 个正常包才会离开训练模式，所以短抓包主要测的是规则引擎。
-- **合成攻击模拟：** `scripts/attack_simulation.py` 生成带标签的流量并按攻击类别报告检出率。它的 ICMP/SSH 结果反映的是硬性协议规则和可分离的生成器分布，不是生产环境的准确率——快速模式下约 20% 的攻击检出率是那个生成器的性质，不是真实流量的下限。
-- **真实抓包，CI 里实测：** `scripts/verify_real_capture_quality.py` 会重建仓库自带的 UNSW-NB15 还原抓包（82,523 个包）并跑完整条流水线，把误报率作为门禁。两个平台上五次运行的结果：检出率 **0.0–0.7%**、误报率 **1.8–3.7%**——Kitsune 的投影未固定随机种子，所以两个数字每次都会浮动，而且这份抓包是按流记录还原的、宽限期也缩短过。请把它当标定值而不是准确率：在这份抓包上 ML 阶段几乎分不开攻击与正常流量，真正管用的检出来自你自己写的规则。
-- **拿这个误报率去校准 `blocking:`。** strike 是按 BLOCK 判决计数的，也就是**按包计**。在 3% 的包级误报率下，一个合法源只要在 `strikes_window` 内发几百个包，就会撞上出厂的 `strikes_threshold: 5`，拿到内核级临时封禁（10 分钟），反复几轮还会把永久封禁写进 `rules.json`。先在你自己流量上量一遍（`cli.py test --pcap`，并对照真实流量规模看 `nips_alert_events_written_total`），再把 `strikes_threshold` 设成你流量产出的若干倍。
+  关于你自己的流量，有两件事是量出来的、不是猜的，忽视它们会得到误导性的结论。**主机上抓包看到的是双向流量**，于是每条出站连接都算在那个源头上：有一份抓包里，主机自己的代理隧道（单一源、1,490 UDP 包/秒）让规则引擎拦掉了 91% 的包。请先筛出发往本机的流量再下结论，否则你测到的只有限速器。而 **Kitsune 需要 55,000 个预热包，外加 5,000 个包的阈值校准窗**，之后才开始判决——所以 30 秒的抓包只测得到规则引擎。`--buckets` 按时间段报判异比例，这正是区分"工作点设错"（第一桶就高）与"流量漂移"（逐桶爬升）的办法。
+  这样能暴露**真实**的误报率（例如合法 ICMP 被协议过滤拦截——离线路径中 ICMP 确实会进入引擎，而实时链路在 `intercept_icmp: false` 下不会）。
+- 合成仿真和仓库自带的还原抓包都在上面的表格里，它们的局限在那里一次说清，此处不再重复。
 
 #### Fail-closed 行为
 
-当所有 ML 检测器都损坏或未训练时，流水线会抛出 `DetectionUnavailable` 并丢弃所有规则引擎未做决定的数据包。这是有意为之：在异常检测器不可用时，静默的网络中断比放行未知流量更安全。状态 API 暴露了 `detection_unavailable_drops` 和 `broken_detectors`，运维人员可以据此发现该状态。
+**启用**学习检测时，规则引擎未做判决的包必须被某个东西打分。如果所有"本来能打分"的挂载检测器都在抛异常、或已被熔断，流水线抛出 `DetectionUnavailable`，这个包被丢弃而不是放行：你花钱换来的检测器死掉时，静默断网比放过未知流量更安全。把 `engine.ml.enabled` 关掉是另一种情形——那是一个决策，所以未判决的流量照常放行，而且永远走不到这条路径。挂载了但缺模型的检测器（`ready: false`）按"未部署"处理：它既不判决，也不计入覆盖。
+
+状态 API 把 `detection_unavailable_drops`、`broken_detectors`、`ml_enabled`、`ml_consulted`、`ml_idle`、`detector_status` 分开暴露，让运维能区分这些状态而不是靠一个布尔值猜——`detector_status["KitsuneDetector"]["trained"]` 才是"已挂载并计入覆盖"与"已经开始产出判决"的区别所在；旁边的 `threshold_source` 说的是工作点用的是哪把尺子：`calibration`（归一化冻结之后打分的窗口）、`training`（旧的训练期取值，那个量纲并不适用于检测），或者谁都还没量过的 `pending`。
 
 ---
 

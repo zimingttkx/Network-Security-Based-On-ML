@@ -77,12 +77,70 @@ def main() -> int:
     appmod.event_store = EventStore(tmp_db, max_rows=5000, retention_days=7)
 
     # -- import-time integrity ---------------------------------------------
+    # The shipped config runs with engine.ml.enabled false.  The switch is only
+    # worth having if an ML-less chain is a working chain, so assert both sides
+    # instead of pinning one shape of the detector list.
     names = [type(d).__name__ for d in appmod.pipeline._detectors]
-    check("pipeline assembles kitsune + a lucid adapter",
-          "KitsuneDetector" in names and any("Lucid" in n for n in names), str(names))
     st = appmod.pipeline.status()
-    check("disabled LUCID does not arm fail-closed",
-          st["broken_detectors"] == [] and st["ml_unavailable"] is False, str(st))
+    check("default config runs on the rule engine alone",
+          names == ["RuleEngine"] and st["ml_enabled"] is False, str(names))
+    check("an ML-less chain does not arm fail-closed",
+          st["broken_detectors"] == [] and st["ml_unavailable"] is False
+          and st["ml_consulted"] == [],
+          f"broken={st['broken_detectors']} unavailable={st['ml_unavailable']} "
+          f"consulted={st['ml_consulted']}")
+
+    from networksecurity.engine.assembly import attach_detectors
+    from networksecurity.engine.pipeline import DetectionPipeline
+    from networksecurity.engine.rule_engine import RuleEngine
+    from networksecurity.utils.config import load_engine_config
+
+    on = DetectionPipeline(RuleEngine())
+    mounted = attach_detectors(on, {"enabled": True, "detectors": [
+        {"uses": "kitsune"}, {"uses": "lucid"}]}, load_engine_config())
+    # LUCID asks for a trained model; with model_path empty it is not mounted at
+    # all, which is what keeps the status page from advertising coverage there.
+    check("enabling ML mounts kitsune, and lucid only if its model loads",
+          mounted == ["KitsuneDetector"]
+          and on.status()["ml_consulted"] == ["KitsuneDetector"],
+          f"mounted={mounted} consulted={on.status()['ml_consulted']}")
+
+    # -- shadow mode is visible on the operator's two screens -----------------
+    # A detector mounted with enforce=false never blocks, so its only trace is
+    # what the operator can read: the status keys and the metrics series.
+    from networksecurity.engine import PacketInfo as _PI
+    from networksecurity.engine.detector import BaseDetector as _BD
+    from networksecurity.engine.verdict import Action as _A, Verdict as _V
+    from networksecurity.observability.metrics import render_metrics
+
+    class _ShadowBlocker(_BD):
+        def __init__(self):
+            super().__init__(name="ShadowBlocker")
+
+        async def process_packet(self, packet):
+            return _V(_A.BLOCK, 0.9, reason="shadow probe", detector=self.name)
+
+    spipe = DetectionPipeline(RuleEngine())
+    spipe.add_detector(_ShadowBlocker(), enforce=False)
+    _sv = asyncio.run(spipe.process_packet(
+        _PI(src_ip="203.0.113.99", dst_ip="10.0.0.1", src_port=1, dst_port=80,
+            protocol=6, packet_size=60, timestamp=1000.0)))
+    sshadow = spipe.status()
+    check("shadow verdicts counted separately and named in status",
+          _sv.action.value == "allow" and sshadow["total_shadow_blocked"] == 1
+          and sshadow["total_blocked"] == 0
+          and sshadow["ml_shadow"] == ["ShadowBlocker"],
+          f"verdict={_sv.action.value} blocked={sshadow['total_blocked']} "
+          f"shadow_blocked={sshadow['total_shadow_blocked']} "
+          f"ml_shadow={sshadow['ml_shadow']}")
+
+    rendered = render_metrics(pipeline=spipe, store=appmod.event_store,
+                              interceptor=None, started_at=time.time())
+    check("shadow counters render on /metrics",
+          "nips_packets_shadow_blocked_total 1" in rendered
+          and 'state="shadow"' in rendered,
+          f"counter={'nips_packets_shadow_blocked_total 1' in rendered} "
+          f"state_line={'state=\"shadow\"' in rendered}")
 
     with TestClient(appmod.app) as c:
         check("/health open", c.get("/health").status_code == 200)
@@ -172,6 +230,14 @@ def main() -> int:
         # Both sides are scoped to the alert table: the store-wide total also
         # counts audit rows, so one landing inside this window used to inflate
         # the write delta by one and turn the check red at random.
+        # The two 422 refusals above and the two exports each leave an audit
+        # row behind, and the background writer commits them on its own 0.25 s
+        # cadence — usually before this window opens, but "usually" is not a
+        # measurement: one still queued here lands inside the flush below and
+        # inflates both counters by one, red at random (seen in CI as
+        # store+7 audit+2).  Settle first, so the window contains exactly the
+        # rows this section enqueues.
+        store.flush(3.0)
         stats0 = store.stats()
         total_before = c.get("/api/v1/alerts?limit=1").json()["total"]
         for i in range(5):
@@ -268,6 +334,37 @@ def main() -> int:
         check("status exposes reload counters",
               st["reload"]["reloads"] >= 2 and st["reload"]["failures"] >= 1,
               str(st["reload"])[:70])
+        # The endpoint forwards pipeline.status() rather than copying fields, so
+        # a field added to the snapshot cannot quietly fail to reach operators.
+        missing = sorted(set(appmod.pipeline.status()) - {"rule_engine"} - set(st))
+        check("every pipeline status field reaches the endpoint",
+              not missing, f"missing={missing}")
+        # The shipped config mounts no learning detector, so mount a probe onto
+        # the live pipeline and confirm its self-reported status arrives before
+        # tearing it back off.
+        from networksecurity.engine.detector import BaseDetector
+
+        class Probe(BaseDetector):
+            def __init__(self):
+                super().__init__(name="Probe")
+
+            async def process_packet(self, packet):
+                return None
+
+            def status(self):
+                return {"probing": True}
+
+        probe = Probe()
+        appmod.pipeline.add_detector(probe)
+        try:
+            probed = c.get("/api/v1/status").json()
+            arrived = probed["detector_status"].get("Probe") == {"probing": True}
+            evidence = str(probed["detector_status"])[:90]
+        finally:
+            appmod.pipeline._detectors.remove(probe)
+        check("detector status reaches the endpoint, per detector",
+              arrived and "Probe" not in c.get("/api/v1/status").json()["detector_status"],
+              evidence)
         au = {a["result"] for a in c.get("/api/v1/audit?limit=100").json()["items"]}
         check("reload attempts are audited (success and failure)",
               {"reload", "reload_failed"} <= au, str(sorted(au))[:80])

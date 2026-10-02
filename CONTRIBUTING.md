@@ -33,19 +33,27 @@ perf/<description>        # Performance work
 ci/<description>          # .github/ and pipeline changes
 ```
 
-Enforced by `.github/workflows/branch-name-check.yml`; `main`, `release/*` and
-`dependabot/*` are exempt.
+Enforced by `.github/workflows/branch-name-check.yml`; `main`, `dev`,
+`release/*` and `dependabot/*` are exempt.
 
 ### Commit Messages
 
-Use [Conventional Commits](https://www.conventionalcommits.org/):
+Use [Conventional Commits](https://www.conventionalcommits.org/) types
+(`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `ci`) with an
+optional scope, and write the summary line and body in Chinese — this
+repository's history is in Chinese. The summary states what changed and why,
+not just what:
 
 ```
-feat: add rate limiting to RuleEngine
-fix: nfqueue handler crashes on fragmented packets
-docs: update ARCHITECTURE.md with Lucid data flow
-refactor: extract verdict types to separate module
+feat(engine): ML 检测器改为可拆卸，示例检测器给出完整契约
+fix(eval): 抓包不再把标签写进源地址，真值改成显式输入
+docs: 检测器契约与默认关闭的 ML 写进文档，评测数字改为可复现清单
+ci: 分静态/单元/系统三层，慢的标定项挪 nightly
 ```
+
+Non-trivial changes carry a body explaining the motivation and the trade-offs
+rejected; trivial ones are a single line. Commits carry no generated
+attribution trailers.
 
 ### What CI Runs
 
@@ -59,14 +67,22 @@ accepts a direct push, so work starts on its own short-lived branch.
 | layer | jobs | blocks merge |
 |-------|------|--------------|
 | static | `workflow-lint` (actionlint), `preflight` (fatal ruff subset, forbidden-keyword scan, bandit at MEDIUM+, packaging install, import sweep) | yes |
-| unit | `unit` (one job per `scripts/verify_*.py`), `units-inline` | yes |
+| unit | `unit` (one job per `scripts/verify_*.py`, including the capture truth chain), `units-inline` | yes |
 | system | `kernel-rules`, `live-nfqueue`, `docker`, `systemd` | yes |
-| quality | nightly: real-capture detection quality, LUCID training, attack simulation, Python 3.13 sweep, full static reports | no |
+| quality | nightly: real-capture detection quality (the half-hour measurement), LUCID training, attack simulation, Python 3.13 sweep, full static reports | no |
 
 The quality layer moved to `nightly.yml` on purpose: those three checks are slow,
 and the detection rate they report is a calibration value, not a production
 accuracy claim (see README). Gating merges on a synthetic percentage only pushes
 people to tune the threshold.
+
+The capture half of that layer sits in `capture_truth.py` instead, run by
+`verify_capture_truth.py` on every pull request. Both had lived in
+`verify_real_capture_quality.py`, which the matrix skips by name — so the cheap
+truth checks inherited the nightly schedule and a leak in the capture's answer
+key stayed green until the next night. Splitting them cost one file; the
+measurement still trains three KitNET draws and stays nightly, the truth checks
+rebuild the capture once (byte-identical, ≈1 min) and gate the PR.
 
 Two rules follow from this layout:
 
@@ -227,7 +243,7 @@ These will result in an immediate PR rejection:
 ## Review Process
 
 1. PR author completes the pre-submission checklist.
-2. CI must pass (keyword scan, import check, basic smoke test).
+2. CI must pass — the layers and jobs are listed under "What CI Runs" above.
 3. At least one maintainer reviews and approves.
 4. No direct pushes to `main`. All changes go through PRs.
 

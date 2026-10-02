@@ -41,17 +41,19 @@ class DetectionPipeline:
     - ``ALLOW`` / ``LOG`` /
       ``CHALLENGE``       -> stop and return it (definitive decision)
 
-    If ``short_circuit_on_block`` is ``False``, a ``BLOCK`` verdict does NOT
-    stop the chain immediately; the pipeline keeps running the remaining
-    detectors and returns the strongest observed ``BLOCK`` at the end (so
-    later detectors can corroborate).  Non-BLOCK verdicts always stop the
-    chain regardless of this flag, because an explicit allow/observe
-    decision is final.
+    Detectors mounted with ``enforce=False`` (shadow mode) are consulted but
+    never decide: any explicit verdict they return is recorded — BLOCKs also
+    bump ``total_shadow_blocked`` — and the chain moves on exactly as if they
+    had abstained.  A shadow detector must not be able to end the chain, or
+    it would shield the enforcing detectors mounted behind it; the shadow
+    verdicts travel to the caller in ``metadata["shadow"]`` instead.
 
     If the chain finishes with no explicit verdict the fallback is ``ALLOW``
     — but only when at least one ML detector actually ran.  When ML
     detectors are registered and none of them executed, ``process_packet``
     raises ``DetectionUnavailable`` so the caller fail-closes (see above).
+    A shadow detector that ran counts as executed: it was healthy and
+    looked at the packet.
 
     Fault isolation: a detector that raises is treated as abstaining for
     that packet, and after ``FAILURE_THRESHOLD`` consecutive exceptions it is
@@ -69,15 +71,19 @@ class DetectionPipeline:
     def __init__(
         self,
         rule_engine: RuleEngine | None = None,
-        short_circuit_on_block: bool = True,
+        ml_enabled: bool = True,
     ) -> None:
         self._rule_engine = rule_engine or RuleEngine()
         self._detectors: list[BaseDetector] = [self._rule_engine]
-        self._short_circuit_on_block = short_circuit_on_block
+        # Shadow detectors, by object identity.  The pipeline holds strong
+        # references and has no removal API, so ids cannot be recycled.
+        self._shadow: set[int] = set()
+        self._ml_enabled = ml_enabled
         self._running: bool = False
         self._lock = threading.Lock()
         self._total_processed: int = 0
         self._total_blocked: int = 0
+        self._total_shadow_blocked: int = 0
         # Per-detector consecutive-failure counts and the tripped set.  Only
         # the detection event-loop thread mutates these; status() snapshots.
         self._detector_failures: dict[str, int] = {}
@@ -85,8 +91,12 @@ class DetectionPipeline:
 
     # -- registration -------------------------------------------------------
 
-    def add_detector(self, detector: BaseDetector) -> DetectionPipeline:
+    def add_detector(self, detector: BaseDetector, *, enforce: bool = True) -> DetectionPipeline:
+        """Mount a detector.  ``enforce=False`` runs it in shadow mode: its
+        verdicts are recorded (see process_packet) but never decide."""
         self._detectors.append(detector)
+        if not enforce:
+            self._shadow.add(id(detector))
         return self
 
     def set_rule_engine(self, rule_engine: RuleEngine) -> DetectionPipeline:
@@ -108,6 +118,61 @@ class DetectionPipeline:
     def detectors(self) -> list[BaseDetector]:
         return self._detectors
 
+    @property
+    def ml_enabled(self) -> bool:
+        return self._ml_enabled
+
+    def set_ml_enabled(self, enabled: bool) -> None:
+        """Run the rule engine alone, or bring the learning detectors back.
+
+        Applies to the next packet — nothing is buffered, so this is a decision
+        about future traffic rather than a revision of the past.
+        """
+        self._ml_enabled = bool(enabled)
+
+    def _record_failure(self, name: str) -> None:
+        """Count one detector failure and log it the way the breaker logs."""
+        fails = self._detector_failures.get(name, 0) + 1
+        self._detector_failures[name] = fails
+        if fails >= self.FAILURE_THRESHOLD:
+            self._broken_detectors.add(name)
+            logger.error(
+                "detector %s tripped the circuit breaker after %d "
+                "consecutive failures — skipping it until restart; "
+                "once every ML detector is skipped the pipeline "
+                "fail-closes (DetectionUnavailable -> packet dropped)",
+                name, fails,
+            )
+        else:
+            logger.exception(
+                "detector %s failed (%d/%d consecutive) — abstaining",
+                name, fails, self.FAILURE_THRESHOLD,
+            )
+
+    def _ready_state(self, detector: BaseDetector) -> tuple[bool, bool]:
+        """Read ``ready``, returning (supposed to cover, the read failed).
+
+        ``ready`` is a contract member, and a property can raise.  Read bare,
+        that exception bypasses the circuit breaker entirely — the packet never
+        reaches the detector, so nothing is counted, and the interceptor's
+        catch-all then drops every packet with an unthrottled traceback.
+
+        A failed read answers True: "supposed to cover this traffic".  Answering
+        False would take the detector out of the fail-closed set and wave
+        packets through precisely when we cannot tell whether it can score.
+        Whether the failure is *counted* is the caller's decision, because the
+        same read serves two purposes here: the per-packet loop counts one
+        failure per detector per packet, while the fail-closed decision and
+        `status()` only look — a read that also moved the breaker would count a
+        packet twice or turn a status request into detector failures.
+        """
+        try:
+            return bool(getattr(detector, "ready", True)), False
+        except Exception:
+            logger.exception("detector %s raised while reading ready",
+                             detector.name)
+            return True, True
+
     def _ml_detectors(self) -> list[BaseDetector]:
         """Registered detectors other than the rule engine.
 
@@ -123,10 +188,17 @@ class DetectionPipeline:
         with self._lock:
             self._total_processed += 1
 
-        # When short-circuit is disabled we still want to capture a BLOCK
-        # verdict even if a later detector overrides it; keep the strongest
-        # (highest-confidence) BLOCK seen so far.
-        pending_block: Verdict | None = None
+        # Shadow verdicts observed on this packet.  They ride to the caller
+        # in the final verdict's metadata, so every exit below funnels
+        # through _finish — a shadow verdict must stay visible whichever
+        # way the chain ends.
+        shadow: list[dict] = []
+
+        def _finish(verdict: Verdict) -> Verdict:
+            if shadow:
+                verdict.metadata["shadow"] = shadow
+            return verdict
+
         # Did any ML detector actually run?  An abstain (None) or a LOG
         # verdict still counts as "ran" — the detector was healthy and made a
         # (negative) decision.  Only breaker-skips and exceptions leave it
@@ -137,25 +209,28 @@ class DetectionPipeline:
         for detector in self._detectors:
             if detector.name in self._broken_detectors:
                 continue
+            ready_failed = False
+            if detector is not self._rule_engine:
+                if not self._ml_enabled:
+                    continue
+                able, ready_failed = self._ready_state(detector)
+                if ready_failed:
+                    # Counted here, and the exception path below must not count
+                    # the same packet a second time: FAILURE_THRESHOLD means
+                    # consecutive failed *packets*, not failed read attempts.
+                    self._record_failure(detector.name)
+                if not able:
+                    # Registered with nothing to score with (no model loaded).
+                    # Such a detector neither decides nor counts as coverage.
+                    # A tripped detector is the opposite case: it was supposed
+                    # to cover this packet, so its absence still fails closed —
+                    # handled by `expected` below.
+                    continue
             try:
                 verdict = await detector.process_packet(packet)
             except Exception:
-                fails = self._detector_failures.get(detector.name, 0) + 1
-                self._detector_failures[detector.name] = fails
-                if fails >= self.FAILURE_THRESHOLD:
-                    self._broken_detectors.add(detector.name)
-                    logger.error(
-                        "detector %s tripped the circuit breaker after %d "
-                        "consecutive failures — skipping it until restart; "
-                        "once every ML detector is skipped the pipeline "
-                        "fail-closes (DetectionUnavailable -> packet dropped)",
-                        detector.name, fails,
-                    )
-                else:
-                    logger.exception(
-                        "detector %s failed (%d/%d consecutive) — abstaining",
-                        detector.name, fails, self.FAILURE_THRESHOLD,
-                    )
+                if not ready_failed:
+                    self._record_failure(detector.name)
                 continue
             self._detector_failures.pop(detector.name, None)
             if detector is not self._rule_engine:
@@ -163,34 +238,46 @@ class DetectionPipeline:
             if verdict is None:
                 continue
 
+            if id(detector) in self._shadow:
+                # Shadow mode: observe only.  No verdict from this detector
+                # may end the chain (that would shield enforcing detectors
+                # mounted behind it) or reach the enforcement path (inline
+                # drop, strikes, kernel bans); the caller sees it through
+                # metadata["shadow"].
+                if verdict.action == Action.BLOCK:
+                    with self._lock:
+                        self._total_shadow_blocked += 1
+                shadow.append(verdict.to_dict())
+                continue
+
             if verdict.action == Action.BLOCK:
                 with self._lock:
                     self._total_blocked += 1
-                if self._short_circuit_on_block:
-                    return verdict
-                if pending_block is None or verdict.confidence > pending_block.confidence:
-                    pending_block = verdict
-                continue
+                return _finish(verdict)
 
             # Any non-BLOCK explicit verdict is a final decision and stops
             # the chain (ALLOW / LOG / CHALLENGE are definitive).
-            return verdict
+            return _finish(verdict)
 
-        if pending_block is not None:
-            return pending_block
-
-        if not ml_executed and self._ml_detectors():
+        # Fail-closed applies when something was supposed to look at this packet
+        # and could not: a detector that is able to score (ready) but raised, or
+        # tripped earlier.  A chain whose only ML members are switched off by
+        # configuration is not an outage — it is rules-only operation, which is
+        # a decision, and undecided traffic falls through to ALLOW.
+        expected = [d for d in self._ml_detectors() if self._ready_state(d)[0]]
+        if self._ml_enabled and expected and not ml_executed:
             raise DetectionUnavailable(
                 "no ML detector could run on this packet "
-                f"(broken: {sorted(self._broken_detectors) or 'all raised'})"
+                f"(broken: {sorted(self._broken_detectors) or 'all raised'}; "
+                f"shadow verdicts observed on this packet: {len(shadow)})"
             )
 
-        return Verdict(
+        return _finish(Verdict(
             action=Action.ALLOW,
             confidence=0.5,
             reason="no threat detected",
             detector="pipeline",
-        )
+        ))
 
     async def process_batch(self, packets: list[PacketInfo]) -> list[Verdict]:
         results = []
@@ -221,22 +308,60 @@ class DetectionPipeline:
         return self._total_blocked
 
     def status(self) -> dict:
+        # Detector-reported status is collected outside the status lock:
+        # status() is third-party code, and a detector that blocks or raises
+        # inside it must not be able to stall every other reader of this dict.
+        detector_status: dict[str, dict] = {}
+        for d in self._detectors:
+            try:
+                reported = d.status()
+            except Exception:
+                logger.exception("detector %r status() raised", d.name)
+                reported = {"status_error": True}
+            if reported:
+                detector_status[d.name] = reported
+
         with self._lock:
             broken = sorted(self._broken_detectors)
             ml = self._ml_detectors()
             down = [d.name for d in ml if d.name in self._broken_detectors]
+            # "consulted" = mounted, enabled, and able to score.  A detector
+            # registered without its model is not that, and listing it beside
+            # the ones deciding traffic reads as a promise the process is not
+            # keeping.  One that is still warming up *is* counted: excluding it
+            # would read as an outage and drop every packet during startup.
+            # Whether it is producing verdicts yet is a per-detector fact, so
+            # it lives in detector_status instead of narrowing this list.
+            expected_ml = [d for d in ml if self._ready_state(d)[0]]
+            consulted = [d.name for d in expected_ml
+                         if self._ml_enabled and d.name not in down]
+            idle = [d.name for d in ml if d.name not in consulted]
             return {
                 "running": self._running,
                 "total_processed": self._total_processed,
                 "total_blocked": self._total_blocked,
+                "total_shadow_blocked": self._total_shadow_blocked,
                 "detectors": [d.name for d in self._detectors],
+                "ml_enabled": self._ml_enabled,
+                "ml_consulted": consulted,
+                "ml_idle": idle,
+                "ml_shadow": [d.name for d in self._ml_detectors()
+                              if id(d) in self._shadow],
+                "detector_status": detector_status,
                 "broken_detectors": broken,
-                # degraded: some ML coverage lost.  ml_unavailable: every
-                # registered ML detector is tripped, so any packet that the
-                # rule engine does not decide raises DetectionUnavailable and
-                # is dropped — a full outage, not a partial one.
-                "degraded": bool(down),
-                "ml_unavailable": bool(ml) and len(down) == len(ml),
+                # degraded: some ML coverage lost.  ml_unavailable answers one
+                # question: is fail-closed dropping undecided traffic right
+                # now?  Fail-closed is decided over the *expected* set (mounted
+                # and able to score), so that is what has to be measured here —
+                # counting every registered detector reports False while a
+                # tripped detector and a model-less one between them drop every
+                # packet the rule engine passes on.  Both describe unplanned
+                # loss, so neither fires while ML is switched off: that is a
+                # decision, and the status says so with ml_enabled.
+                "degraded": self._ml_enabled and bool(down),
+                "ml_unavailable": bool(self._ml_enabled and expected_ml
+                                       and all(d.name in self._broken_detectors
+                                               for d in expected_ml)),
                 "rule_engine": self._rule_engine.stats(),
             }
 
@@ -248,3 +373,4 @@ class DetectionPipeline:
         with self._lock:
             self._total_processed = 0
             self._total_blocked = 0
+            self._total_shadow_blocked = 0

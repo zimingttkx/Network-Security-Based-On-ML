@@ -9,7 +9,7 @@ Python 3.12+. Type hints required on all public interfaces.
 Follow [PEP 8](https://peps.python.org/pep-0008/). Key points:
 
 - 4 spaces for indentation (no tabs)
-- 100 character line limit (not 79)
+- 100 character line limit (not 79) — reviewer-enforced; CI's fatal ruff subset does not check line length
 - `snake_case` for functions and variables
 - `PascalCase` for classes
 - `UPPER_CASE` for module-level constants
@@ -68,6 +68,8 @@ networksecurity/engine/         # detection logic — no OS calls, no iptables
 networksecurity/interception/   # OS integration — nfqueue, iptables, packet capture
 networksecurity/features/       # feature computation — no side effects on import
 networksecurity/data/           # offline data loading — dev/testing only
+networksecurity/observability/  # durable events, metrics, log routing — no packet inspection
+networksecurity/utils/          # shared config loading and validation
 ```
 
 ### Call Direction
@@ -75,11 +77,15 @@ networksecurity/data/           # offline data loading — dev/testing only
 ```
 app.py / cli.py  →  engine/              ✓
 app.py / cli.py  →  interception/        ✓ (lazy only)
+app.py / cli.py  →  observability/       ✓ (management plane owns persistence)
 interception/    →  engine/              ✓
 engine/          →  interception/        ✗ FORBIDDEN
 engine/          →  features/            ✓
+engine/          →  observability/       ✗ FORBIDDEN (detection must not own disk I/O)
 features/        →  engine/detector.py   ✓ (PacketInfo dataclass only)
 features/        →  interception/        ✗ FORBIDDEN
+interception/    →  observability/       ✗ FORBIDDEN (no disk writes in the NFQUEUE callback)
+observability/   →  engine/, interception/  ✗ FORBIDDEN (receives duck-typed objects)
 ```
 
 ## Logging
@@ -160,9 +166,15 @@ is_ddos = proba[1] > 0.5
 # Wrong — hardcoded result
 is_ddos = False  # never trained, just return safe
 
-# Correct for untrained model
+# Correct for an undeployed model — report it via `ready`, and the pipeline
+# will not consult the detector at all (it also stops counting as ML coverage)
+@property
+def ready(self) -> bool:
+    return self._model is not None
+
+# Wrong — answering LOG for an undeployed model ends the chain and makes the
+# dead detector look like coverage, silently disabling fail-closed behind it
 if not self.is_trained:
-    logger.warning("model not trained, returning low-confidence result")
     return Verdict(action=Action.LOG, confidence=0.0,
                    reason="model not trained", detector=self.name)
 ```
@@ -175,4 +187,4 @@ Do not add a `simulate=True` parameter to production functions — keep generati
 
 ## Directory Changes
 
-Do not add new top-level packages in `networksecurity/` without prior discussion in an Issue. The five packages (`engine/`, `interception/`, `features/`, `data/`, `utils/`) are intentionally small. New detectors go under `engine/`. New capture mechanisms go under `interception/`.
+Do not add new top-level packages in `networksecurity/` without prior discussion in an Issue. The six packages (`engine/`, `interception/`, `features/`, `data/`, `observability/`, `utils/`) are intentionally small. New detectors go under `engine/`. New capture mechanisms go under `interception/`. Event storage, metrics and log routing go under `observability/`.

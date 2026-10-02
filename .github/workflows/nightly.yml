@@ -24,6 +24,11 @@ jobs:
   # ── 真实抓包上的检出质量 ───────────────────────────────────────────
   # 重建仓库自带的 UNSW-NB15 还原抓包（8 万多个包）跑完整条流水线，误报率
   # 是硬门禁；检出率只出数字，因为这份抓包按流记录还原，ML 阶段本来就分不开。
+  # 真值取自抓包旁边的标签 sidecar（scripts/capture_labels.py），不写在报文里；
+  # 训练用 config 里出厂的 5k/50k 宽限期——缩短特征映射窗口会让拟合结果变成
+  # "先到的流说了算"，操作点随抓包重抽而漂移。门禁固定跑三个种子（那批实测里
+  # 偏低/居中/偏高的三次）并只对中位数设边界：KitNET 的权重取自全局随机数，
+  # 单跑一次会按约五分之一的概率在代码没动的情况下变红。
   capture-quality:
     name: Detection quality on a real capture
     runs-on: ubuntu-latest
@@ -112,13 +117,27 @@ jobs:
           python - <<'PY'
           import re, pathlib
           cfg = pathlib.Path("config/config.yaml")
-          cfg.write_text(re.sub(r'model_path: ""', 'model_path: "models/lucid_cnn.h5"',
-                                cfg.read_text()))
+          text = re.sub(r'model_path: ""', 'model_path: "models/lucid_cnn.h5"',
+                        cfg.read_text())
+          # LUCID is mounted by the ml assembler now, so the switch has to be on
+          # for this to be a test of anything — and the switch alone is not
+          # enough: `attach_detectors` builds exactly what `engine.ml.detectors`
+          # names, and the shipped file keeps `- uses: lucid` commented out.  Flipping
+          # `enabled` without listing the detector asserts against a chain that was
+          # never asked to contain LUCID, which is a passing test of nothing.
+          text = re.sub(r'(?m)^(\s*)enabled: false$', r'\1enabled: true', text, count=1)
+          text = re.sub(r'(?m)^(\s*)- uses: kitsune$',
+                        r'\1- uses: kitsune\n\1- uses: lucid', text, count=1)
+          cfg.write_text(text)
+          from networksecurity.utils.config import load_ml_config
+          uses = [e["uses"] for e in load_ml_config()["detectors"]]
+          assert "lucid" in uses, f"the injection did not land: {uses}"
           import app
           names = [type(d).__name__ for d in app.pipeline._detectors]
           assert "LucidDetectorAdapter" in names, names
           status = app.pipeline.status()
           assert status["broken_detectors"] == [], status
+          assert status["ml_consulted"], status
           lucid = next(d for d in app.pipeline._detectors
                        if type(d).__name__ == "LucidDetectorAdapter")
           assert lucid._enabled and lucid._lucid.is_trained, "model loaded but detector not trained"
@@ -132,6 +151,14 @@ jobs:
           cfg = pathlib.Path("config/config.yaml")
           cfg.write_text(re.sub(r'model_path: "models/lucid_cnn.h5"',
                                 'model_path: "models/missing.h5"', cfg.read_text()))
+          from networksecurity.utils.config import load_ml_config
+          uses = [e["uses"] for e in load_ml_config()["detectors"]]
+          # Positive control, because the assertion below is a not-in: an entry
+          # that was never listed would satisfy it for the wrong reason.  Here
+          # LUCID is listed and only the model is unreadable, so the absence is
+          # the loader refusing a bad model.
+          assert "lucid" in uses, (
+              f"the broken-model step is not mounting anything to refuse: {uses}")
           import app
           names = [type(d).__name__ for d in app.pipeline._detectors]
           assert "LucidDetectorAdapter" not in names, (

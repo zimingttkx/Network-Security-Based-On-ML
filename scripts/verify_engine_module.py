@@ -34,7 +34,9 @@ def pkt(**kw) -> PacketInfo:
 # ---------------------------------------------------------------------------
 # Checklist — pipeline
 # P1 None -> continue; BLOCK -> short-circuit; ALLOW -> short-circuit
-# P2 short_circuit_on_block=False keeps strongest BLOCK
+# P2a-d shadow (enforce=False): consulted but never decides, never ends the
+#      chain, counted separately and carried in metadata["shadow"]; a healthy
+#      shadow detector counts as coverage for fail-closed
 # P3 fallback ALLOW verdict when chain abstains
 # P4 counters consistent (total_processed/blocked)
 # P5 reset() clears counters and detectors
@@ -120,18 +122,72 @@ async def main():
     v = await pl.process_packet(pkt())
     report("P1 BLOCK short-circuits", v.action != Action.BLOCK, f"verdict={v.action}")
 
-    pl2 = DetectionPipeline(short_circuit_on_block=False)
-    pl2.add_detector(AlwaysBlock())
-
+    # --- P2a-P2d: shadow detectors (enforce=False) ---------------------------
     class StrongBlock(BaseDetector):
         async def process_packet(self, packet):
             return Verdict(Action.BLOCK, 0.99, reason="strong", detector="StrongBlock")
 
+    # P2a — the trap this design exists for: a shadow BLOCK must not shield the
+    # enforcing detector mounted behind it.  The chain continues past the
+    # shadow verdict and the enforcer's BLOCK is what comes back, with the
+    # shadow verdict riding along in metadata.
+    pl2 = DetectionPipeline()
+    pl2.add_detector(AlwaysBlock(), enforce=False)
     pl2.add_detector(StrongBlock())
     v2 = await pl2.process_packet(pkt())
-    report("P2 non-short-circuit returns strongest BLOCK",
-           not (v2.action == Action.BLOCK and v2.confidence == 0.99),
-           f"verdict conf={v2.confidence} (expected 0.99 from StrongBlock)")
+    s2 = pl2.status()
+    ok = (v2.action == Action.BLOCK and v2.detector == "StrongBlock"
+          and len(v2.metadata.get("shadow", [])) == 1
+          and v2.metadata["shadow"][0]["detector"] == "AlwaysBlock"
+          and s2["total_blocked"] == 1 and s2["total_shadow_blocked"] == 1
+          and s2["ml_shadow"] == ["AlwaysBlock"])
+    report("P2a shadow BLOCK does not shield the enforcing detector", not ok,
+           f"verdict={v2.action}/{v2.detector}, metadata={sorted(v2.metadata)}, "
+           f"blocked={s2['total_blocked']}, shadow_blocked={s2['total_shadow_blocked']}")
+
+    # P2b — the same applies to an explicit ALLOW from a shadow detector: it
+    # must not end the chain any more than a BLOCK may.
+    pl2b = DetectionPipeline()
+    pl2b.add_detector(AlwaysAllow(), enforce=False)
+    pl2b.add_detector(StrongBlock())
+    v2b = await pl2b.process_packet(pkt())
+    report("P2b shadow ALLOW does not end the chain",
+           not (v2b.action == Action.BLOCK and v2b.detector == "StrongBlock"
+                and len(v2b.metadata.get("shadow", [])) == 1),
+           f"verdict={v2b.action}/{v2b.detector}")
+
+    # P2c — a shadow-only chain falls back to ALLOW with the shadow verdicts
+    # attached, blocks nothing, and is not an outage.
+    pl2c = DetectionPipeline()
+    pl2c.add_detector(AlwaysBlock(), enforce=False)
+    v2c = await pl2c.process_packet(pkt())
+    s2c = pl2c.status()
+    ok = (v2c.action == Action.ALLOW and v2c.detector == "pipeline"
+          and v2c.metadata.get("shadow", [{}])[0].get("reason") == "test"
+          and s2c["total_blocked"] == 0 and s2c["total_shadow_blocked"] == 1
+          and not s2c["degraded"] and not s2c["ml_unavailable"]
+          and s2c["ml_consulted"] == ["AlwaysBlock"]
+          and s2c["ml_shadow"] == ["AlwaysBlock"])
+    report("P2c shadow-only chain allows with the verdict visible", not ok,
+           f"verdict={v2c.action}, shadow={v2c.metadata.get('shadow')}, "
+           f"blocked={s2c['total_blocked']}, shadow_blocked={s2c['total_shadow_blocked']}")
+
+    # P2d — a healthy shadow detector is coverage: an enforcing detector that
+    # raises behind it must not turn the chain into a fail-closed outage.
+    class EnforcerRaises(BaseDetector):
+        async def process_packet(self, packet):
+            raise RuntimeError("enforcer blew up")
+
+    pl2d = DetectionPipeline()
+    pl2d.add_detector(AlwaysBlock(), enforce=False)
+    pl2d.add_detector(EnforcerRaises())
+    raised2d = ""
+    try:
+        v2d = await pl2d.process_packet(pkt())
+    except DetectionUnavailable as exc:
+        raised2d = str(exc)[:60]
+    report("P2d shadow coverage keeps the chain out of fail-closed", bool(raised2d),
+           f"raised={raised2d}, verdict={v2d.action if not raised2d else '-'}")
 
     pl3 = DetectionPipeline()
     v3 = await pl3.process_packet(pkt())
@@ -230,6 +286,122 @@ async def main():
     report("P10 partial ML loss degraded not unavailable", not ok,
            f"degraded={s10['degraded']}, ml_unavailable={s10['ml_unavailable']}, "
            f"broken={s10['broken_detectors']}, verdict={v10.action}")
+
+    # P11: `ready` is contract code as well, and a property may raise.  It used
+    # to be read bare in three places, so that exception escaped
+    # process_packet() without ever reaching the circuit breaker — the
+    # interceptor's catch-all then dropped every packet with an unthrottled
+    # traceback, and the broken detector never appeared in `broken_detectors`.
+    class ReadyRaises(BaseDetector):
+        @property
+        def ready(self):
+            raise RuntimeError("ready blew up")
+
+    class ReadyRaisesAndFails(ReadyRaises):
+        async def process_packet(self, packet):
+            raise RuntimeError("detector blew up")
+
+    class ReadyRaisesButScores(ReadyRaises):
+        async def process_packet(self, packet):
+            return None
+
+    pl11 = DetectionPipeline()
+    pl11.add_detector(ReadyRaisesAndFails())
+    escaped = 0
+    unavailable = 0
+    counted = []
+    for i in range(8):
+        try:
+            await pl11.process_packet(pkt(src_ip=f"11.0.0.{i}"))
+        except DetectionUnavailable:
+            unavailable += 1
+        except Exception:
+            escaped += 1
+        counted.append(pl11._detector_failures.get("ReadyRaisesAndFails", 0))
+    s11 = pl11.status()
+    # One packet, one count: `ready` raising and then the detector raising on the
+    # same packet is one failed packet.  Counting both reads made the breaker trip
+    # on packet 2 of a threshold documented as 5 consecutive failures, and the
+    # fail-closed `expected` read added a third count per packet.
+    ok = (escaped == 0 and unavailable == 8
+          and counted == [1, 2, 3, 4, 5, 5, 5, 5]
+          and s11["broken_detectors"] == ["ReadyRaisesAndFails"]
+          and s11["degraded"] and s11["ml_unavailable"])
+    report("P11a raising ready is counted by the breaker and fails closed", not ok,
+           f"escaped={escaped}, unavailable={unavailable}, counts/packet={counted}, "
+           f"broken={s11['broken_detectors']}, ml_unavailable={s11['ml_unavailable']}")
+
+    # A detector that only trips while *reading* ready may still be perfectly
+    # able to score.  It must be consulted, and the read failure must not
+    # accumulate into a breaker trip, since every successful packet resets it.
+    pl11b = DetectionPipeline()
+    pl11b.add_detector(ReadyRaisesButScores())
+    v11b = await pl11b.process_packet(pkt(src_ip="11.0.1.1"))
+    s11b = pl11b.status()
+    ok = (v11b.action == Action.ALLOW and v11b.detector == "pipeline"
+          and s11b["broken_detectors"] == [] and not s11b["ml_unavailable"])
+    report("P11b raising ready but scoring is not an outage", not ok,
+           f"verdict={v11b.action}/{v11b.detector}, broken={s11b['broken_detectors']}, "
+           f"ml_unavailable={s11b['ml_unavailable']}")
+
+    # status() reads ready for every detector, so a raising one must not take
+    # the endpoint down — and a status read must not move breaker state.
+    before11 = dict(pl11b._detector_failures)
+    try:
+        s11c = pl11b.status()
+        raised11 = None
+    except Exception as exc:
+        s11c, raised11 = None, type(exc).__name__
+    after11 = dict(pl11b._detector_failures)
+    ok = (raised11 is None and s11c is not None and after11 == before11)
+    report("P11c status() survives a raising ready without counting it", not ok,
+           f"raised={raised11}, failures before={before11}, after={after11}")
+
+    # P12: `ml_unavailable` is a machine-readable "fail-closed is dropping
+    # traffic right now".  It used to compare the count of tripped detectors
+    # against every *registered* detector, so a chain whose coverage is one
+    # tripped detector plus one mounted without its model — where nothing can
+    # score and every undecided packet is dropped — reported False, and
+    # `nips_ml_unavailable` stayed at 0 through a full outage.
+    class NoModel(BaseDetector):
+        @property
+        def ready(self):
+            return False
+
+        async def process_packet(self, packet):
+            return None
+
+    pl12 = DetectionPipeline()
+    pl12.add_detector(AlwaysRaises())
+    pl12.add_detector(NoModel())
+    dropped12 = 0
+    for i in range(8):
+        try:
+            await pl12.process_packet(pkt(src_ip=f"12.0.0.{i}"))
+        except DetectionUnavailable:
+            dropped12 += 1
+    s12 = pl12.status()
+    ok = (dropped12 == 8 and s12["ml_unavailable"] and s12["degraded"]
+          and s12["broken_detectors"] == ["AlwaysRaises"]
+          and s12["ml_consulted"] == []
+          and sorted(s12["ml_idle"]) == ["AlwaysRaises", "NoModel"])
+    report("P12a outage spread over tripped + model-less is unavailable", not ok,
+           f"dropped={dropped12}/8, ml_unavailable={s12['ml_unavailable']}, "
+           f"degraded={s12['degraded']}, consulted={s12['ml_consulted']}, "
+           f"idle={s12['ml_idle']}")
+
+    # Nothing expected to score is not an outage: a chain whose only ML member
+    # cannot score is rules-only operation, and undecided traffic must still be
+    # allowed rather than dropped by a flag that over-corrects the other way.
+    pl12b = DetectionPipeline()
+    pl12b.add_detector(NoModel())
+    v12b = await pl12b.process_packet(pkt(src_ip="12.0.1.1"))
+    s12b = pl12b.status()
+    ok = (v12b.action == Action.ALLOW and not s12b["ml_unavailable"]
+          and not s12b["degraded"])
+    report("P12b a model-less detector alone is not an outage", not ok,
+           f"verdict={v12b.action}, ml_unavailable={s12b['ml_unavailable']}, "
+           f"degraded={s12b['degraded']}")
 
     # --- R1-R4: rule engine ------------------------------------------------
     re = RuleEngine()
@@ -385,7 +557,13 @@ async def main():
     # K8: after the grace periods the model used to freeze permanently, so it
     # could not track drift.  It must now keep adapting on normal-scoring
     # packets and must never train on a packet it scored as anomalous.
-    kd8 = KitsuneDetector()
+    # calibration_packets=0 puts the threshold back on the legacy source: this
+    # check is about the adaptation guard, and a 4-packet calibration window
+    # (10% of a 40-packet AD grace) cannot estimate a 99th percentile — it just
+    # reports the maximum, which would flag every later packet and make the
+    # normal branch unreachable for reasons unrelated to what is under test.
+    # K10/K11 grade the calibration itself, on a window big enough to mean it.
+    kd8 = KitsuneDetector(calibration_packets=0)
     kd8.set_grace_periods(fm_grace_period=20, ad_grace_period=40)
     t8 = 3000.0
     for i in range(80):
@@ -437,6 +615,93 @@ async def main():
            f"last_timestamp={s.last_timestamp}, weight={s.weight:.4f}, "
            f"rebased={rebased}, decayed_after={decayed}")
 
+    # --- K10/K11: post-freeze calibration of the anomaly threshold ----------
+    # The threshold used to be the percentile of scores taken while the
+    # output-layer normalisation was still being updated, and it was then
+    # applied to scores taken after that normalisation froze.  K10 checks the
+    # calibration window fixes exactly that: the threshold is a percentile of
+    # frozen-regime scores, which therefore means what it says.  K11 checks the
+    # detector still flags a real shift — an operating point at ~1% must not
+    # turn into a detector that never fires.
+    #
+    # These drive KitNET directly on vectors: the pathology lives in the
+    # threshold's regime, and AfterImage's variety is what made the real capture
+    # fail, which a synthetic packet stream does not reproduce (measured: legacy
+    # flagged 0.0% of a stationary synthetic tail, so a synthetic A/B could not
+    # have shown the difference — the real capture is what shows it).
+    from networksecurity.engine.kitsune.kitnet import KitNET
+
+    rng = np.random.default_rng(3)
+    station = rng.normal(size=(8300, 30)) * 0.35
+    shifted = rng.normal(size=(800, 30)) * 0.35 + 2.6
+
+    # fm 300 + ad 4000 end at packet 4300; the calibration window is 4301-6300;
+    # 6301-8300 is scored traffic that must behave like the 1% the percentile
+    # claims.  The freeze is observable from packet 4301, so the mid-window
+    # probe lands there: threshold set, is_ad_done still False, weights frozen.
+    kn10 = KitNET(input_dim=30, fm_grace_period=300, ad_grace_period=4000,
+                  calibration_packets=2000, threshold_percentile=99.0)
+    for x in station[:4301]:
+        kn10.process(x)
+    mid = dict(is_ad_done=kn10.is_ad_done, threshold=kn10.threshold,
+               trained=kn10.n_trained)
+    pre = [ae.W_decode.copy() for ae in kn10.ensemble] + [kn10.output_ae.W_decode.copy()]
+    for x in station[4301:6300]:
+        kn10.process(x)
+    moved = max(float(np.abs(a - b).max())
+                for a, b in zip(pre, [ae.W_decode for ae in kn10.ensemble]
+                                + [kn10.output_ae.W_decode]))
+    scored = [kn10.process(x) for x in station[6300:]]
+    over = sum(1 for s in scored if kn10.is_anomaly(s)) / max(1, len(scored)) * 100
+    ok = (mid["is_ad_done"] is False and mid["threshold"] is None
+          and moved == 0.0 and kn10.is_ad_done and kn10.is_calibrated
+          and kn10.threshold_source == "calibration" and 0.2 <= over <= 8.0)
+    report("K10 threshold calibrated on the frozen regime, and it means ~1%", not ok,
+           f"at freeze: trained={mid['is_ad_done']} threshold={mid['threshold']}; "
+           f"weights moved during calibration={moved}; afterwards source="
+           f"{kn10.threshold_source}; {len(scored)} fresh stationary packets "
+           f"flagged {over:.2f}%")
+
+    flags = sum(1 for x in shifted if kn10.is_anomaly(kn10._execute(x)))
+    legacy = KitNET(input_dim=30, fm_grace_period=300, ad_grace_period=4000,
+                    calibration_packets=0, threshold_percentile=99.0)
+    for x in station[:6300]:
+        legacy.process(x)
+    legacy_flags = sum(1 for x in shifted if legacy.is_anomaly(legacy._execute(x)))
+    ok = flags >= 0.5 * len(shifted) and legacy_flags >= 0.5 * len(shifted)
+    report("K11 a real shift is still flagged after calibration", not ok,
+           f"calibrated {flags}/{len(shifted)}, legacy {legacy_flags}/{len(shifted)} "
+           f"(both must react: calibration must not become a detector that never fires)")
+
+    # K12: /api/v1/status carries threshold_source, so "which ruler is this
+    # operating point on" is an operator-visible claim — it must never name a
+    # regime that has not been scored yet.  The legacy mode used to answer
+    # "calibration" from the first second of warm-up, with no threshold at all.
+    def _source_trail(calibration_packets):
+        probe = KitNET(input_dim=30, fm_grace_period=300, ad_grace_period=4000,
+                       calibration_packets=calibration_packets,
+                       threshold_percentile=99.0)
+        trail = {0: (probe.threshold_source, probe.threshold)}
+        for i, x in enumerate(station[:6400], start=1):
+            probe.process(x)
+            if i in (4300, 4301, 5000, 6300):
+                trail[i] = (probe.threshold_source, probe.threshold)
+        return trail
+
+    cal_trail = _source_trail(2000)
+    legacy_trail = _source_trail(0)
+    ok = (cal_trail[0] == ("pending", None)
+          and cal_trail[4301] == ("pending", None)   # frozen, nothing scored yet
+          and cal_trail[5000] == ("pending", None)   # mid calibration window
+          and cal_trail[6300][0] == "calibration" and cal_trail[6300][1] is not None
+          and legacy_trail[0] == ("pending", None)
+          and legacy_trail[4300] == ("pending", None)
+          and legacy_trail[4301][0] == "training" and legacy_trail[4301][1] is not None
+          and all(src != "calibration" for src, _ in legacy_trail.values()))
+    report("K12 threshold_source never names a regime that has not been scored", not ok,
+           f"calibrated: " + ", ".join(f"{i}={s}" for i, (s, _) in cal_trail.items())
+           + "; legacy: " + ", ".join(f"{i}={s}" for i, (s, _) in legacy_trail.items()))
+
     # --- L1-L6: lucid adapter interface --------------------------------------
     from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
     from networksecurity.engine.lucid.dataset_parser import LucidDatasetParser
@@ -444,7 +709,9 @@ async def main():
     
     la = LucidDetectorAdapter(enabled=False)
     v = await la.process_packet(pkt())
-    report("L1 untrained lucid returns LOG verdict", v is None or v.action != Action.LOG,
+    # 第 66 行的清单本来就写着 disabled/untrained -> always None；实现此前
+    # 返回 LOG，既终止了链又被算成运行过的 ML 检测器。现在两边一致了。
+    report("L1 untrained lucid abstains with None", v is not None,
            f"verdict={v}")
     
     d_tcp = LucidDetectorAdapter._to_lucid_dict(pkt(protocol=6))
@@ -839,6 +1106,50 @@ async def main():
         same = probe.probe()
         report("RL6 probe skips unchanged files", same is not None,
                f"unexpected summary={same}")
+
+        # RL7: every engine knob the reload cannot apply has to be declared
+        # restart-required.  The list was hand-copied and had drifted:
+        # engine.ml.enabled and engine.ml.detectors were editable in
+        # config.yaml, ignored by the reload, and missing from the list — so an
+        # operator who flipped the ML switch and called POST /rules/reload got a
+        # 200 with no errors and an unchanged detection posture.  Derived from
+        # the config file itself rather than typed twice, so adding a knob without
+        # classifying it (apply live, or declare a restart) fails here.
+        import yaml
+
+        summary = probe.probe(force=True)
+        restart = set(summary["engine_knobs_requiring_restart"])
+
+        def undeclared(cfg_path):
+            """Keys present in the file, minus what the probe declares.
+
+            Read the raw YAML, not `load_engine_config()`/`load_ml_config()`:
+            those build a fixed dict of the knobs they already know, so a newly
+            written `engine.kitsune.*` key would be invisible to this check —
+            which is the very drift the check exists to catch.
+            """
+            engine = yaml.safe_load(Path(cfg_path).read_text(encoding="utf-8"))["engine"]
+            want = {f"engine.kitsune.{k}" for k in (engine.get("kitsune") or {})}
+            want |= {f"engine.ml.{k}" for k in (engine.get("ml") or {})}
+            return sorted(want - restart)
+
+        missing = undeclared("config/config.yaml")
+        report("RL7 unapplied engine knobs are declared restart-required",
+               bool(missing), f"undeclared: {missing} "
+               f"(restart list: {sorted(restart)})")
+
+        # Canary for the check itself: a knob no loader has ever heard of has to
+        # be caught. Point this back at the normalised config objects and RL7
+        # stays green while losing the ability to see a new key at all.
+        with _tmp_dir("nips_rl7_") as cdir:
+            doc = yaml.safe_load(Path("config/config.yaml").read_text(encoding="utf-8"))
+            doc["engine"]["kitsune"]["future_grace_window"] = 7
+            knob = cdir / "config.yaml"
+            knob.write_text(yaml.safe_dump(doc), encoding="utf-8")
+            caught = undeclared(knob)
+        report("RL7b a knob the loader does not know is still reported",
+               caught != ["engine.kitsune.future_grace_window"],
+               f"caught={caught}")
 
     # -- group IC: ICMP per-type policy ------------------------------------
     def icmp(type_no: int, code: int = 0) -> PacketInfo:

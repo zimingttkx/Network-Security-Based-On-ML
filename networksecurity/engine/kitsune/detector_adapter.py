@@ -24,18 +24,40 @@ class KitsuneDetector(BaseDetector):
         threshold_percentile: float = 99.0,
         max_autoencoder_size: int = 10,
         learning_rate: float = 0.1,
+        calibration_packets: int | None = None,
     ) -> None:
         super().__init__(name="KitsuneDetector")
         self._kitsune = Kitsune(
             max_autoencoder_size=max_autoencoder_size,
             threshold_percentile=threshold_percentile,
             learning_rate=learning_rate,
+            calibration_packets=calibration_packets,
         )
 
     @property
     def is_ready(self) -> bool:
         """Whether KitNET training has completed and detection is live."""
         return self._kitsune.is_ready
+
+    @property
+    def ready(self) -> bool:
+        """True while training too: warm-up is not the same as being unable to
+        score.  Excluding it would read as an outage and drop every packet
+        during startup; ``status()`` is where the training state shows."""
+        return True
+
+    def status(self) -> dict:
+        """`trained` is the honest "is it producing verdicts yet" flag.
+
+        `threshold_source` says what the operating point was measured on: a
+        calibration window scored under the frozen normalisation, or the legacy
+        training pass whose scale no longer applies.  An operator comparing two
+        deployments needs to know which of the two they are looking at.
+        """
+        state = self._kitsune.kitnet.get_state() if self._kitsune.kitnet else {}
+        return {"trained": bool(self._kitsune.is_ready),
+                "threshold_source": state.get("threshold_source", "pending"),
+                "calibration_packets": state.get("calibration_packets", 0)}
 
     # -- BaseDetector interface ---------------------------------------------
 

@@ -1,0 +1,500 @@
+#!/usr/bin/env python3
+"""Cross-validation for the detector contract and the ML on/off switch.
+
+Why this file exists: the chain used to decide fail-closed from "did any ML
+detector get called", and an adapter that was registered but had no model still
+answered with a LOG verdict — so it counted as coverage.  One live detector
+tripping its breaker behind such an inert adapter switched the fail-closed
+posture off silently and allowed everything.  These checks pin the distinction
+between "switched off by config" (a decision: rules-only, allow) and "could not
+run" (an outage: drop).
+"""
+import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from networksecurity.engine import (Action, BaseDetector, DetectionPipeline,
+                                    PacketInfo, RuleEngine)
+from networksecurity.engine.lucid.detector_adapter import LucidDetectorAdapter
+from networksecurity.engine.pipeline import DetectionUnavailable
+
+results = []
+
+
+def check(name: str, ok: bool, evidence: str):
+    """report()-style helper: ok=False is the confirmed bug."""
+    status = "PASS" if ok else "CONFIRMED-BUG"
+    results.append((name, status))
+    print(f"[{status}] {name}\n        {evidence}\n", flush=True)
+
+
+def pkt(port: int = 80) -> PacketInfo:
+    return PacketInfo(src_ip="1.2.3.4", dst_ip="10.0.0.1", src_port=1234,
+                      dst_port=port, protocol=6, packet_size=100, timestamp=1000.0)
+
+
+class Abstainer(BaseDetector):
+    """A healthy ML detector that sees nothing wrong."""
+
+    def __init__(self):
+        super().__init__(name="Abstainer")
+        self.calls = 0
+
+    async def process_packet(self, packet):
+        self.calls += 1
+        return None
+
+
+class Raiser(BaseDetector):
+    """A capable detector that fails on every packet — the outage case."""
+
+    def __init__(self):
+        super().__init__(name="Raiser")
+        self.calls = 0
+
+    async def process_packet(self, packet):
+        self.calls += 1
+        raise RuntimeError("model file unreadable")
+
+
+class ParamDetector(BaseDetector):
+    def __init__(self):
+        super().__init__(name="ParamDetector")
+        self.got = None
+
+    def configure(self, params: dict) -> None:
+        self.got = dict(params)
+
+    async def process_packet(self, packet):
+        return None
+
+
+def pipe_with(*detectors, **kw) -> DetectionPipeline:
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}), **kw)
+    for d in detectors:
+        p.add_detector(d)
+    return p
+
+
+async def main():
+    # C1 — contract defaults
+    d = Abstainer()
+    refused = False
+    try:
+        d.configure({})
+    except Exception:
+        refused = True
+    check("C1 contract defaults: ready True, empty status, configure({}) accepted",
+          d.ready is True and d.status() == {} and not refused,
+          f"ready={d.ready} status={d.status()!r} raised_on_empty={refused}")
+
+    # C2 — a param for a detector that accepts none must be refused, not ignored
+    plain = Abstainer()
+    try:
+        plain.configure({"threshold": 3})
+        accepted, detail = True, "silently accepted the param"
+    except ValueError as exc:
+        accepted, detail = False, f"refused: {exc}"
+    check("C2 unknown params rejected rather than ignored", not accepted, detail)
+
+    # C3 — configure() delivers params to detectors that take them
+    tuned = ParamDetector()
+    tuned.configure({"window": 5})
+    check("C3 configure() passes the config block through",
+          tuned.got == {"window": 5}, f"got={tuned.got!r}")
+
+    # C4 — ML switched off: the ML detector is never even called
+    off_ml = Abstainer()
+    v = await pipe_with(off_ml, ml_enabled=False).process_packet(pkt())
+    check("C4 ml_enabled=False skips ML entirely and allows",
+          off_ml.calls == 0 and v.action == Action.ALLOW,
+          f"ml_calls={off_ml.calls} verdict={v.action.value}")
+
+    # C5 — same chain with ML on: the detector is consulted
+    on_ml = Abstainer()
+    v = await pipe_with(on_ml, ml_enabled=True).process_packet(pkt())
+    check("C5 ml_enabled=True consults ML and still allows on abstain",
+          on_ml.calls == 1 and v.action == Action.ALLOW,
+          f"ml_calls={on_ml.calls} verdict={v.action.value}")
+
+    # C6 — rules-only because nothing can score: allow, do not drop
+    inert = LucidDetectorAdapter(enabled=False)
+    try:
+        v = await pipe_with(inert).process_packet(pkt())
+        dropped, verdict = False, v.action.value
+    except DetectionUnavailable:
+        dropped, verdict = True, None
+    check("C6 disabled-by-config ML alone does not fail closed",
+          (not dropped) and verdict == Action.ALLOW.value,
+          f"dropped={dropped} verdict={verdict}")
+
+    # C7 — the regression that mattered: a tripped live detector behind an inert
+    # adapter must still fail closed.  Before the fix the inert adapter's LOG
+    # verdict counted as coverage and every packet was allowed.
+    live = Raiser()
+    p = pipe_with(live, inert)
+    dropped = 0
+    for _ in range(8):
+        try:
+            await p.process_packet(pkt())
+        except DetectionUnavailable:
+            dropped += 1
+    tripped = "Raiser" in p.status()["broken_detectors"]
+    check("C7 tripped live detector fails closed even with an inert adapter present",
+          tripped and dropped == 8, f"tripped={tripped} dropped={dropped}/8")
+
+    # C8 — an inert adapter abstains; it no longer ends the chain with LOG
+    v = await inert.process_packet(pkt())
+    check("C8 inert adapter returns None instead of a chain-ending LOG",
+          v is None, f"returned={v}")
+
+    # C9 — status splits coverage honestly while ML is on
+    live2 = Abstainer()
+    s = pipe_with(live2, inert).status()
+    check("C9 status reports coverage as only what can actually score",
+          s["ml_enabled"] is True and s["ml_consulted"] == ["Abstainer"]
+          and "LucidDetector" in s["ml_idle"]
+          and s["degraded"] is False and s["ml_unavailable"] is False,
+          f"consulted={s['ml_consulted']} idle={s['ml_idle']} "
+          f"degraded={s['degraded']} unavailable={s['ml_unavailable']}")
+
+    # C10 — with ML off, having nothing available is not an outage
+    p = pipe_with(Raiser(), inert, ml_enabled=False)
+    try:
+        await p.process_packet(pkt())
+        dropped = False
+    except DetectionUnavailable:
+        dropped = True
+    s = p.status()
+    check("C10 ml_enabled=False never drops and never claims an outage",
+          (not dropped) and s["ml_enabled"] is False and s["degraded"] is False
+          and s["ml_unavailable"] is False,
+          f"dropped={dropped} degraded={s['degraded']} "
+          f"unavailable={s['ml_unavailable']}")
+
+    # C11 — ML off means nothing is mounted: a rules-only chain, not a chain of
+    # detectors that are present but skipped.  This is what lets the ML packages
+    # be deleted outright without breaking the deployment.
+    from networksecurity.engine.assembly import attach_detectors
+    from networksecurity.utils.config import load_engine_config
+
+    off_cfg = {"enabled": False, "detectors": [{"uses": "kitsune"}]}
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    mounted = attach_detectors(p, off_cfg, load_engine_config())
+    s = p.status()
+    check("C11 ml off mounts nothing — chain is the rule engine alone",
+          mounted == [] and s["detectors"] == ["RuleEngine"]
+          and s["ml_consulted"] == [] and s["ml_idle"] == [],
+          f"mounted={mounted} detectors={s['detectors']} idle={s['ml_idle']}")
+
+    # C12 — a third-party detector mounts from config and gets its params
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    mounted = attach_detectors(p, {"enabled": True, "detectors": [
+        {"uses": "networksecurity.engine.threshold_detector:ThresholdDetector",
+         "params": {"window_seconds": 2, "max_packets": 3}}]}, {})
+    det = p.detectors[-1]
+    v_allow, v_block = None, None
+    for _ in range(6):
+        r = await p.process_packet(pkt())
+        if r.action == Action.BLOCK:
+            v_block = r
+        else:
+            v_allow = r
+    check("C12 external detector mounts by import path and receives params",
+          mounted == ["ThresholdDetector"] and det.window_seconds == 2
+          and det.max_packets == 3 and v_block is not None
+          and v_block.reason is not None and v_allow is not None,
+          f"mounted={mounted} window={det.window_seconds} "
+          f"blocked_after={det.trips} trips")
+
+    # C13 — an unusable entry is reported and skipped, not fatal: the
+    # management plane must still come up when one detector is broken.
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    mounted = attach_detectors(p, {"enabled": True, "detectors": [
+        {"uses": "no.such.module:Nope"},
+        {"uses": "not-an-import-path"},
+        {"uses": "networksecurity.engine.threshold_detector:ThresholdDetector",
+         "enabled": False}]}, {})
+    check("C13 bad and disabled entries skipped, pipeline still builds",
+          mounted == [] and p.detectors[0].name == "RuleEngine",
+          f"mounted={mounted} chain={[d.name for d in p.detectors]}")
+
+    # C14 — the example detector's configure() rejects unknown and impossible
+    # params rather than ignoring them
+    from networksecurity.engine.threshold_detector import ThresholdDetector
+
+    refused = []
+    for bad in ({"colour": "red"}, {"max_packets": 0}):
+        try:
+            ThresholdDetector().configure(bad)
+            refused.append(False)
+        except ValueError:
+            refused.append(True)
+    check("C14 example detector refuses unknown and out-of-range params",
+          refused == [True, True], f"refused={refused}")
+
+    # C14b — fractional knobs keep their type.  window_seconds was classified by
+    # `default == int(default)`, which is also true for the float default 5.0,
+    # so 0.5 was truncated to 0 *after* clearing its own floor: the detector
+    # then counts packets inside a zero-length window, never trips, and is still
+    # counted as ML coverage.  This check feeds real packets, so it fails on the
+    # truncated value rather than on the stored attribute alone.
+    td = ThresholdDetector()
+    cfg_error = None
+    try:
+        td.configure({"window_seconds": 0.5, "max_packets": 1})
+    except ValueError as exc:
+        cfg_error = str(exc)
+    blocked = 0
+    for i in range(4):
+        v = await td.process_packet(PacketInfo(
+            src_ip="1.2.3.4", dst_ip="10.0.0.1", src_port=1234, dst_port=80,
+            protocol=6, packet_size=100, timestamp=1000.0 + i * 0.1))
+        if v is not None and v.action == Action.BLOCK:
+            blocked += 1
+    check("C14b a sub-second window_seconds is stored and actually trips",
+          cfg_error is None and td.window_seconds == 0.5 and blocked >= 1,
+          f"configure raised={cfg_error} window={td.window_seconds!r} "
+          f"blocked={blocked}/4 trips={td.trips}")
+
+    # C14c — integer knobs still narrow to integers, and a bool is refused
+    # instead of silently becoming 1 (bool is an int subclass).
+    td2 = ThresholdDetector()
+    td2.configure({"max_packets": 1.9})
+    bool_refused = False
+    try:
+        ThresholdDetector().configure({"max_packets": True})
+    except ValueError:
+        bool_refused = True
+    check("C14c integer knobs narrow and bool params are refused",
+          td2.max_packets == 1 and isinstance(td2.max_packets, int) and bool_refused,
+          f"max_packets={td2.max_packets!r} bool_refused={bool_refused}")
+
+    # C15 — config parsing degrades loudly rather than silently
+    import tempfile
+
+    from networksecurity.utils.config import load_ml_config as _lm
+
+    cfg = """
+engine:
+  ml:
+    enabled: maybe
+    detectors:
+      - uses: kitsune
+      - "just a string"
+      - params: {x: 1}
+      - uses: networksecurity.engine.threshold_detector:ThresholdDetector
+        params: "not a mapping"
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+        fh.write(cfg)
+        path = fh.name
+    parsed = _lm(path)
+    Path(path).unlink(missing_ok=True)
+    check("C15 malformed ml config falls back with each problem named",
+          parsed["enabled"] is False and len(parsed["detectors"]) == 2
+          and parsed["detectors"][0]["uses"] == "kitsune"
+          and parsed["detectors"][1]["params"] == {},
+          f"enabled={parsed['enabled']} entries={parsed['detectors']}")
+
+    # C16 — detector-owned status reaches the pipeline snapshot, and warm-up is
+    # visible there rather than being hidden by a bare "consulted" list.
+    from networksecurity.engine.kitsune.detector_adapter import KitsuneDetector
+
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    p.add_detector(KitsuneDetector())
+    s = p.status()
+    ks = s.get("detector_status", {}).get("KitsuneDetector", {})
+    check("C16 detector status reaches pipeline; warm-up reported, not hidden",
+          ks.get("trained") is False and s["ml_consulted"] == ["KitsuneDetector"],
+          f"detector_status={s.get('detector_status')} consulted={s['ml_consulted']}")
+
+    # C17 — a non-finite window would silently stop expiring history: NaN fails
+    # every bound comparison, so the finite check has to happen first.  The
+    # refusal has to come from that check and leave the attribute alone:
+    # int(float("nan")) raises ValueError on its own, so accepting any ValueError
+    # would keep this green after the guard is deleted.
+    refused_finite = []
+    for bad_value in (float("nan"), float("inf")):
+        td = ThresholdDetector()
+        before = td.window_seconds
+        try:
+            td.configure({"window_seconds": bad_value})
+            refused_finite.append(False)
+        except Exception as err:
+            refused_finite.append("finite" in str(err).lower()
+                                  and td.window_seconds == before)
+    check("C17 non-finite params rejected by the validator before they can disable expiry",
+          refused_finite == [True, True], f"refused={refused_finite}")
+
+    # C18 — third-party status() must not be able to take the snapshot down
+    class BrokenStatus(Abstainer):
+        def __init__(self):
+            super().__init__()
+            self.name = "BrokenStatus"
+
+        def status(self):
+            raise RuntimeError("boom")
+
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    p.add_detector(BrokenStatus())
+    p.add_detector(Abstainer())
+    s = p.status()
+    check("C18 a raising detector status is contained to its own entry",
+          s["detector_status"]["BrokenStatus"].get("status_error") is True
+          and "Abstainer" not in s["detector_status"]
+          and s["ml_consulted"] == ["BrokenStatus", "Abstainer"],
+          f"detector_status={s['detector_status']} consulted={s['ml_consulted']}")
+
+    # C19 — `enforce: false` is a mount-level key: it must survive config
+    # parsing (which used to drop every key it did not know) and reach the
+    # pipeline as a shadow mount whose BLOCK never decides.
+    from networksecurity.engine.verdict import Verdict as _Verdict
+
+    class Blocker(BaseDetector):
+        async def process_packet(self, packet):
+            return _Verdict(Action.BLOCK, 1.0, reason="enforced",
+                            detector="Blocker")
+
+    cfg = """
+engine:
+  ml:
+    enabled: true
+    detectors:
+      - uses: networksecurity.engine.threshold_detector:ThresholdDetector
+        enforce: false
+        params: {window_seconds: 2, max_packets: 3}
+      - uses: kitsune
+        enforce: "yes"
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+        fh.write(cfg)
+        c19_path = fh.name
+    parsed = _lm(c19_path)
+    Path(c19_path).unlink(missing_ok=True)
+    check("C19a enforce survives parsing; a non-bool falls back to enforcing",
+          parsed["detectors"][0].get("enforce") is False
+          and parsed["detectors"][1].get("enforce") is True,
+          f"entries={parsed['detectors']}")
+
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    mounted = attach_detectors(p, parsed, {})
+    # Drive the shadow ThresholdDetector over its trip point: the 4th packet
+    # within the window makes it emit a BLOCK — which must be recorded, not
+    # enforced.  The chain then ends at the ALLOW fallback.
+    v = None
+    for _ in range(4):
+        v = await p.process_packet(pkt())
+    s19 = p.status()
+    check("C19b a shadow-mounted detector's BLOCK is visible but never decides",
+          mounted == ["ThresholdDetector"] and v.action == Action.ALLOW
+          and v.detector == "pipeline"
+          and len(v.metadata.get("shadow", [])) == 1
+          and s19["total_shadow_blocked"] == 1 and s19["total_blocked"] == 0
+          and s19["ml_shadow"] == ["ThresholdDetector"],
+          f"mounted={mounted} verdict={v.action} shadow={v.metadata.get('shadow')} "
+          f"shadow_blocked={s19['total_shadow_blocked']}")
+
+    # C20 — through the assembly layer, the trap the whole design exists for:
+    # a shadow detector in front of an enforcing one must not shield it.
+    p = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+    mounted = attach_detectors(p, {"enabled": True, "detectors": [
+        {"uses": "networksecurity.engine.threshold_detector:ThresholdDetector",
+         "enforce": False, "params": {"window_seconds": 2, "max_packets": 3}}]}, {})
+    p.add_detector(Blocker())
+    v = None
+    for _ in range(4):
+        v = await p.process_packet(pkt())
+    check("C20 shadow in front of an enforcer: the enforcer's BLOCK wins",
+          mounted == ["ThresholdDetector"] and v.action == Action.BLOCK
+          and v.detector == "Blocker"
+          and len(v.metadata.get("shadow", [])) == 1
+          and p.status()["total_shadow_blocked"] == 1,
+          f"mounted={mounted} verdict={v.action}/{v.detector} "
+          f"shadow={len(v.metadata.get('shadow', []))}")
+
+    # C21 — every built-in a config may name has to reach its builder.  The
+    # nightly job's "App registers the detector from the saved model" step
+    # assumes exactly this, and it broke the moment mounting moved from app.py's
+    # direct wiring to the config-driven assembler: the step still flipped
+    # engine.ml.enabled and pointed model_path at the trained file, but the
+    # shipped list never names lucid, so it asserted against a chain that was
+    # never asked to contain LUCID.  Either the adapter mounts, or the builder
+    # itself says why it did not — silence means the entry was decoration.
+    #
+    # Which names count as built-ins is derived, not typed: the reserved short
+    # names plus whatever the shipped config actually lists.  Hand-picking
+    # `lucid`, which is what this check did first, means deleting `kitsune` from
+    # the builder table leaves it green — the hole is the check's own.
+    import logging
+
+    from networksecurity.engine import assembly as _assembly
+
+    declared = set(_assembly.BUILTIN_NAMES) | {
+        entry["uses"] for entry in _lm()["detectors"] if ":" not in entry["uses"]}
+    assembly_log = logging.getLogger("networksecurity.engine.assembly")
+    engine_cfg21 = load_engine_config()
+
+    class _Collect(logging.Handler):
+        def __init__(self, sink):
+            super().__init__()
+            self.sink = sink
+
+        def emit(self, record):
+            self.sink.append(record.getMessage())
+
+    previous_level = assembly_log.level
+    assembly_log.setLevel(logging.INFO)  # the builder declines at INFO
+    try:
+        for built_in in sorted(declared):
+            seen: list[str] = []
+            outcome: list[str] = []
+            original = _assembly._BUILDS.get(built_in)
+
+            def _spy(engine_cfg, _orig=original, _out=outcome):
+                _out.append("entered")
+                try:
+                    det = _orig(engine_cfg)
+                except Exception:
+                    _out.append("raised")
+                    raise
+                _out.append("declined" if det is None else "mounted")
+                return det
+
+            if original is not None:
+                _assembly._BUILDS[built_in] = _spy
+            handler = _Collect(seen)
+            assembly_log.addHandler(handler)
+            try:
+                p21 = DetectionPipeline(RuleEngine(allowed_protocols={6, 17}))
+                mounted21 = attach_detectors(p21, {"enabled": True,
+                                                   "detectors": [{"uses": built_in}]},
+                                             engine_cfg21)
+            finally:
+                assembly_log.removeHandler(handler)
+                if original is not None:
+                    _assembly._BUILDS[built_in] = original
+            mounted_ok = outcome == ["entered", "mounted"] and len(mounted21) == 1
+            declined_ok = (outcome == ["entered", "declined"] and not mounted21
+                           and any(built_in in m.lower() for m in seen))
+            check(f"C21[{built_in}] a listed built-in reaches its builder, "
+                  "not decoration",
+                  mounted_ok or declined_ok,
+                  f"registered={original is not None} outcome={outcome} "
+                  f"mounted={mounted21} assembly log={seen}")
+    finally:
+        assembly_log.setLevel(previous_level)
+
+    failed = [n for n, st in results if st == "CONFIRMED-BUG"]
+    print("=" * 60)
+    print(f"{len(results) - len(failed)}/{len(results)} PASS, "
+          f"{len(failed)} CONFIRMED-BUG")
+    for n in failed:
+        print(f"  - {n}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))

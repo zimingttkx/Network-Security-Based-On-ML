@@ -7,6 +7,8 @@ NIPS is a **server-side Network Intrusion Prevention System** for Linux.
 - **Inbound only**: intercepts incoming traffic to the host. Does not inspect outbound traffic.
 - **Kernel-level enforcement**: blocking happens via nfqueue inline drop and iptables DROP rules. No memory-flag-only "blocking".
 - **Real traffic only**: every packet processed by the pipeline originates from the kernel netfilter subsystem via NFQUEUE. No synthetic traffic generation exists in the production code path.
+- **Detection is a plug-in**: the rule engine is the permanent part of the chain; learning detectors are mounted from `config/config.yaml` and **none is mounted by default** (`engine.ml.enabled: false`). A deployment with `networksecurity/engine/kitsune/` and `networksecurity/engine/lucid/` deleted outright is a supported configuration, not a broken one — see "The Detector Contract".
+- **Every claim has a check**: behaviours the docs assert are backed by runnable checks (`scripts/verify_*.py`, wired into CI), including the negative ones — what detection does *not* achieve is in README's "Measured results and limits" rather than hidden.
 
 ---
 
@@ -102,11 +104,13 @@ networksecurity/
   engine/           # Detection logic.  Pure Python, no OS calls.
     detector.py     # BaseDetector ABC, PacketInfo dataclass
     verdict.py      # Action, ThreatLevel, Verdict types
+    assembly.py     # Mounts the detectors engine.ml asks for; skips broken entries
     rule_engine.py  # IP whitelist/blacklist, rate limiting, signature dispatch
     signature_engine.py  # Declarative rules: src/dst CIDR + protocol + ports +
                     # TCP flags + rate threshold; action block or log
     pipeline.py     # DetectionPipeline chain with short-circuit
     block_policy.py # BLOCK escalation policy: strikes → temp ban → permanent ban
+    threshold_detector.py  # Complete worked example of the detector contract
     kitsune/        # AfterImage + KitNET anomaly detection (NDSS'18)
     lucid/          # CNN DDoS flow detection (IEEE TNSM 2020)
 
@@ -203,8 +207,27 @@ Kitsune uses **online unsupervised learning** — no offline dataset required:
 
 1. Deploy system on production host during normal traffic period
 2. KitNET auto-trains over first ~55,000 packets (fm_grace + ad_grace)
-3. After training, threshold set at 99th percentile of RMSE
+3. The output layer's input normalisation then **freezes**, and the next 10% of
+   the AD grace (5,000 packets at the shipped setting) is spent **calibrating**
+   the threshold: those packets are scored, not trained on, not flagged, and
+   not counted — the detector abstains through them the way it abstains through
+   the grace periods. The threshold is the configured percentile of those
+   scores.
 4. System transitions to detection mode automatically
+
+Step 3 exists because of a measured failure. The threshold used to be the
+percentile of the RMSEs seen *during* the AD grace, but those scores were
+produced while the normalisation was still being updated; detection then applies
+them to scores produced after it froze. On a real capture that mismatch put the
+operating point in the middle of the traffic's own distribution: **89% of
+ordinary packets were flagged in the first bucket after training**, and no
+percentile short of 99.99 undid it (a stationary synthetic stream does not
+reproduce this — the variety that triggers it comes from AfterImage's per-host
+statistics on real traffic, so the evidence is the capture, not a fixture).
+Calibrating on the frozen regime removed it: the same capture now flags
+**0 of 47,115** post-warm-up packets, and a stationary synthetic stream flags
+1.00% at p99 — the percentile means what it says (`verify_engine_module.py`
+K10, with K11 guarding that a genuine shift is still caught).
 
 LUCID requires **offline supervised training** on labeled DDoS datasets:
 
@@ -216,14 +239,53 @@ LUCID requires **offline supervised training** on labeled DDoS datasets:
 
 ---
 
-## Adding a New Detector
+## The Detector Contract
 
-1. Create a new module in `networksecurity/engine/<name>/`
-2. Implement `async def process_packet(self, packet: PacketInfo) -> Verdict | None`
-3. Wire it into `DetectionPipeline` via `pipeline.add_detector()`
-4. Add an adapter if the underlying algorithm has a different interface (see `detector_adapter.py` in kitsune/lucid)
+A detector implements `BaseDetector` (`networksecurity/engine/detector.py`). That is the entire surface a third-party module has to satisfy — nothing in `app.py` or `cli.py` changes to add one.
 
-Do NOT:
-- Add a separate "test mode" path in the detector that returns fake results
-- Generate synthetic packets inside the detector
-- Call iptables or OS commands from inside the detector (that belongs in interception/)
+| member | contract |
+|---|---|
+| `async process_packet(packet: PacketInfo) -> Verdict \| None` | `None` abstains and hands the packet to the next detector. `BLOCK` ends the chain and the packet is dropped; any other explicit verdict is equally final — it ends the chain and is what gets enforced. |
+| `configure(params: dict) -> None` | Called with the entry's `params:` before the first packet. Reject keys you do not understand: a silently ignored option is indistinguishable from a configured detector. |
+| `ready -> bool` | `False` means "cannot score at all" (no model loaded, for example). Such a detector is consulted on no packet **and does not count as ML coverage** — see the table below. Warm-up is not `False`: a detector that is still training is covering traffic, and calling that an outage would drop every packet at startup. Whether it is emitting verdicts *yet* belongs in `status()`. |
+| `status() -> dict` | Collected per detector into `detector_status` on `/api/v1/status`, and merged into the pipeline snapshot by name. Publish what an operator would need in order to notice you stopped working (Kitsune reports `trained`, `threshold_source` and `calibration_packets`). Called outside the pipeline's status lock, and an exception inside it is contained to that detector's entry — a third-party `status()` must not be able to take the endpoint down. |
+
+Mount it from config:
+
+```yaml
+engine:
+  ml:
+    enabled: true
+    detectors:
+      - uses: networksecurity.engine.threshold_detector:ThresholdDetector
+        params: {window_seconds: 5, max_packets: 1000}
+      - uses: kitsune
+        enforce: false        # shadow mode
+```
+
+`uses` is a built-in short name (`kitsune`, `lucid` — those read their tuning from the `engine.kitsune` / `engine.lucid` blocks) or a `package.module:ClassName` path. A detector that cannot be constructed or configured is logged and skipped: one bad entry must not stop the management plane from starting.
+
+`enforce: false` is a **mount-level** key, consumed by the assembly like `enabled` and never passed to the detector's `configure()`. It mounts the detector in shadow mode: every verdict it returns is recorded — BLOCKs bump `total_shadow_blocked` on `/api/v1/status` and `nips_packets_shadow_blocked_total` on `/metrics`, and all of them ride to the caller in `metadata["shadow"]`, where the interceptor's verdict callback writes them into the alert trail as `action=log` rows prefixed `[shadow]` — and the chain moves on exactly as if the detector had abstained. Two properties are load-bearing: a shadow verdict **never ends the chain** (otherwise a shadow detector mounted in front of an enforcing one would shield it from every packet), and a shadow BLOCK **never reaches the escalation policy** (no strikes, no kernel bans). Shadow mode is how a detector earns enforcement: run it on real traffic, read who it *would* have blocked, then flip `enforce` when the numbers justify it.
+
+`networksecurity/engine/threshold_detector.py` is the worked example — small, deterministic, and complete enough to copy.
+
+### Fail-closed follows the switch, not luck
+
+| state | a packet the rules did not decide |
+|---|---|
+| `engine.ml.enabled: false` | **ALLOW** — running without learning detection is a decision, not a failure |
+| ML on, and **no** `ready` detector could execute (all raised, or all tripped) | **DROP** — an outage must not quietly become an open port |
+| ML on, one detector dead but another ready one abstained | **ALLOW** — the surviving detector is the coverage; a partial outage is not a total one |
+| ML on, but only `ready: false` detectors were mounted | **ALLOW**, loudly: the startup log says no detector was mounted |
+| ML on, only shadow (`enforce: false`) detectors mounted, and they ran | **ALLOW** — a healthy shadow detector is coverage: it looked at the packet and recorded what it saw |
+
+Two of these rows used to be one, and wrong. An adapter with no model answered `LOG` rather than abstaining, which both ended the chain and counted as coverage — so a tripped live detector behind it switched fail-closed off silently while the status page still listed three detectors. `ready` exists to keep "not deployed", "could not run" and "running" from collapsing into the same sentence.
+
+A consequence of the same short-circuit deserves stating because it is easy to be surprised by: **a rule layer that blocks most traffic also starves the learning detectors of training samples.** Kitsune learns from every packet the chain shows it, and a packet decided by the rule engine never reaches it. Measured on a bidirectional capture where one source's UDP tunnel tripped the per-source rate limit on 91% of packets, KitNET saw too few packets to ever leave warm-up — it reported `trained: false` the whole time, correctly, and the pipeline stayed rules-only in effect while the config said ML was on. That is the chain behaving as specified, not a bug: if you turn ML on to learn from your traffic, look at `rule_engine` block counts first, because those are the samples the detector will never get.
+
+### Do NOT
+
+- Add a "test mode" branch inside a detector that returns invented results
+- Generate packets inside a detector — offline traffic belongs in `scripts/`
+- Call iptables or OS commands from a detector; that is `interception/`'s job
+- Read `config.yaml` from inside a detector; tuning arrives through `configure()`

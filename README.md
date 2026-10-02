@@ -4,6 +4,8 @@
 
 A server-side IPS that intercepts traffic on Linux, scores each packet through a rule engine plus an anomaly detector, and drops malicious packets via iptables.
 
+**Why "NIPS"?** The short name is load-bearing: it is the iptables chain (`NIPS`), the API token variable (`NIPS_API_TOKEN`), the systemd unit prefix (`nips-*`) and the Prometheus metric prefix (`nips_*`). The repository name, `Network-Security-Based-On-ML`, describes the project; NIPS is what the code actually calls it.
+
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.104+-green.svg" alt="FastAPI">
@@ -20,25 +22,45 @@ A server-side IPS that intercepts traffic on Linux, scores each packet through a
 Incoming Traffic
       |
       v
-[Rule Engine] ------> BLOCK  (blacklist, rate limit, protocol filter)
-      | pass
+[Rule Engine] ------> decides: blacklist, whitelist, protocol filter,
+      | abstain       rate limit, signatures   (always present)
       v
-[Kitsune] ----------> BLOCK  (AfterImage + KitNET anomaly detection)
-      | pass
+[Mounted learning detectors] ------> BLOCK on anomaly
+      |
       v
 [ALLOW]
 ```
 
-The rule engine handles known-bad traffic deterministically (blacklist, whitelist, rate limit, protocol allowlist). Anything that passes is scored by Kitsune, an unsupervised packet-level anomaly detector that trains on normal traffic and flags deviations by reconstruction error (RMSE).
+The rule engine is the permanent part of the chain: deterministic, and the only stage that runs on a default configuration. Traffic it does not decide falls through to whatever detectors you mount.
 
-LUCID (a CNN-based DDoS detector) is **optional**. It is not loaded into the pipeline by default — it requires TensorFlow (`pip install -e ".[lucid]"` or `pip install tensorflow`) and a trained model, and must be explicitly enabled. See `networksecurity/engine/lucid/`.
+The learning detectors are a **plug-in**, and they are **off by default**:
+
+```yaml
+engine:
+  ml:
+    enabled: false        # true turns detection on for whatever is listed below
+    detectors:
+      - uses: kitsune     # or `lucid`, or `my_package.module:MyDetector`
+      - uses: lucid
+        enforce: false    # shadow mode: verdicts recorded, never enforced
+```
+
+With `enabled: false`, no ML module is imported or constructed: deleting `networksecurity/engine/kitsune/` and `networksecurity/engine/lucid/` leaves a working, rules-only deployment. With it on, a detector that cannot be built is logged and skipped rather than taking the process down. The interface a third-party detector implements (`process_packet` / `configure` / `ready` / `status`) and the fail-closed rules that follow from the switch are in [ARCHITECTURE.md — The Detector Contract](ARCHITECTURE.md); `networksecurity/engine/threshold_detector.py` is a complete example to copy.
+
+What detection here does and does not achieve is measured, not asserted: see [Measured results and limits](#measured-results-and-limits).
+
+LUCID (a CNN-based DDoS detector) is optional in its own right as well: it needs TensorFlow (`pip install -e ".[lucid]"` or `pip install tensorflow`) **and** a trained model at `engine.lucid.model_path`. Without a model that loads, it is not mounted at all — it no longer sits in the chain as an inactive detector the status page would still list.
 
 ### Algorithms
 
-- **Kitsune (NDSS'18)** — AfterImage incremental statistics (90 features) + a KitNET autoencoder ensemble. Trains online, no labels needed. When link-layer headers are absent (live NFQUEUE), the MAC channel uses a `(protocol, ttl)` proxy key so it never collapses to zero variance. Grace periods (`fm_grace_period`, `ad_grace_period`) allow warmup before detection starts; during this time packets are logged but not blocked.
+- **Kitsune (NDSS'18)** — AfterImage incremental statistics (90 features) + a KitNET autoencoder ensemble. Trains online, no labels needed. When link-layer headers are absent (live NFQUEUE), the MAC channel uses a `(protocol, ttl)` proxy key so it never collapses to zero variance. Grace periods (`fm_grace_period`, `ad_grace_period`) allow warmup before detection starts, and the first 10% of the AD grace after it is spent calibrating the anomaly threshold on the frozen model; through all of that packets are logged but not blocked.
 - **LUCID (IEEE TNSM 2020)** — 1D CNN over 10-packet flow windows (11 features/packet). Off by default; needs a trained model and `engine.lucid.model_path` set in config. Produce the model with `scripts/train_lucid.py` (see "Training LUCID" below).
 
-> **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17); anything else it inspects is blocked, including **ICMP(1)**. In live interception, however, only TCP and UDP are redirected into NFQUEUE (`interception.intercept_icmp` is off by default) — so there ICMP is **not inspected and not blocked**: the host's own firewall decides. Turn `interception.intercept_icmp: true` on to bring ICMP into the pipeline, then allow individual types through `engine.rule_engine.allowed_icmp_types` — blocking the whole protocol also breaks Path MTU Discovery (type 3, "frag needed"), which blackholes large connections, so a type list is the useful setting rather than an all-or-nothing ban. **ICMPv6(58)** has one exception to that list: the types that maintain the link itself — neighbour and router solicitation/advertisement (135/136/133/134) and "packet too big" (2) — always pass, because a host whose neighbour discovery is queued and dropped has not blocked an attacker, it has taken itself off the network. ICMPv6 echo is *not* in that set and stays behind the protocol filter (allow-by-type covers ICMPv4 above). Offline pcap runs (`cli.py test --pcap`) do exercise the protocol filter, since those packets reach the engine whatever their protocol.
+> **Note on protocol filtering:** the rule engine's protocol allowlist is TCP(6) and UDP(17); anything else it inspects is blocked, including **ICMP(1)**. In live interception, however, only TCP and UDP are redirected into NFQUEUE (`interception.intercept_icmp` is off by default) — so there ICMP is **not inspected and not blocked**: the host's own firewall decides.
+>
+> Turn `interception.intercept_icmp: true` on to bring ICMP into the pipeline, then allow individual types through `engine.rule_engine.allowed_icmp_types`. Blocking the whole protocol also breaks Path MTU Discovery (type 3, "frag needed"), which blackholes large connections — a type list is the useful setting, not an all-or-nothing ban.
+>
+> **ICMPv6(58)** has one exception to that list: the types that maintain the link itself — neighbour and router solicitation/advertisement (135/136/133/134) and "packet too big" (2) — always pass, because a host whose neighbour discovery is queued and dropped has not blocked an attacker, it has taken itself off the network. ICMPv6 echo is *not* in that set and stays behind the protocol filter (allow-by-type covers ICMPv4 above). Offline pcap runs (`cli.py test --pcap`) do exercise the protocol filter, since those packets reach the engine whatever their protocol.
 
 ---
 
@@ -75,47 +97,7 @@ pip install -e ".[lucid]"     # or: pip install tensorflow
 
 ### 3. Configure
 
-`config/config.yaml` drives both the engine and live interception:
-
-- `engine.kitsune.*`: grace periods, threshold percentile, learning_rate (passed to AfterImage)
-- `engine.lucid.model_path`: set a path to enable LUCID; empty string disables it
-- `api.auth_token`: set to enable authentication; empty string disables auth (development mode)
-- `api.host` / `api.port`: what `python app.py` binds to
-- `interception.safe_ips`: add IPs that must never be blocked (loopback included by default)
-- `interception.intercept_icmp` / `engine.rule_engine.allowed_icmp_types`: ICMP policy (see the protocol-filtering note above)
-- `storage.*`: event database path, row cap and retention window (see "Alerts, audit and metrics")
-- `logging.*`: level, rotating file target and syslog forwarding
-
-### 4. Run the API
-
-```bash
-python app.py
-# /docs, /redoc and the OpenAPI schema are all disabled in production.
-```
-
-### 5. CLI
-
-```bash
-python cli.py start                  # start live interception (Linux, root)
-python cli.py stop                   # stop live interception (via API)
-python cli.py status                 # engine status
-python cli.py block 1.2.3.4          # block an IP (POST /api/v1/rules/blacklist)
-python cli.py unblock 1.2.3.4        # unblock an IP (DELETE /api/v1/rules/blacklist/{ip})
-python cli.py whitelist --ip 10.0.0.0/8   # whitelist a subnet (rejects /0 default routes)
-python cli.py unwhitelist --ip 10.0.0.0/8 # remove from whitelist
-python cli.py rules                  # list blacklist/whitelist entries
-python cli.py reload                 # apply edited rules.json / config to the running engine
-python cli.py alerts --last 20       # stored alerts, newest first (via API)
-python cli.py alerts --source-ip 203.0.113.7 --action block
-python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
-python cli.py audit --last 20        # who changed which rule, and the outcome
-python cli.py audit --result 401     # rejected management attempts
-python cli.py test --pcap sample.pcap  # offline detection test (no root needed)
-```
-
-#### Configuration
-
-`config/config.yaml` drives both the engine and live interception:
+`config/config.yaml` drives both the engine and live interception. The blocks an operator actually touches:
 
 ```yaml
 interception:
@@ -146,9 +128,49 @@ api:
   auth_token: ""             # empty = auth disabled (dev only); NIPS_API_TOKEN overrides
   cors_origins:              # explicit allowlist — "*" is not supported
     - "http://localhost:8000"
+    - "http://127.0.0.1:8000"
 ```
 
+| key | effect |
+| --- | --- |
+| `engine.ml.enabled` / `engine.ml.detectors` | whether learning detection runs at all, and which detectors to mount (built-in short names, or `package.module:ClassName` with a `params:` block). Off by default. A detector entry with `enforce: false` runs in shadow mode — its BLOCK verdicts are counted, alerted and rendered on `/metrics`, but no packet is dropped and no ban escalates. |
+| `engine.kitsune.*` | grace periods, threshold percentile, learning_rate (passed to AfterImage) |
+| `engine.lucid.model_path` | set a path to enable LUCID; empty string disables it |
+| `api.auth_token` | set to enable authentication; empty string disables auth (development mode) |
+| `api.host` / `api.port` | what `python app.py` binds to |
+| `interception.safe_ips` | add IPs that must never be blocked (loopback included by default) |
+| `interception.intercept_icmp` / `engine.rule_engine.allowed_icmp_types` | ICMP policy (see the protocol-filtering note above) |
+| `storage.*` | event database path, row cap and retention window (see "Alerts, audit and metrics") |
+| `logging.*` | level, rotating file target and syslog forwarding |
+
 On `engine/start` the API/CLI read the `interception`, `engine`, `blocking`, and `api` blocks from this file and apply them at runtime. If the file is missing or malformed, each loader falls back to safe defaults (loopback protection included) rather than crashing.
+
+### 4. Run the API
+
+```bash
+python app.py
+# /docs, /redoc and the OpenAPI schema are all disabled in production.
+```
+
+### 5. CLI
+
+```bash
+python cli.py start                  # start live interception (Linux, root)
+python cli.py stop                   # stop live interception (via API)
+python cli.py status                 # engine status
+python cli.py block 1.2.3.4          # block an IP (POST /api/v1/rules/blacklist)
+python cli.py unblock 1.2.3.4        # unblock an IP (DELETE /api/v1/rules/blacklist/{ip})
+python cli.py whitelist --ip 10.0.0.0/8   # whitelist a subnet (rejects /0 default routes)
+python cli.py unwhitelist --ip 10.0.0.0/8 # remove from whitelist
+python cli.py rules                  # list blacklist/whitelist entries
+python cli.py reload                 # apply edited rules.json / config to the running engine
+python cli.py alerts --last 20       # stored alerts, newest first (via API)
+python cli.py alerts --source-ip 203.0.113.7 --action block
+python cli.py alerts --since 2026-09-19T00:00:00 --format csv > alerts.csv
+python cli.py audit --last 20        # who changed which rule, and the outcome
+python cli.py audit --result 401     # rejected management attempts
+python cli.py test --pcap sample.pcap  # offline detection test (no root needed)
+```
 
 ---
 
@@ -223,13 +245,13 @@ python cli.py signature delete ssh-brute
 
 ### Hot reload
 
-`rules.json` and `config/config.yaml` are watched by mtime, so a running engine picks up edits within 30 s; `POST /api/v1/rules/reload` (or `cli.py reload`) applies them immediately. Restarting is not required — and would be costly, since Kitsune re-trains from zero.
+`rules.json` and `config/config.yaml` are watched by mtime, so a running engine picks up edits within 30 s; `POST /api/v1/rules/reload` (or `cli.py reload`) applies them immediately. Rule and rate-limit edits need no restart — and restarting would be costly, since Kitsune re-trains from zero. What does need one is named below, and named by the reload itself.
 
 - `rules.json` is applied with **replace** semantics, so deleting an entry really stops enforcing it (startup uses merge, which only adds).
-- `engine.rule_engine.rate_limit.*` and `allowed_protocols` take effect on the next packet.
+- `engine.rule_engine.rate_limit.*`, `allowed_protocols` and `allowed_icmp_types` take effect on the next packet.
 - A malformed file is rejected wholesale: the live rules stay exactly as they were, `/api/v1/status` raises `reload.failures`, and the attempt is audited as `reload_failed`.
 - Entries the kernel would refuse anyway (loopback / `safe_ips`) are swept as at startup and reported as `dropped_unenforceable`.
-- Kitsune's `fm_grace_period`, `ad_grace_period`, `threshold_percentile` and `learning_rate` are **not** re-applied — they describe how the detector was trained, so they need a restart. The reload summary names them.
+- Kitsune's `fm_grace_period`, `ad_grace_period`, `threshold_percentile`, `learning_rate` and `max_autoencoder_size` are **not** re-applied — they describe how the detector was trained and shaped, so they need a restart. So do `engine.ml.enabled` and `engine.ml.detectors`: the chain is imported and constructed before the first packet, and with ML off nothing is imported at all, so applying the switch live would report *ML enabled* over a chain that was never mounted. The reload summary names every one of them, and `verify_engine_module.py` RL7 checks that list against the config schema — a knob cannot be added and silently ignored.
 
 ---
 
@@ -243,9 +265,12 @@ config/
 networksecurity/
   engine/                      # Detection engine
     detector.py                # BaseDetector interface + PacketInfo
+    assembly.py                # Mounts the detectors config asks for (engine.ml)
+    threshold_detector.py      # Complete worked example of the contract
     verdict.py                 # Verdict, Action, ThreatLevel types
     pipeline.py                # DetectionPipeline (multi-stage chain)
     rule_engine.py             # IP blacklist/whitelist, rate limiting
+    signature_engine.py        # Declarative matchers: CIDR/protocol/ports/flags + rate threshold
     block_policy.py            # BLOCK escalation: strikes → temp ban → permanent ban
     kitsune/                   # Kitsune anomaly detector (NDSS'18)
       afterimage.py            # 90-dim incremental statistics
@@ -275,11 +300,15 @@ networksecurity/
   utils/                       # Shared helpers
     config.py                  # config.yaml loading (engine / api / blocking / storage / logging)
     validation.py              # IP/CIDR validation and blacklist refusal rules
+    reload.py                  # ReloadProbe: mtime watch over rules.json + config.yaml
 scripts/                       # Benchmarks, evaluation & regression checks
   benchmark.py                 # Throughput + rule-engine accuracy
   benchmark_nslkdd.py          # NSL-KDD detection benchmark
   attack_simulation.py         # Large-scale attack simulation
   build_unsw_pcap.py           # Rebuild real-traffic pcaps from the bundled UNSW-NB15 flows
+  capture_labels.py            # Label sidecar format: truth next to the capture, not in it
+  capture_truth.py             # Shared truth-chain checks: independence, alignment, evaluator refusal
+  live_nfqueue_topology.sh     # Rootless netns topology for the live NFQUEUE CI job
   train_lucid.py               # Train the LUCID CNN and write engine.lucid.model_path
   evaluate_pcap.py             # End-to-end pcap evaluation (per attack category)
   verify_*.py                  # Module regression checks, incl. the CI FPR guard
@@ -312,7 +341,10 @@ The interceptor:
 - Leaves loopback traffic untouched — everything arriving on `lo` is ACCEPTed before the NFQUEUE rules, and loopback sources (`127.0.0.0/8`, `::1`) are never eligible for a permanent block (host-local traffic cannot be an attacker; blocking the DNS stub `127.0.0.53` would silently break host DNS)
 - Leaves SSH (port 22) untouched
 - Redirects only TCP and UDP into NFQUEUE unless `interception.intercept_icmp` is on; with it on, `allowed_icmp_types` decides which ICMP types the engine then accepts (ICMPv6 link maintenance passes regardless)
-- Enforces BLOCK verdicts through an escalation policy (`blocking:` in `config.yaml`) that applies **only to ML-detector BLOCKs**. Rule-engine verdicts (blacklist hit, rate limit, protocol filter) are deterministic and already enforced inline on every packet, so they never count strikes and cannot escalate — this also guarantees an operator's blacklist entry can never be modified by the ban lifecycle. A single ML BLOCK only inline-drops that packet and counts a strike against the source. Crossing `strikes_threshold` inside the rolling window triggers a **temp ban** — kernel DROP plus a rule-engine blacklist *mirror* with a TTL, lifted automatically on expiry (only the mirror is removed; an operator's own entry is never touched). Repeated temp bans escalate to a **permanent ban**, which is mirrored into `rules.json`; on the next start it is loaded back into the rule engine and enforced per-packet in userspace — the kernel DROP itself is **not** reinstalled
+- Enforces BLOCK verdicts through an escalation policy (`blocking:` in `config.yaml`) that applies **only to ML-detector BLOCKs**. Rule-engine verdicts (blacklist hit, rate limit, protocol filter) are deterministic and already enforced inline on every packet, so they never count strikes and cannot escalate — this also guarantees an operator's blacklist entry can never be modified by the ban lifecycle.
+  - A single ML BLOCK only inline-drops that packet and counts a strike against the source.
+  - Crossing `strikes_threshold` inside the rolling window triggers a **temp ban** — kernel DROP plus a rule-engine blacklist *mirror* with a TTL, lifted automatically on expiry (only the mirror is removed; an operator's own entry is never touched).
+  - Repeated temp bans escalate to a **permanent ban**, which is mirrored into `rules.json`; on the next start it is loaded back into the rule engine and enforced per-packet in userspace — the kernel DROP itself is **not** reinstalled.
 - Removes all of its iptables rules on shutdown
 
 **Dual-stack, with an honest fallback.** IPv4 *and* IPv6 TCP/UDP are redirected into NFQUEUE, parsed (including the IPv6 extension-header chain) and blocked through `ip6tables`. If `ip6tables` is unavailable the interceptor starts anyway, refuses every IPv6 block instead of pretending, and reports the gap: `ipv6_intercepted: false` in `/api/v1/status` and `nips_ipv6_intercepted 0` in `/metrics`. Check that gauge on any dual-stack host — a silently uninspected second address family is exactly the failure an operator would not notice until an incident.
@@ -361,9 +393,33 @@ python scripts/train_lucid.py --pcap capture.pcap \
 
 ---
 
-## Benchmarks
+## Measured results and limits
 
-Two scripts measure behavior on your own hardware — numbers below are not validated across environments and will vary:
+These are numbers this repository actually produces, with the command that reproduces each one. They are not stable — Kitsune's autoencoders are initialised from an unseeded RNG (the evaluator takes `--seed` to pin one) — so treat them as ranges.
+
+| what | result | reproduce with |
+|---|---|---|
+| Rule engine alone vs. a single-source SYN flood | **80.0%** of 500 SYN packets at 1 ms spacing blocked (the first 100 fit inside the shipped 100 connections/s budget), and **0 of 2 000** normal packets blocked — 1.80% of the same 2 000 once the anomaly detector is in the path | `python scripts/verify_fpr_regression.py` |
+| The same attack spread over 2 000 spoofed sources at 10 000 pkt/s | **0.0%** (17 of 60 000) — per-source rate never crosses the limit, and per-host modelling cannot see it | `python scripts/attack_simulation.py --full` |
+| Volumetric floods on synthetic traffic (UDP, ICMP) | 100% (ICMP by protocol rule, UDP by the anomaly stage) | same |
+| Whole synthetic run, every phase counted | 58.5% attack packets detected, **26.72%** of normal packets blocked — 36 239 of those 36 408 blocks land in the last phase, where every normal packet is flagged once four-tenths of the stream is attack traffic | same |
+| Real UNSW-NB15 reconstruction, Kitsune after training | false-positive rate **0.4–1.4%** (median 0.9%), detection rate **0.3–0.8%** over twelve autoencoder seeds; one draw in twelve still lands at 20.9% / 13.6% (`--seed 2`) | `python scripts/verify_real_capture_quality.py`, or per draw: `python scripts/evaluate_pcap.py --seed N` |
+| Real traffic off this host: 107,115 inbound packets, several minutes, **no attack labels** | rule engine blocked **1.5%** of ordinary traffic; Kitsune blocked **98.4%** of it before the threshold was calibrated on the frozen regime, **0 of 47,115** after | `python scripts/evaluate_pcap.py --pcap cap.pcap --no-labels --buckets 10` (and `--calibration-packets 0` for the old operating point) |
+| Offline pipeline throughput | ~660–870 pkt/s, single process | either of the above |
+
+**The bundled "real capture" benchmark used to leak its own labels; this is what it says now.** `scripts/build_unsw_pcap.py` drew attack flows' source addresses from one documented block and normal flows' from another, and `scripts/evaluate_pcap.py` read the label back out of those addresses — the answer key sat on the wire, so any source-address rule scored 100% for free and the "detection rate" measured the reconstruction rather than the detector. Addresses are now drawn independently of the label; the labels live in a sidecar (`unsw_reconstructed.labels.json`, written by `scripts/capture_labels.py`) that the evaluator takes as an explicit input, and a capture without one is refused instead of scored (`--no-labels` reports verdicts and block reasons only). `scripts/capture_truth.py` holds that line, and `scripts/verify_capture_truth.py` runs it on every pull request: it permutes the labels across the address partition read back out of the capture to check the source address cannot predict them (with a self-test on a deliberately leaky partition — a check that cannot fail is not a check), checks the retired `175.45.176.*`-means-attack rule no longer separates the classes, joins the labelled flows to the capture (same flows, same endpoints, same packet counts), and runs the evaluator four times — missing label file, `--no-labels`, a sidecar describing none of the capture, and a sidecar carrying attack flows only — each of which must end without rates rather than with the numbers an empty or one-class labelled set produces: a window with five attack packets and no normal ones used to print `false positive rate 0.0%` over an empty denominator, which no reader can tell from a clean run. `verify_real_capture_quality.py` imports the same checks and refuses to spend half an hour measuring on a capture whose truth it cannot trust.
+
+**The reconstruction flattered the detector; traffic off a real host said otherwise.** Feeding several minutes of this machine's own inbound traffic (107,115 packets, no labels, so everything blocked is a false positive by definition) through the shipped configuration, the rule engine blocked 1.5% of it — the same plane that blocked 0 of 2 000 synthetic normal packets, whose generator never puts a real host's per-source load on the wire. Kitsune blocked **98.4%**. `--buckets` says why, and the answer was not drift: the flagged fraction was already 89% in the first bucket after training, so the operating point was wrong from the first packet it judged. The threshold was the percentile of scores taken while the output layer's normalisation was still being updated, applied to scores taken after it froze — two different scales. A stationary synthetic stream does not reproduce that (the legacy threshold flagged 0.0% of it), so this is a finding about real traffic's variety, and the fix is in the detector: calibrate the threshold on the first packets scored *after* the freeze. On the same capture that took the flagged count from 51,285/52,115 to **0/47,115**, while K11 keeps asserting a genuine distribution shift is still caught. What this capture cannot say is anything about detection rate — no attacks in it, and `--no-labels` refuses to print rates for that reason. Whether Kitsune is worth arming is still unmeasured on realistic traffic, which is what `enforce: false` exists for.
+
+**Why the numbers moved, and why they are the shipped configuration.** KitNET fits its feature map on the first `fm_grace` packets, then freezes its output normalisation and its threshold from the next `ad_grace`, so those two windows decide everything after them. This capture reconstructs 1 680 flow records with concentrated packet mass (the largest flow carries 8 398 of 82 523 packets; the top 1% carry 35%), and the evaluator used to shorten the grace periods to 2 000 + 30 000 to fit training and a detection window into one capture. At 2 000 packets the fitting window is simply whatever arrived first — 43 flows, one of them a third of the window — so redrawing the same flows re-ordered the stream and moved the fitted model to another regime: 9 autoencoder groups instead of 10, threshold 0.65 instead of 1.18, and 52% of packets blocked instead of 1.3%, with identical flow composition and no code change. That is a property of the draw, not of the detector. The evaluator now trains at the values `config/config.yaml` ships (5 000 + 50 000, where the fitting window covers 112 flows and the largest contributes 13%), which keeps both draws out of that regime. What is left is the initialisation: KitNET draws its autoencoder weights from the global RNG, and over twelve seeds this capture's false-positive rate ran 2.1–10.5% with detection at 0.9–2.9% when the threshold came from the training pass. Calibrating it on the frozen regime pulls eleven of the twelve draws to 0.4–1.4% false positives with 0.3–0.8% detection (median 0.9%); the twelfth, `--seed 2`, still lands at 20.9% and 13.6%. So per-initialisation instability is narrowed, not cured — which is why `verify_real_capture_quality.py` scores three fixed draws and bounds their median rather than bounding a single run: a bound on one unseeded run sits inside that spread and would go red on roughly one run in five with nothing changed. Reproduce any draw with `python scripts/evaluate_pcap.py --seed N`. The reconstruction's numbers stay modest for a further reason: it is rebuilt from flow records — real addresses, sizes and timing, but no real per-packet structure for the model to separate on. The same code on traffic off a real host flagged 98.4% of it before that calibration existed, which is the row above.
+
+**Why a flood's detection rate depends on how it is spread**: the synthetic rows are different attacks with the same name. A concentrated flood trips a per-source connection limit; a distributed one is invisible to it by construction, and Kitsune scores per host, so spoofed sources each look like a well-behaved client. This is the boundary of the approach, not a tuning gap — the same reason the reconstruction's detection rate is low.
+
+**Where the synthetic run's 26.72% false-positive rate comes from**: not evenly. Of the 36 408 blocked normal packets, 169 are in the 100 000-packet training phase and 36 239 are in the final mixed phase — every normal packet in it, once four-tenths of that phase's traffic is attack. A per-host model learns what a host looks like, and attack traffic is exactly what changes that, so the detector's own notion of normal is poisoned by the traffic it is meant to catch. That is a property of the design rather than of the threshold, and it is a second reason the learning detectors ship disabled.
+
+**Calibrate `blocking:` before trusting either number.** Strikes are counted per BLOCK verdict, i.e. per packet, so at the 0.4–1.4% packet-level false-positive rate eleven of twelve draws measure on this capture — and at the 98.4% a real capture measured before the threshold was calibrated — a legitimate source sending a few hundred packets inside `strikes_window` reaches the shipped `strikes_threshold: 5` and takes a 10-minute kernel ban; repeated cycles persist a permanent one. Measure on your own traffic (`cli.py test --pcap`, watching `nips_alert_events_written_total`) and set the threshold to a multiple of what your traffic produces.
+
+### Reproducing this on your own hardware
 
 - `scripts/benchmark.py` — trains Kitsune on synthesized normal traffic, then reports rule-engine accuracy, training/detection throughput, and attack detection rate.
 - `scripts/benchmark_nslkdd.py` — downloads NSL-KDD, maps flow records to synthetic packets, trains Kitsune on normal flows, and reports precision/recall/FPR.
@@ -372,25 +428,28 @@ Why detection on NSL-KDD is weak here: NSL-KDD records are **flow-level summarie
 
 The rule engine itself is exact: blacklist/whitelist, protocol filtering, and rate limiting are deterministic and always applied before the ML stage. Rate limit counts only TCP SYN (ACK clear) and UDP datagrams; established TCP sessions (ACK/data/FIN) do not consume the budget.
 
-### Offline testing with real traffic
+### Offline testing with your own traffic
 
-Two paths exercise the detection pipeline **without** root or iptables — useful for verifying behavior on real captures:
+The detection pipeline can be exercised **without** root or iptables, which is the practical way to measure what it would do on the traffic you actually carry:
 
-- **Real pcap (recommended for true performance):** capture packets and run them through the pipeline offline.
+- **Real pcap (the one that tells you something):** capture packets and run them through the pipeline offline.
   ```bash
-  # capture 30s of live traffic (requires root for the sniff)
-  sudo python -c "from scapy.all import sniff, wrpcap; wrpcap('cap.pcap', sniff(iface='en0', timeout=30))"
+  # capture several minutes of live traffic (requires root for the sniff)
+  sudo python -c "from scapy.all import sniff, wrpcap; wrpcap('cap.pcap', sniff(iface='en0', timeout=300))"
   # offline detection — no root needed
   python cli.py test --pcap cap.pcap
+  # with ground truth absent, the evaluator reports verdicts and never rates
+  python scripts/evaluate_pcap.py --pcap cap.pcap --no-labels --buckets 10
   ```
-  This surfaces the **real** false-positive rate (e.g. legitimate ICMP being blocked by the protocol filter — in this offline path ICMP does reach the engine, unlike live interception with `intercept_icmp: false`), which the synthetic sim below does not. Note Kitsune needs ~55k normal packets before it leaves training mode, so short captures mostly exercise the rule engine.
-- **Synthetic attack simulation:** `scripts/attack_simulation.py` generates labeled traffic and reports per-attack detection rates. Its ICMP/SSH results reflect the hard protocol rule and a separable generator distribution, not production accuracy — the ~20% attack detection in fast mode is a property of that generator, not a floor for real traffic.
-- **Real capture, measured in CI:** `scripts/verify_real_capture_quality.py` rebuilds the shipped UNSW-NB15 reconstruction (82,523 packets) and runs it through the full pipeline, gating the false-positive rate. Across five runs on two platforms: detection rate **0.0–0.7%**, false-positive rate **1.8–3.7%** — Kitsune's projections are unseeded so the two rates move between runs, and the capture is rebuilt from flow records with shortened grace periods. Read it as calibration, not accuracy: on this capture the ML stage barely separates attack from normal, and the detections that matter come from the rules you write.
-- **Calibrate `blocking:` against that rate.** Strikes are counted per BLOCK verdict, i.e. **per packet**. At a 3% packet-level false-positive rate, a legitimate source that sends a few hundred packets inside `strikes_window` reaches the shipped `strikes_threshold: 5` and takes a kernel-level temp ban (10 minutes), and repeated cycles persist a permanent ban to `rules.json`. Measure your own rate on your own traffic first (`cli.py test --pcap`, and watch `nips_alert_events_written_total` against real traffic volume), then set `strikes_threshold` to a multiple of what your traffic produces.
+  Two things about your own traffic were measured, not assumed, and both will bite otherwise. **A sniff on a host sees both directions**, so every outbound connection counts against that source's rate limit: on one capture the host's own proxy tunnel (one source, 1,490 UDP packets/s) made the rule engine block 91% of packets. Filter to traffic destined for this host before drawing conclusions, or expect the rate limiter to be the only thing you measure. And **Kitsune needs 55,000 warm-up packets plus a 5,000-packet threshold calibration** before it judges anything, so a 30-second capture exercises the rule engine alone; `--buckets` reports the flagged fraction per time slice, which is how a mis-set operating point (high from the first bucket) is told apart from traffic drift (climbing across buckets).
+  This surfaces the **real** false-positive rate (e.g. legitimate ICMP being blocked by the protocol filter — in this offline path ICMP does reach the engine, unlike live interception with `intercept_icmp: false`), which the synthetic simulation does not.
+- The synthetic simulation and the bundled reconstruction are covered by the table above; their limits are stated there rather than repeated here.
 
 #### Fail-closed behavior
 
-When all ML detectors are broken or untrained, the pipeline raises `DetectionUnavailable` and drops every packet that the rule engine does not decide. This is intentional: a silent network outage is safer than allowing unknown traffic when the anomaly detector is unavailable. The status API exposes `detection_unavailable_drops` and `broken_detectors` so operators can see this state.
+With learning detection **enabled**, a packet the rule engine does not decide must be scored by something. If every mounted detector that could score has raised or tripped its circuit breaker, the pipeline raises `DetectionUnavailable` and that packet is dropped rather than waved through: a silent outage is safer than allowing unknown traffic while the detector you paid for is dead. Turning `engine.ml.enabled` off is the opposite case — a decision, so undecided traffic is allowed, and it never triggers this path. A detector mounted without its model (`ready: false`) is treated as not deployed: it neither decides nor counts as coverage.
+
+The status API exposes `detection_unavailable_drops`, `broken_detectors`, `ml_enabled`, `ml_consulted`, `ml_idle` and `detector_status` so an operator can tell these states apart instead of guessing from one boolean — `detector_status["KitsuneDetector"]["trained"]` is where "mounted and counting" differs from "producing verdicts yet", and the `threshold_source` beside it says which ruler the operating point came from: `calibration` (scored after the normalisation froze), `training` (the legacy pass, whose scale does not apply to detection), or `pending` while neither has been measured.
 
 ---
 
